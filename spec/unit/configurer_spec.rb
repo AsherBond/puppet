@@ -480,6 +480,25 @@ describe Puppet::Configurer do
       Puppet.expects(:err)
       expect { @configurer.save_last_run_summary(@report) }.to_not raise_error
     end
+
+    it "should create the last run file with the correct mode" do
+      Puppet.settings.setting(:lastrunfile).expects(:mode).returns('664')
+      @configurer.save_last_run_summary(@report)
+
+      if Puppet::Util::Platform.windows?
+        require 'puppet/util/windows/security'
+        mode = Puppet::Util::Windows::Security.get_mode(Puppet[:lastrunfile])
+      else
+        mode = File.stat(Puppet[:lastrunfile]).mode
+      end
+      (mode & 0777).should == 0664
+    end
+
+    it "should report invalid last run file permissions" do
+      Puppet.settings.setting(:lastrunfile).expects(:mode).returns('892')
+      Puppet.expects(:err).with(regexp_matches(/Could not save last run local report.*892 is invalid/))
+      @configurer.save_last_run_summary(@report)
+    end
   end
 
   describe "when retrieving a catalog" do
