@@ -249,7 +249,7 @@ class Puppet::Settings
   # "no-" prefix on flag/boolean options).
   #
   # @param [String] opt the command line option that we are munging
-  # @param [String, TrueClass, FalseClass] the value for the setting (as determined by the OptionParser)
+  # @param [String, TrueClass, FalseClass] val the value for the setting (as determined by the OptionParser)
   def self.clean_opt(opt, val)
     # rewrite --[no-]option to --no-option if that's what was given
     if opt =~ /\[no-\]/ and !val
@@ -624,6 +624,16 @@ class Puppet::Settings
   end
   private :apply_metadata
 
+  SETTING_TYPES = {
+      :string     => StringSetting,
+      :file       => FileSetting,
+      :directory  => DirectorySetting,
+      :path       => PathSetting,
+      :boolean    => BooleanSetting,
+      :terminus   => TerminusSetting,
+      :duration   => DurationSetting,
+  }
+
   # Create a new setting.  The value is passed in because it's used to determine
   # what kind of setting we're creating, but the value itself might be either
   # a default or a value, so we can't actually assign it.
@@ -634,15 +644,7 @@ class Puppet::Settings
     hash[:section] = hash[:section].to_sym if hash[:section]
 
     if type = hash[:type]
-      unless klass = {
-          :string     => StringSetting,
-          :file       => FileSetting,
-          :directory  => DirectorySetting,
-          :path       => PathSetting,
-          :boolean    => BooleanSetting,
-          :terminus   => TerminusSetting,
-          :duration   => DurationSetting,
-      } [type]
+      unless klass = SETTING_TYPES[type]
         raise ArgumentError, "Invalid setting type '#{type}'"
       end
       hash.delete(:type)
