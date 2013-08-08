@@ -1,6 +1,3 @@
-# The majority of Puppet's configuration settings are set in this file.
-
-
 module Puppet
 
   def self.default_diffargs
@@ -246,6 +243,19 @@ module Puppet
       :desc    => "The hiera configuration file. Puppet only reads this file on startup, so you must restart the puppet master every time you edit it.",
       :type    => :file,
     },
+    :binder => {
+      :default => false,
+      :desc    => "Turns the binding system on or off. This includes hiera-2 and data in modules.  The binding system aggregates data from
+      modules and other locations and makes them available for lookup.  The binding system is experimental and any or all of it may change.",
+      :type    => :boolean,
+    },
+    :binder_config => {
+      :default => nil,
+      :desc    => "The binder configuration file. Puppet reads this file on each request to configure the bindings system.
+      If set to nil (the default), a $confdir/binder_config.yaml is optionally loaded. If it does not exists, a default configuration
+      is used. If the setting :binding_config is specified, it must reference a valid and existing yaml file.",
+      :type    => :file,
+    },
     :catalog_terminus => {
       :type       => :terminus,
       :default    => "compiler",
@@ -326,7 +336,7 @@ module Puppet
       Requires that `puppet queue` be running.",
         :hook     => proc do |value|
           if value
-            # This reconfigures the terminii for Node, Facts, and Catalog
+            # This reconfigures the termini for Node, Facts, and Catalog
             Puppet.settings[:storeconfigs] = true
 
             # But then we modify the configuration
@@ -547,7 +557,7 @@ EOT
     #   :type  => :file,
     #   :mode  => 0644,
     #   :owner => "service",
-    #   :desc  => "The list of CA certificate to complete the chain of trust to CA certificates \n" <<
+    #   :desc  => "The list of CA certificates to complete the chain of trust to CA certificates \n" <<
     #             "listed in the ssl_client_ca_auth file."
     # },
     :ssl_client_ca_auth => {
@@ -566,7 +576,7 @@ EOT
     #   :type  => :file,
     #   :mode  => 0644,
     #   :owner => "service",
-    #   :desc  => "The list of CA certificate to complete the chain of trust to CA certificates \n" <<
+    #   :desc  => "The list of CA certificates to complete the chain of trust to CA certificates \n" <<
     #             "listed in the ssl_server_ca_auth file."
     # },
     :ssl_server_ca_auth => {
