@@ -62,6 +62,16 @@ describe provider_class do
       provider_class.instances.map(&:name).sort.should ==
         %w{bash bzip2 expat gettext libiconv lzo openvpn python vim wget}.sort
     end
+
+    it "should return all flavors if set" do
+      fixture = File.read(my_fixture('pkginfo_flavors.list'))
+      provider_class.expects(:execpipe).with(%w{/bin/pkg_info -a}).yields(fixture)
+      instances = provider_class.instances.map {|p| {:name => p.get(:name),
+        :ensure => p.get(:ensure), :flavor => p.get(:flavor)}}
+      instances.size.should == 2
+      instances[0].should == {:name => 'bash', :ensure => '3.1.17',  :flavor => 'static'}
+      instances[1].should == {:name => 'vim',  :ensure => '7.0.42', :flavor => 'no_x11'}
+    end
   end
 
   context "#install" do
@@ -184,7 +194,29 @@ describe provider_class do
       provider.install
     end
 
-    %w{ installpath installpath= }.each do |line|
+    it "should append installpath" do
+      urls = ["ftp://your.ftp.mirror/pub/OpenBSD/5.2/packages/amd64/",
+              "http://another.ftp.mirror/pub/OpenBSD/5.2/packages/amd64/"]
+      lines = ["installpath  = #{urls[0]}\n",
+               "installpath += #{urls[1]}\n"]
+
+      expect_read_from_pkgconf(lines)
+      expect_pkgadd_with_env_and_name(urls.join(":")) do
+        provider.install
+      end
+    end
+
+    it "should handle append on first installpath" do
+      url = "ftp://your.ftp.mirror/pub/OpenBSD/5.2/packages/amd64/"
+      lines = ["installpath += #{url}\n"]
+
+      expect_read_from_pkgconf(lines)
+      expect_pkgadd_with_env_and_name(url) do
+        provider.install
+      end
+    end
+
+    %w{ installpath installpath= installpath+=}.each do |line|
       it "should reject '#{line}'" do
         expect_read_from_pkgconf([line])
         expect {
@@ -224,6 +256,15 @@ describe provider_class do
       provider.resource[:name] = 'zsh'
       provider.expects(:pkginfo).with('zsh').returns('')
       provider.query.should be_nil
+    end
+  end
+  
+  context "#uninstall" do
+    describe 'when uninstalling' do
+      it 'should use erase to purge' do
+        provider.expects(:pkgdelete).with('-c', '-q', 'bash')
+        provider.purge
+      end
     end
   end
 end
