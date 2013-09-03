@@ -1,22 +1,18 @@
-require 'puppet/simple_graph'
-require 'puppet/rb_tree_map'
-
 # The relationship graph is the final form of a puppet catalog in
 # which all dependency edges are explicitly in the graph. This form of the
 # catalog is used to traverse the graph in the order in which resources are
 # managed.
 #
 # @api private
-class Puppet::RelationshipGraph < Puppet::SimpleGraph
+class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
   attr_reader :blockers
 
-  def initialize
-    super
+  def initialize(prioritizer)
+    super()
 
-    @priority = {}
-    @count = 0
+    @prioritizer = prioritizer
 
-    @ready = Puppet::RbTreeMap.new
+    @ready = Puppet::Graph::RbTreeMap.new
     @generated = {}
     @done = {}
     @blockers = {}
@@ -24,57 +20,39 @@ class Puppet::RelationshipGraph < Puppet::SimpleGraph
   end
 
   def populate_from(catalog)
-    catalog.resources.each do |vertex|
-      add_vertex vertex
-    end
+    add_all_resources_as_vertices(catalog)
+    build_manual_dependencies
+    build_autorequire_dependencies(catalog)
 
-    vertices.each do |vertex|
-      vertex.builddepends.each do |edge|
-        add_edge(edge)
-      end
-
-      vertex.autorequire(catalog).each do |edge|
-        # don't let automatic relationships conflict with manual ones.
-        next if edge?(edge.source, edge.target)
-
-        if edge?(edge.target, edge.source)
-          vertex.debug "Skipping automatic relationship with #{edge.source}"
-        else
-          vertex.debug "Autorequiring #{edge.source}"
-          add_edge(edge)
-        end
-      end
-    end
     write_graph(:relationships) if catalog.host_config?
 
-    # Then splice in the container information
-    splice!(catalog)
+    replace_containers_with_anchors(catalog)
 
     write_graph(:expanded_relationships) if catalog.host_config?
   end
 
-  def add_vertex(vertex, priority = @priority[vertex])
+  def add_vertex(vertex, priority = nil)
     super(vertex)
 
-    @priority[vertex] = if priority.nil?
-                          @count += 1
-                        else
-                          priority
-                        end
+    if priority
+      @prioritizer.record_priority_for(vertex, priority)
+    else
+      @prioritizer.generate_priority_for(vertex)
+    end
   end
 
   def add_relationship(f, t, label=nil)
     super(f, t, label)
-    @ready.delete(resource_priority(t))
+    @ready.delete(@prioritizer.priority_of(t))
   end
 
   def remove_vertex!(vertex)
     super
-    @priority.delete(vertex)
+    @prioritizer.forget(vertex)
   end
 
   def resource_priority(resource)
-    @priority[resource]
+    @prioritizer.priority_of(resource)
   end
 
   # Enqueue the initial set of resources, those with no dependencies.
@@ -103,8 +81,7 @@ class Puppet::RelationshipGraph < Puppet::SimpleGraph
 
   def enqueue(*resources)
     resources.each do |resource|
-      key = resource_priority(resource)
-      @ready[key] = resource
+      @ready[@prioritizer.priority_of(resource)] = resource
     end
   end
 
@@ -123,6 +100,7 @@ class Puppet::RelationshipGraph < Puppet::SimpleGraph
     continue_while = options[:while] || lambda { true }
     pre_process = options[:pre_process] || lambda { |resource| }
     overly_deferred_resource_handler = options[:overly_deferred_resource_handler] || lambda { |resource| }
+    canceled_resource_handler = options[:canceled_resource_handler] || lambda { |resource| }
     teardown = options[:teardown] || lambda {}
 
     report_cycles_in_graph
@@ -131,7 +109,7 @@ class Puppet::RelationshipGraph < Puppet::SimpleGraph
 
     deferred_resources = []
 
-    while (resource = next_resource) && continue_while.call()
+    while continue_while.call() && (resource = next_resource)
       if resource.suitable?
         made_progress = true
 
@@ -159,7 +137,46 @@ class Puppet::RelationshipGraph < Puppet::SimpleGraph
       end
     end
 
+    if !continue_while.call()
+      while (resource = next_resource)
+        canceled_resource_handler.call(resource)
+        finish(resource)
+      end
+    end
+
     teardown.call()
+  end
+
+  private
+
+  def add_all_resources_as_vertices(catalog)
+    catalog.resources.each do |vertex|
+      add_vertex(vertex)
+    end
+  end
+
+  def build_manual_dependencies
+    vertices.each do |vertex|
+      vertex.builddepends.each do |edge|
+        add_edge(edge)
+      end
+    end
+  end
+
+  def build_autorequire_dependencies(catalog)
+    vertices.each do |vertex|
+      vertex.autorequire(catalog).each do |edge|
+        # don't let automatic relationships conflict with manual ones.
+        next if edge?(edge.source, edge.target)
+
+        if edge?(edge.target, edge.source)
+          vertex.debug "Skipping automatic relationship with #{edge.source}"
+        else
+          vertex.debug "Autorequiring #{edge.source}"
+          add_edge(edge)
+        end
+      end
+    end
   end
 
   # Impose our container information on another graph by using it
@@ -182,7 +199,7 @@ class Puppet::RelationshipGraph < Puppet::SimpleGraph
   # to say geometrically in the case of nested / chained containers.
   #
   Default_label = { :callback => :refresh, :event => :ALL_EVENTS }
-  def splice!(catalog)
+  def replace_containers_with_anchors(catalog)
     stage_class      = Puppet::Type.type(:stage)
     whit_class       = Puppet::Type.type(:whit)
     component_class  = Puppet::Type.type(:component)
@@ -199,8 +216,9 @@ class Puppet::RelationshipGraph < Puppet::SimpleGraph
     containers.each { |x|
       admissible[x] = whit_class.new(:name => "admissible_#{x.ref}", :catalog => catalog)
       completed[x]  = whit_class.new(:name => "completed_#{x.ref}",  :catalog => catalog)
-      add_vertex(admissible[x], resource_priority(x))
-      add_vertex(completed[x], resource_priority(x))
+      priority = @prioritizer.priority_of(x)
+      add_vertex(admissible[x], priority)
+      add_vertex(completed[x], priority)
     }
     #
     # Implement the six requirements listed above

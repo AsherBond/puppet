@@ -1,10 +1,9 @@
 require 'puppet/node'
 require 'puppet/indirector'
-require 'puppet/simple_graph'
 require 'puppet/transaction'
 require 'puppet/util/pson'
 require 'puppet/util/tagging'
-require 'puppet/relationship_graph'
+require 'puppet/graph'
 
 # This class models a node catalog.  It is the thing meant to be passed
 # from server to client, and it contains all of the information in the
@@ -12,7 +11,7 @@ require 'puppet/relationship_graph'
 #
 # @api public
 
-class Puppet::Resource::Catalog < Puppet::SimpleGraph
+class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   class DuplicateResourceError < Puppet::Error
     include Puppet::ExternalFileError
   end
@@ -69,6 +68,13 @@ class Puppet::Resource::Catalog < Puppet::SimpleGraph
     resources.each do |resource|
       add_one_resource(resource)
     end
+  end
+
+  # @param resource [A Resource] a resource in the catalog
+  # @return [A Resource, nil] the resource that contains the given resource
+  # @api public
+  def container_of(resource)
+    adjacent(resource, :direction => :in)[0]
   end
 
   def add_one_resource(resource)
@@ -172,6 +178,19 @@ class Puppet::Resource::Catalog < Puppet::SimpleGraph
     transaction
   end
 
+  # The relationship_graph form of the catalog. This contains all of the
+  # dependency edges that are used for determining order.
+  #
+  # @return [Puppet::Graph::RelationshipGraph]
+  # @api public
+  def relationship_graph
+    if @relationship_graph.nil?
+      @relationship_graph = Puppet::Graph::RelationshipGraph.new(prioritizer)
+      @relationship_graph.populate_from(self)
+    end
+    @relationship_graph
+  end
+
   def clear(remove_resources = true)
     super()
     # We have to do this so that the resources clean themselves up.
@@ -243,15 +262,6 @@ class Puppet::Resource::Catalog < Puppet::SimpleGraph
     if bucket = Puppet::Type.type(:filebucket).mkdefaultbucket
       add_resource(bucket) unless resource(bucket.ref)
     end
-  end
-
-  # Create a graph of all of the relationships in our catalog.
-  def relationship_graph
-    unless @relationship_graph
-      @relationship_graph = Puppet::RelationshipGraph.new
-      @relationship_graph.populate_from(self)
-    end
-    @relationship_graph
   end
 
   # Remove the resource from our catalog.  Notice that we also call
@@ -431,8 +441,21 @@ class Puppet::Resource::Catalog < Puppet::SimpleGraph
 
   private
 
+  def prioritizer
+    @prioritizer ||= case Puppet[:ordering]
+                     when "title-hash"
+                       Puppet::Graph::TitleHashPrioritizer.new
+                     when "manifest"
+                       Puppet::Graph::SequentialPrioritizer.new
+                     when "random"
+                       Puppet::Graph::RandomPrioritizer.new
+                     else
+                       raise Puppet::DevError, "Unknown ordering type #{Puppet[:ordering]}"
+                     end
+  end
+
   def create_transaction(options)
-    transaction = Puppet::Transaction.new(self, options[:report])
+    transaction = Puppet::Transaction.new(self, options[:report], prioritizer)
     transaction.tags = options[:tags] if options[:tags]
     transaction.ignoreschedules = true if options[:ignoreschedules]
     transaction.for_network_device = options[:network_device]

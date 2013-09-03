@@ -1,12 +1,14 @@
-# the class that actually walks our resource/property tree, collects the changes,
-# and performs them
-
 require 'puppet'
 require 'puppet/util/tagging'
 require 'puppet/application'
 require 'digest/sha1'
 
+# the class that actually walks our resource/property tree, collects the changes,
+# and performs them
+#
+# @api private
 class Puppet::Transaction
+  require 'puppet/transaction/additional_resource_generator'
   require 'puppet/transaction/event'
   require 'puppet/transaction/event_manager'
   require 'puppet/transaction/resource_harness'
@@ -28,10 +30,12 @@ class Puppet::Transaction
   include Puppet::Util
   include Puppet::Util::Tagging
 
-  def initialize(catalog, report = nil)
+  def initialize(catalog, report, prioritizer)
     @catalog = catalog
 
     @report = report || Puppet::Transaction::Report.new("apply", catalog.version, catalog.environment)
+
+    @prioritizer = prioritizer
 
     @report.add_times(:config_retrieval, @catalog.retrieval_duration || 0)
 
@@ -47,7 +51,8 @@ class Puppet::Transaction
   # necessary events.
   def evaluate(&block)
     block ||= method(:eval_resource)
-    add_dynamically_generated_resources
+    generator = AdditionalResourceGenerator.new(@catalog, relationship_graph, @prioritizer)
+    @catalog.vertices.each { |resource| generator.generate_additional_resources(resource) }
 
     Puppet.info "Applying configuration version '#{catalog.version}'" if catalog.version
 
@@ -59,7 +64,7 @@ class Puppet::Transaction
       # If we generated resources, we don't know what they are now
       # blocking, so we opt to recompute it, rather than try to track every
       # change that would affect the number.
-      relationship_graph.clear_blockers if eval_generate(resource)
+      relationship_graph.clear_blockers if generator.eval_generate(resource)
     end
 
     providerless_types = []
@@ -75,6 +80,11 @@ class Puppet::Transaction
       resource_status(resource).failed = true
     end
 
+    canceled_resource_handler = lambda do |resource|
+      resource_status(resource).skipped = true
+      resource.debug "Transaction canceled, skipping"
+    end
+
     teardown = lambda do
       # Just once per type. No need to punish the user.
       providerless_types.uniq.each do |type|
@@ -85,6 +95,7 @@ class Puppet::Transaction
     relationship_graph.traverse(:while => continue_while,
                                 :pre_process => pre_process,
                                 :overly_deferred_resource_handler => overly_deferred_resource_handler,
+                                :canceled_resource_handler => canceled_resource_handler,
                                 :teardown => teardown) do |resource|
       if resource.is_a?(Puppet::Type::Component)
         Puppet.warning "Somehow left a component in the relationship graph"
@@ -100,7 +111,7 @@ class Puppet::Transaction
 
   # Wraps application run state check to flag need to interrupt processing
   def stop_processing?
-    Puppet::Application.stop_requested?
+    Puppet::Application.stop_requested? && catalog.host_config?
   end
 
   # Are there any failed resources in this transaction?
@@ -114,7 +125,7 @@ class Puppet::Transaction
   end
 
   def relationship_graph
-    @relationship_graph ||= catalog.relationship_graph
+    catalog.relationship_graph
   end
 
   def resource_status(resource)
@@ -126,56 +137,6 @@ class Puppet::Transaction
     self.tags = Puppet[:tags] unless defined?(@tags)
 
     super
-  end
-
-  def eval_generate(resource)
-    return false unless resource.respond_to?(:eval_generate)
-    raise Puppet::DevError,"Depthfirst resources are not supported by eval_generate" if resource.depthfirst?
-    begin
-      made = resource.eval_generate.uniq
-      return false if made.empty?
-      made = Hash[made.map(&:name).zip(made)]
-    rescue => detail
-      resource.log_exception(detail, "Failed to generate additional resources using 'eval_generate: #{detail}")
-      return false
-    end
-    made.values.each do |res|
-      begin
-        res.tag(*resource.tags)
-        @catalog.add_resource(res)
-        res.finish
-      rescue Puppet::Resource::Catalog::DuplicateResourceError
-        res.info "Duplicate generated resource; skipping"
-      end
-    end
-    sentinel = Puppet::Type.type(:whit).new(:name => "completed_#{resource.title}", :catalog => resource.catalog)
-
-    # The completed whit is now the thing that represents the resource is done
-    relationship_graph.adjacent(resource,:direction => :out,:type => :edges).each { |e|
-      # But children run as part of the resource, not after it
-      next if made[e.target.name]
-
-      add_conditional_directed_dependency(sentinel, e.target, e.label)
-      relationship_graph.remove_edge! e
-    }
-
-    default_label = Puppet::RelationshipGraph::Default_label
-    made.values.each do |res|
-      # Depend on the nearest ancestor we generated, falling back to the
-      # resource if we have none
-      parent_name = res.ancestors.find { |a| made[a] and made[a] != res }
-      parent = made[parent_name] || resource
-
-      add_conditional_directed_dependency(parent, res)
-
-      # This resource isn't 'completed' until each child has run
-      add_conditional_directed_dependency(res, sentinel, default_label)
-    end
-
-    # This edge allows the resource's events to propagate, though it isn't
-    # strictly necessary for ordering purposes
-    add_conditional_directed_dependency(resource, sentinel, default_label)
-    true
   end
 
   def prefetch_if_necessary(resource)
@@ -202,18 +163,6 @@ class Puppet::Transaction
     event_manager.queue_events(ancestor || resource, status.events) unless status.failed?
   rescue => detail
     resource.err "Could not evaluate: #{detail}"
-  end
-
-  # Copy an important relationships from the parent to the newly-generated
-  # child resource.
-  def add_conditional_directed_dependency(parent, child, label=nil)
-    relationship_graph.add_vertex(child)
-    edge = parent.depthfirst? ? [child, parent] : [parent, child]
-    if relationship_graph.edge?(*edge.reverse)
-      parent.debug "Skipping automatic relationship to #{child}"
-    else
-      relationship_graph.add_relationship(edge[0],edge[1],label)
-    end
   end
 
   # Evaluate a single resource.
@@ -259,10 +208,6 @@ class Puppet::Transaction
     end
 
     found_failed
-  end
-
-  def add_dynamically_generated_resources
-    @catalog.vertices.each { |resource| generate_additional_resources(resource) }
   end
 
   # A general method for recursively generating new resources from a

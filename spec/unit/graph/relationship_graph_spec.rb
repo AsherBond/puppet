@@ -1,18 +1,19 @@
 #! /usr/bin/env ruby
 require 'spec_helper'
-require 'puppet/relationship_graph'
+require 'puppet/graph'
+
 require 'puppet_spec/compiler'
 require 'matchers/include_in_order'
+require 'matchers/relationship_graph_matchers'
 
-describe Puppet::RelationshipGraph do
+describe Puppet::Graph::RelationshipGraph do
+  include PuppetSpec::Files
   include PuppetSpec::Compiler
+  include RelationshipGraphMatchers
 
-  def stub_vertex(name)
-    stub "vertex #{name}", :ref => name
-  end
+  let(:graph) { Puppet::Graph::RelationshipGraph.new(Puppet::Graph::SequentialPrioritizer.new) }
 
   it "allows adding a new vertex with a specific priority" do
-    graph = Puppet::RelationshipGraph.new
     vertex = stub_vertex('something')
 
     graph.add_vertex(vertex, 2)
@@ -21,8 +22,6 @@ describe Puppet::RelationshipGraph do
   end
 
   it "returns resource priority based on the order added" do
-    graph = Puppet::RelationshipGraph.new
-
     # strings chosen so the old hex digest method would put these in the
     # wrong order
     first = stub_vertex('aa')
@@ -35,8 +34,6 @@ describe Puppet::RelationshipGraph do
   end
 
   it "retains the first priority when a resource is added more than once" do
-    graph = Puppet::RelationshipGraph.new
-
     first = stub_vertex(1)
     second = stub_vertex(2)
 
@@ -48,8 +45,6 @@ describe Puppet::RelationshipGraph do
   end
 
   it "forgets the priority of a removed resource" do
-    graph = Puppet::RelationshipGraph.new
-
     vertex = stub_vertex(1)
 
     graph.add_vertex(vertex)
@@ -59,8 +54,6 @@ describe Puppet::RelationshipGraph do
   end
 
   it "does not give two resources the same priority" do
-    graph = Puppet::RelationshipGraph.new
-
     first = stub_vertex(1)
     second = stub_vertex(2)
     third = stub_vertex(3)
@@ -119,6 +112,18 @@ describe Puppet::RelationshipGraph do
         include_in_order("Notify[second]", "Notify[third]", "Notify[first]"))
     end
 
+    it "traverses all independent resources before traversing dependent ones (with a backwards require)" do
+      relationships = compile_to_relationship_graph(<<-MANIFEST)
+        notify { "first": }
+        notify { "second": }
+        notify { "third": require => Notify[second] }
+        notify { "fourth": }
+      MANIFEST
+
+      expect(order_resources_traversed_in(relationships)).to(
+        include_in_order("Notify[first]", "Notify[second]", "Notify[third]", "Notify[fourth]"))
+    end
+
     it "traverses resources in classes in the order they are added" do
       relationships = compile_to_relationship_graph(<<-MANIFEST)
         class c1 {
@@ -168,17 +173,80 @@ describe Puppet::RelationshipGraph do
     end
   end
 
-  describe "when reconstruction containment relationships" do
-    def vertex_called(graph, name)
-      graph.vertices.find { |v| v.ref =~ /#{Regexp.escape(name)}/ }
+  describe "when interrupting traversal" do
+    def collect_canceled_resources(relationships, trigger_on)
+      continue = true
+      continue_while = lambda { continue }
+
+      canceled_resources = []
+      canceled_resource_handler = lambda { |resource| canceled_resources << resource.ref }
+
+      relationships.traverse(:while => continue_while,
+                             :canceled_resource_handler => canceled_resource_handler) do |resource|
+        if resource.ref == trigger_on
+          continue = false
+        end
+      end
+
+      canceled_resources
     end
 
-    def admissible_sentinel_of(graph, ref)
-      vertex_called(graph, "Admissible_#{ref}")
+    it "enumerates the remaining resources" do
+      relationships = compile_to_relationship_graph(<<-MANIFEST)
+      notify { "a": }
+      notify { "b": }
+      notify { "c": }
+    MANIFEST
+      resources = collect_canceled_resources(relationships, 'Notify[b]')
+
+      expect(resources).to include('Notify[c]')
     end
 
-    def completed_sentinel_of(graph, ref)
-      vertex_called(graph, "Completed_#{ref}")
+    it "enumerates the remaining blocked resources" do
+      relationships = compile_to_relationship_graph(<<-MANIFEST)
+      notify { "a": }
+      notify { "b": }
+      notify { "c": }
+      notify { "d": require => Notify["c"] }
+    MANIFEST
+      resources = collect_canceled_resources(relationships, 'Notify[b]')
+
+      expect(resources).to include('Notify[d]')
+    end
+  end
+
+  describe "when constructing dependencies" do
+    let(:child) { make_absolute('/a/b') }
+    let(:parent) { make_absolute('/a') }
+
+    it "does not create an automatic relationship that would interfere with a manual relationship" do
+      relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+        file { "#{child}": }
+
+        file { "#{parent}": require => File["#{child}"] }
+      MANIFEST
+
+      relationship_graph.should enforce_order_with_edge("File[#{child}]", "File[#{parent}]")
+    end
+
+    it "creates automatic relationships defined by the type" do
+      relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+        file { "#{child}": }
+
+        file { "#{parent}": }
+      MANIFEST
+
+      relationship_graph.should enforce_order_with_edge("File[#{parent}]", "File[#{child}]")
+    end
+  end
+
+  describe "when reconstructing containment relationships" do
+    def admissible_sentinel_of(ref)
+      "Admissible_#{ref}"
+    end
+
+    def completed_sentinel_of(ref)
+      "Completed_#{ref}"
     end
 
     it "an empty container's completed sentinel should depend on its admissible sentinel" do
@@ -188,23 +256,21 @@ describe Puppet::RelationshipGraph do
         include a
       MANIFEST
 
-      relationship_graph.
-        should be_edge(
-          admissible_sentinel_of(relationship_graph, "class[A]"),
-          completed_sentinel_of(relationship_graph, "class[A]"))
+      relationship_graph.should enforce_order_with_edge(
+        admissible_sentinel_of("class[A]"),
+        completed_sentinel_of("class[A]"))
     end
 
-    it "a container with children does not connect the completed sentinel to its admissible sentinel" do
+    it "a container with children does not directly connect the completed sentinel to its admissible sentinel" do
       relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
         class a { notify { "a": } }
 
         include a
       MANIFEST
 
-      relationship_graph.
-        should_not be_edge(
-          admissible_sentinel_of(relationship_graph, "class[A]"),
-          completed_sentinel_of(relationship_graph, "class[A]"))
+      relationship_graph.should_not enforce_order_with_edge(
+        admissible_sentinel_of("class[A]"),
+        completed_sentinel_of("class[A]"))
     end
 
     it "all contained objects should depend on their container's admissible sentinel" do
@@ -216,10 +282,9 @@ describe Puppet::RelationshipGraph do
         include a
       MANIFEST
 
-      relationship_graph.
-        should be_edge(
-          admissible_sentinel_of(relationship_graph, "class[A]"),
-          vertex_called(relationship_graph, "Notify[class a]"))
+      relationship_graph.should enforce_order_with_edge(
+        admissible_sentinel_of("class[A]"),
+        "Notify[class a]")
     end
 
     it "completed sentinels should depend on their container's contents" do
@@ -231,10 +296,9 @@ describe Puppet::RelationshipGraph do
         include a
       MANIFEST
 
-      relationship_graph.
-        should be_edge(
-          vertex_called(relationship_graph, "Notify[class a]"),
-          completed_sentinel_of(relationship_graph, "class[A]"))
+      relationship_graph.should enforce_order_with_edge(
+          "Notify[class a]",
+          completed_sentinel_of("class[A]"))
     end
 
     it "should remove all Component objects from the dependency graph" do
@@ -275,8 +339,8 @@ describe Puppet::RelationshipGraph do
       MANIFEST
 
       relationship_graph.edges_between(
-        completed_sentinel_of(relationship_graph, "class[A]"),
-        admissible_sentinel_of(relationship_graph, "b[testing]"))[0].label.
+        vertex_called(relationship_graph, completed_sentinel_of("class[A]")),
+        vertex_called(relationship_graph, admissible_sentinel_of("b[testing]")))[0].label.
         should == {:callback => :refresh, :event => :ALL_EVENTS}
     end
 
@@ -294,8 +358,8 @@ describe Puppet::RelationshipGraph do
       MANIFEST
 
       relationship_graph.edges_between(
-        completed_sentinel_of(relationship_graph, "class[A]"),
-        admissible_sentinel_of(relationship_graph, "b[testing]"))[0].label.
+        vertex_called(relationship_graph, completed_sentinel_of("class[A]")),
+        vertex_called(relationship_graph, admissible_sentinel_of("b[testing]")))[0].label.
         should be_empty
     end
 
@@ -313,9 +377,17 @@ describe Puppet::RelationshipGraph do
       MANIFEST
 
       relationship_graph.edges_between(
-        admissible_sentinel_of(relationship_graph, "b[testing]"),
+        vertex_called(relationship_graph, admissible_sentinel_of("b[testing]")),
         vertex_called(relationship_graph, "Notify[define b]"))[0].label.
         should == {:callback => :refresh, :event => :ALL_EVENTS}
     end
+  end
+
+  def vertex_called(graph, name)
+    graph.vertices.find { |v| v.ref =~ /#{Regexp.escape(name)}/ }
+  end
+
+  def stub_vertex(name)
+    stub "vertex #{name}", :ref => name
   end
 end

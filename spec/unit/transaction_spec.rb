@@ -6,13 +6,6 @@ require 'puppet_spec/compiler'
 require 'puppet/transaction'
 require 'fileutils'
 
-def without_warnings
-  flag = $VERBOSE
-  $VERBOSE = nil
-  yield
-  $VERBOSE = flag
-end
-
 describe Puppet::Transaction do
   include PuppetSpec::Files
   include PuppetSpec::Compiler
@@ -24,13 +17,13 @@ describe Puppet::Transaction do
   end
 
   def transaction_with_resource(resource)
-    transaction = Puppet::Transaction.new(catalog_with_resource(resource))
+    transaction = Puppet::Transaction.new(catalog_with_resource(resource), nil, Puppet::Graph::RandomPrioritizer.new)
     transaction
   end
 
   before do
     @basepath = make_absolute("/what/ever")
-    @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
+    @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, nil, Puppet::Graph::RandomPrioritizer.new)
   end
 
   it "should be able to look resource status up by resource reference" do
@@ -66,26 +59,26 @@ describe Puppet::Transaction do
 
   it "should use the provided report object" do
     report = Puppet::Transaction::Report.new("apply")
-    transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, report)
+    transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, report, nil)
 
     transaction.report.should == report
   end
 
   it "should create a report if none is provided" do
-    transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
+    transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, nil, nil)
 
     transaction.report.should be_kind_of Puppet::Transaction::Report
   end
 
   describe "when initializing" do
     it "should create an event manager" do
-      @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
+      @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, nil, nil)
       @transaction.event_manager.should be_instance_of(Puppet::Transaction::EventManager)
       @transaction.event_manager.transaction.should equal(@transaction)
     end
 
     it "should create a resource harness" do
-      @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
+      @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, nil, nil)
       @transaction.resource_harness.should be_instance_of(Puppet::Transaction::ResourceHarness)
       @transaction.resource_harness.transaction.should equal(@transaction)
     end
@@ -97,7 +90,7 @@ describe Puppet::Transaction do
 
       report.expects(:add_times).with(:config_retrieval, 5)
 
-      transaction = Puppet::Transaction.new(catalog, report)
+      transaction = Puppet::Transaction.new(catalog, report, nil)
     end
   end
 
@@ -107,7 +100,7 @@ describe Puppet::Transaction do
       @resource = Puppet::Type.type(:file).new :path => @basepath
       @catalog.add_resource(@resource)
 
-      @transaction = Puppet::Transaction.new(@catalog)
+      @transaction = Puppet::Transaction.new(@catalog, nil, Puppet::Graph::RandomPrioritizer.new)
       @transaction.stubs(:skip?).returns false
     end
 
@@ -136,7 +129,7 @@ describe Puppet::Transaction do
       @catalog.add_resource(@resource)
       @status = Puppet::Resource::Status.new(@resource)
 
-      @transaction = Puppet::Transaction.new(@catalog)
+      @transaction = Puppet::Transaction.new(@catalog, nil, Puppet::Graph::RandomPrioritizer.new)
       @transaction.event_manager.stubs(:queue_events)
     end
 
@@ -169,120 +162,6 @@ describe Puppet::Transaction do
       @transaction.evaluate
 
       expect(@transaction).to be_any_failed
-    end
-  end
-
-  describe "#eval_generate" do
-    let(:path) { tmpdir('eval_generate') }
-    let(:resource) { Puppet::Type.type(:file).new(:path => path, :recurse => true) }
-    let(:graph) { @transaction.relationship_graph }
-
-    def find_vertex(type, title)
-      graph.vertices.find {|v| v.type == type and v.title == title}
-    end
-
-    before :each do
-      @filenames = []
-
-      'a'.upto('c') do |x|
-        @filenames << File.join(path,x)
-
-        'a'.upto('c') do |y|
-          @filenames << File.join(path,x,y)
-          FileUtils.mkdir_p(File.join(path,x,y))
-
-          'a'.upto('c') do |z|
-            @filenames << File.join(path,x,y,z)
-            FileUtils.touch(File.join(path,x,y,z))
-          end
-        end
-      end
-
-      @transaction.catalog.add_resource(resource)
-    end
-
-    it "should add the generated resources to the catalog" do
-      @transaction.eval_generate(resource)
-
-      @filenames.each do |file|
-        @transaction.catalog.resource(:file, file).must be_a(Puppet::Type.type(:file))
-      end
-    end
-
-    it "should add a sentinel whit for the resource" do
-      @transaction.eval_generate(resource)
-
-      find_vertex(:whit, "completed_#{path}").must be_a(Puppet::Type.type(:whit))
-    end
-
-    it "should replace dependencies on the resource with dependencies on the sentinel" do
-      dependent = Puppet::Type.type(:notify).new(:name => "hello", :require => resource)
-
-      @transaction.catalog.add_resource(dependent)
-
-      res = find_vertex(resource.type, resource.title)
-      generated = find_vertex(dependent.type, dependent.title)
-
-      graph.should be_edge(res, generated)
-
-      @transaction.eval_generate(resource)
-
-      sentinel = find_vertex(:whit, "completed_#{path}")
-
-      graph.should be_edge(sentinel, generated)
-      graph.should_not be_edge(res, generated)
-    end
-
-    it "should add an edge from the nearest ancestor to the generated resource" do
-      @transaction.eval_generate(resource)
-
-      @filenames.each do |file|
-        v = find_vertex(:file, file)
-        p = find_vertex(:file, File.dirname(file))
-
-        graph.should be_edge(p, v)
-      end
-    end
-
-    it "should add an edge from each generated resource to the sentinel" do
-      @transaction.eval_generate(resource)
-
-      sentinel = find_vertex(:whit, "completed_#{path}")
-      @filenames.each do |file|
-        v = find_vertex(:file, file)
-
-        graph.should be_edge(v, sentinel)
-      end
-    end
-
-    it "should add an edge from the resource to the sentinel" do
-      @transaction.eval_generate(resource)
-
-      res = find_vertex(:file, path)
-      sentinel = find_vertex(:whit, "completed_#{path}")
-
-      graph.should be_edge(res, sentinel)
-    end
-
-    it "should return false if an error occured when generating resources" do
-      resource.stubs(:eval_generate).raises(Puppet::Error)
-
-      @transaction.eval_generate(resource).should == false
-    end
-
-    it "should return true if resources were generated" do
-      @transaction.eval_generate(resource).should == true
-    end
-
-    it "should not add a sentinel if no resources are generated" do
-      path2 = tmpfile('empty')
-      other_file = Puppet::Type.type(:file).new(:path => path2)
-
-      @transaction.catalog.add_resource(other_file)
-
-      @transaction.eval_generate(other_file).should == false
-
-      find_vertex(:whit, "completed_#{path2}").should be_nil
     end
   end
 
@@ -341,7 +220,7 @@ describe Puppet::Transaction do
     end
 
     it "should yield the resource even if eval_generate is called" do
-      @transaction.expects(:eval_generate).with(resource).returns true
+      Puppet::Transaction::AdditionalResourceGenerator.any_instance.expects(:eval_generate).with(resource).returns true
 
       yielded = false
       @transaction.evaluate do |res|
@@ -400,7 +279,7 @@ describe Puppet::Transaction do
 
   describe "when generating resources before traversal" do
     let(:catalog) { Puppet::Resource::Catalog.new }
-    let(:transaction) { Puppet::Transaction.new(catalog) }
+    let(:transaction) { Puppet::Transaction.new(catalog, nil, Puppet::Graph::RandomPrioritizer.new) }
     let(:generator) { Puppet::Type.type(:notify).new :title => "generator" }
     let(:generated) do
       %w[a b c].map { |name| Puppet::Type.type(:notify).new(:name => name) }
@@ -423,17 +302,6 @@ describe Puppet::Transaction do
       transaction.evaluate
     end
 
-    it "should skip generated resources that conflict with existing resources" do
-      duplicate = generated.first
-      catalog.add_resource(duplicate)
-
-      duplicate.expects(:finish).never
-
-      duplicate.expects(:info).with { |msg| msg =~ /Duplicate generated resource/ }
-
-      transaction.evaluate
-    end
-
     it "should copy all tags to the newly generated resources" do
       generator.tag('one', 'two')
 
@@ -450,7 +318,7 @@ describe Puppet::Transaction do
       @resource = Puppet::Type.type(:notify).new :name => "foo"
       @catalog = Puppet::Resource::Catalog.new
       @resource.catalog = @catalog
-      @transaction = Puppet::Transaction.new(@catalog)
+      @transaction = Puppet::Transaction.new(@catalog, nil, nil)
     end
 
     it "should skip resource with missing tags" do
@@ -514,7 +382,7 @@ describe Puppet::Transaction do
       @resource = Puppet::Type.type(:notify).new :name => "foo"
       @catalog = Puppet::Resource::Catalog.new
       @resource.catalog = @catalog
-      @transaction = Puppet::Transaction.new(@catalog)
+      @transaction = Puppet::Transaction.new(@catalog, nil, nil)
 
       @transaction.stubs(:ignore_tags?).returns false
     end
@@ -546,7 +414,7 @@ describe Puppet::Transaction do
       @resource = Puppet::Type.type(:notify).new :name => "foo"
       @catalog = Puppet::Resource::Catalog.new
       @catalog.add_resource(@resource)
-      @transaction = Puppet::Transaction.new(@catalog)
+      @transaction = Puppet::Transaction.new(@catalog, nil, Puppet::Graph::RandomPrioritizer.new)
     end
 
     it "should always schedule resources if 'ignoreschedules' is set" do
@@ -566,7 +434,7 @@ describe Puppet::Transaction do
 
   describe "when prefetching" do
     let(:catalog) { Puppet::Resource::Catalog.new }
-    let(:transaction) { Puppet::Transaction.new(catalog) }
+    let(:transaction) { Puppet::Transaction.new(catalog, nil, nil) }
     let(:resource) { Puppet::Type.type(:sshkey).new :title => "foo", :name => "bar", :type => :dsa, :key => "eh", :provider => :parsed }
     let(:resource2) { Puppet::Type.type(:package).new :title => "blah", :provider => "apt" }
 
@@ -613,12 +481,22 @@ describe Puppet::Transaction do
   describe 'when checking application run state' do
     before do
       @catalog = Puppet::Resource::Catalog.new
-      @transaction = Puppet::Transaction.new(@catalog)
+      @transaction = Puppet::Transaction.new(@catalog, nil, Puppet::Graph::RandomPrioritizer.new)
     end
 
-    it 'should return true for :stop_processing? if Puppet::Application.stop_requested? is true' do
-      Puppet::Application.stubs(:stop_requested?).returns(true)
-      @transaction.stop_processing?.should be_true
+    context "when stop is requested" do
+      before :each do
+        Puppet::Application.stubs(:stop_requested?).returns(true)
+      end
+
+      it 'should return true for :stop_processing?' do
+        @transaction.should be_stop_processing
+      end
+
+      it 'always evaluates non-host_config catalogs' do
+        @catalog.host_config = false
+        @transaction.should_not be_stop_processing
+      end
     end
 
     it 'should return false for :stop_processing? if Puppet::Application.stop_requested? is false' do
@@ -692,12 +570,26 @@ describe Puppet::Transaction do
     transaction.report.status.should == 'changed'
     transaction.report.resource_statuses['Notify[one]'].should be_changed
   end
+
+  describe "when interrupted" do
+    it "marks unprocessed resources as skipped" do
+      Puppet::Application.stop!
+
+      transaction = apply_compiled_manifest(<<-MANIFEST)
+        notify { a: } ->
+        notify { b: }
+      MANIFEST
+
+      transaction.report.resource_statuses['Notify[a]'].should be_skipped
+      transaction.report.resource_statuses['Notify[b]'].should be_skipped
+    end
+  end
 end
 
 describe Puppet::Transaction, " when determining tags" do
   before do
     @config = Puppet::Resource::Catalog.new
-    @transaction = Puppet::Transaction.new(@config)
+    @transaction = Puppet::Transaction.new(@config, nil, nil)
   end
 
   it "should default to the tags specified in the :tags setting" do
