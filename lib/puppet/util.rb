@@ -1,7 +1,6 @@
 # A module to collect utility functions.
 
 require 'English'
-require 'puppet/external/lock'
 require 'puppet/error'
 require 'puppet/util/execution_stub'
 require 'uri'
@@ -335,6 +334,7 @@ module Util
 
   # Because IO#binread is only available in 1.9
   def binread(file)
+    Puppet.deprecation_warning("Puppet::Util.binread is deprecated. Read the file without this method as it will be removed in a future version.")
     File.open(file, 'rb') { |f| f.read }
   end
   module_function :binread
@@ -472,7 +472,6 @@ module Util
     file
   end
   module_function :replace_file
-
 
   # Executes a block of code, wrapped with some special exception handling.  Causes the ruby interpreter to
   #  exit if the block throws an exception.

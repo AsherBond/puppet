@@ -8,11 +8,7 @@ class Puppet::SSL::Inventory
   # Add a certificate to our inventory.
   def add(cert)
     cert = cert.content if cert.is_a?(Puppet::SSL::Certificate)
-
-    # Create our file, if one does not already exist.
-    rebuild unless FileTest.exist?(@path)
-
-    Puppet.settings.write(:cert_inventory, "a") do |f|
+    Puppet.settings.setting(:cert_inventory).open("a") do |f|
       f.print format(cert)
     end
   end
@@ -32,11 +28,11 @@ class Puppet::SSL::Inventory
   def rebuild
     Puppet.notice "Rebuilding inventory file"
 
-    Puppet.settings.write(:cert_inventory) do |f|
-      f.print "# Inventory of signed certificates\n# SERIAL NOT_BEFORE NOT_AFTER SUBJECT\n"
+    Puppet.settings.setting(:cert_inventory).open('w') do |f|
+      Puppet::SSL::Certificate.indirection.search("*").each do |cert|
+        f.print format(cert.content)
+      end
     end
-
-    Puppet::SSL::Certificate.indirection.search("*").each { |cert| add(cert) }
   end
 
   # Find the serial number for a given certificate.

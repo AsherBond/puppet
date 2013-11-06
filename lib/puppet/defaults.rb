@@ -56,6 +56,15 @@ module Puppet
   )
 
   define_settings(:main,
+    :priority => {
+      :default => nil,
+      :type    => :priority,
+      :desc    => "The scheduling priority of the process.  Valid values are 'high',\n" +
+                  "'normal', 'low', or 'idle', which are mapped to platform specific\n" +
+                  "values.  The priority can also be specified as an integer value and\n" +
+                  "will be passed as is, e.g. -5.  Puppet must be running as a privileged\n" +
+                  "user in order to increase scheduling priority.",
+    },
     :trace => {
         :default  => false,
         :type     => :boolean,
@@ -1338,6 +1347,15 @@ EOT
       :desc       => "From where to retrieve plugins.  The standard Puppet `file` type
       is used for retrieval, so anything that is a valid file source can
       be used here.",
+    },
+    :pluginfactdest => {
+      :type     => :directory,
+      :default  => "$vardir/facts.d",
+      :desc     => "Where Puppet should store external facts that are being handled by pluginsync",
+    },
+    :pluginfactsource => {
+      :default  => "puppet://$server/pluginfacts",
+      :desc     => "Where to retrieve external facts for pluginsync",
     },
     :pluginsync => {
       :default    => true,
