@@ -26,6 +26,18 @@ module Puppet::Pops::Evaluator::Runtime3Support
   # setting (extraction is somewhat expensive since 3x requires line instead of offset).
   #
   def set_variable(name, value, o, scope)
+    # Scope also checks this but requires that location information are passed as options.
+    # Those are expensive to calculate and a test is instead made here to enable failing with better information.
+    # The error is not specific enough to allow catching it - need to check the actual message text.
+    # TODO: Improve the messy implementation in Scope.
+    #
+    if scope.bound?(name)
+      if Puppet::Parser::Scope::RESERVED_VARIABLE_NAMES.include?(name)
+        fail(Puppet::Pops::Issues::ILLEGAL_RESERVED_ASSIGNMENT, o, {:name => name} )
+      else
+        fail(Puppet::Pops::Issues::ILLEGAL_REASSIGNMENT, o, {:name => name} )
+      end
+    end
     scope.setvar(name, value)
   end
 
@@ -200,8 +212,8 @@ module Puppet::Pops::Evaluator::Runtime3Support
   end
 
   def call_function(name, args, o, scope)
-    # Should arguments be mapped from :undef to '' (3x functions expects this - but it is bad)
-    mapped_args = args.map {|a| a == :undef ? '' : a }
+    # Arguments must be mapped since functions are unaware of the new and magical creatures in 4x.
+    mapped_args = args.map {|a| convert(a, scope) }
     scope.send("function_#{name}", mapped_args)
   end
 
@@ -367,6 +379,10 @@ module Puppet::Pops::Evaluator::Runtime3Support
     @@convert_visitor.visit_this_1(self, o, scope)
   end
 
+  def convert_NilClass(o, scope)
+    :undef
+  end
+
   def convert_Object(o, scope)
     o
   end
@@ -387,9 +403,17 @@ module Puppet::Pops::Evaluator::Runtime3Support
     o.inspect
   end
 
+  def convert_Symbol(o, scope)
+    case o
+    when :undef
+      ''  # 3x wants :undef as empty string in function
+    else
+      o   # :default, and all others are verbatim since they are new in future evaluator
+    end
+  end
+
   def convert_PAbstractType(o, scope)
-    # Convert all other types to their string forms
-    o.to_s
+    o
   end
 
   def convert_PResourceType(o,scope)
@@ -444,4 +468,5 @@ module Puppet::Pops::Evaluator::Runtime3Support
       raise ArgumentError, "Internal Error: Configuration of runtime error handling wrong: should have raised exception"
     end
   end
+
 end
