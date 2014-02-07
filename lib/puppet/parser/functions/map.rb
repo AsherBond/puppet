@@ -25,19 +25,70 @@ Puppet::Parser::Functions::newfunction(
         # Turns hash into array of keys
         $a.map |$x| { $x[0] }
 
+  When using a block with 2 parameters, the element's index (starting from 0) for an array, and the key for a hash
+  is given to the block's first parameter, and the value is given to the block's second parameter.args.
+
+  *Examples*
+
+        # Turns hash into array of values
+        $a.map |$key,$val|{ $val }
+
+        # Turns hash into array of keys
+        $a.map |$key,$val|{ $key }
+
   - Since 3.4 for Array and Hash
-  - Since 3.5 for other enumerables
+  - Since 3.5 for other enumerables, and support for blocks with 2 parameters
   - requires `parser = future`
   ENDHEREDOC
+
+  def map_Enumerator(enumerator, scope, pblock, serving_size)
+    result = []
+    index = 0
+    if serving_size == 1
+      begin
+        loop { result << pblock.call(scope, enumerator.next) }
+      rescue StopIteration
+      end
+    else
+      begin
+        loop do
+          result << pblock.call(scope, index, enumerator.next)
+          index = index +1
+        end
+      rescue StopIteration
+      end
+    end
+    result
+  end
 
   receiver = args[0]
   pblock = args[1]
 
   raise ArgumentError, ("map(): wrong argument type (#{pblock.class}; must be a parameterized block.") unless pblock.respond_to?(:puppet_lambda)
-
-  enum = Puppet::Pops::Types::Enumeration.enumerator(receiver)
-  unless enum
-    raise ArgumentError, ("map(): wrong argument type (#{receiver.class}; must be something enumerable.")
+  serving_size = pblock.parameter_count
+  if serving_size == 0
+    raise ArgumentError, "map(): block must define at least one parameter; value."
   end
-  enum.map {|x| pblock.call(self, x) }
+  case receiver
+  when Hash
+    if serving_size > 2
+      raise ArgumentError, "map(): block must define at most two parameters; key, value"
+    end
+    if serving_size == 1
+      result = receiver.map {|x, y| pblock.call(self, [x, y]) }
+    else
+      result = receiver.map {|x, y| pblock.call(self, x, y) }
+    end
+  else
+    if serving_size > 2
+      raise ArgumentError, "map(): block must define at most two parameters; index, value"
+    end
+
+    enum = Puppet::Pops::Types::Enumeration.enumerator(receiver)
+    unless enum
+      raise ArgumentError, ("map(): wrong argument type (#{receiver.class}; must be something enumerable.")
+    end
+    result = map_Enumerator(enum, self, pblock, serving_size)
+  end
+  result
 end
