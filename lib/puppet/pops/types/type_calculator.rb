@@ -393,6 +393,7 @@ class Puppet::Pops::Types::TypeCalculator
     o.each_with_index do |element, index|
        return false unless instance_of(t.types[index] || t.types[-1], element)
     end
+    true
   end
 
   def instance_of_PStructType(t, o)
@@ -428,6 +429,13 @@ class Puppet::Pops::Types::TypeCalculator
   def instance_of_PVariantType(t, o)
     # instance of variant if o is instance? of any of variant's types
     t.types.any? { |option_t| instance_of(option_t, o) }
+  end
+
+  # Answers 'is o an instance of type t'
+  # @api public
+  #
+  def self.instance?(t, o)
+    singleton.instance_of(t,o)
   end
 
   # Answers 'is o an instance of type t'
