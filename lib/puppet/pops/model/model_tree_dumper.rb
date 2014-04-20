@@ -237,12 +237,6 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
     result
   end
 
-  def dump_FunctionDefinition o
-    result = dump_NamedDefinition(o)
-    result[0] = 'function'
-    result
-  end
-
   def dump_ResourceOverrideExpression o
     result = ["override", do_dump(o.resources), :indent]
     o.operations.each do |p|
@@ -254,10 +248,11 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
 
   # Produces parameters as name, or (= name value)
   def dump_Parameter o
+    name_part = "#{o.name}"
     if o.value
-      ["=", o.name, do_dump(o.value)]
+      ["=", name_part, do_dump(o.value)]
     else
-      o.name
+      name_part
     end
   end
 
