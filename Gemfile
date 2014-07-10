@@ -27,7 +27,7 @@ gem "puppet", :path => File.dirname(__FILE__), :require => false
 gem "facter", *location_for(ENV['FACTER_LOCATION'] || ['> 1.6', '< 3'])
 gem "hiera", *location_for(ENV['HIERA_LOCATION'] || '~> 1.0')
 gem "rake", "10.1.1", :require => false
-gem "rgen", "0.6.5", :require => false
+gem "rgen", "0.7.0", :require => false
 
 group(:development, :test) do
   gem "rspec", "~> 2.11.0", :require => false
@@ -60,8 +60,10 @@ group(:extra) do
   gem "rack", "~> 1.4", :require => false
   gem "activerecord", '~> 3.2', :require => false
   gem "couchrest", '~> 1.0', :require => false
+  gem "rest-client", '1.6.7', :require => false
   gem "net-ssh", '~> 2.1', :require => false
   gem "puppetlabs_spec_helper", :require => false
+  gem "rest-client", '1.6.7', :require => false
   gem "stomp", :require => false
   gem "tzinfo", :require => false
   case RUBY_PLATFORM
