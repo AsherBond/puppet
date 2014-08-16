@@ -5,6 +5,8 @@
 # @api private
 module Puppet::Pops::Evaluator::Runtime3Support
 
+  NAME_SPACE_SEPARATOR = '::'.freeze
+
   # Fails the evaluation of _semantic_ with a given issue.
   #
   # @param issue [Puppet::Pops::Issue] the issue to report
@@ -72,7 +74,11 @@ module Puppet::Pops::Evaluator::Runtime3Support
     # Not ideal, scope should support numeric lookup directly instead.
     # TODO: consider fixing scope
     catch(:undefined_variable) {
-      return scope.lookupvar(name.to_s)
+      x = scope.lookupvar(name.to_s)
+      # Must convert :undef back to nil - this can happen when an undefined variable is used in a
+      # parameter's default value expression - there nil must be :undef to work with the rest of 3x.
+      # Now that the value comes back to 4x it is changed to nil.
+      return (x == :undef) ? nil : x
     }
     # It is always ok to reference numeric variables even if they are not assigned. They are always undef
     # if not set by a match expression.
@@ -256,6 +262,8 @@ module Puppet::Pops::Evaluator::Runtime3Support
     )
   end
 
+  CLASS_STRING = 'class'.freeze
+
   def create_resources(o, scope, virtual, exported, type_name, resource_titles, evaluated_parameters)
 
     # TODO: Unknown resource causes creation of Resource to fail with ArgumentError, should give
@@ -290,7 +298,7 @@ module Puppet::Pops::Evaluator::Runtime3Support
           resource.resource_type.instantiate_resource(scope, resource)
         end
         scope.compiler.add_resource(scope, resource)
-        scope.compiler.evaluate_classes([resource_title], scope, false, true) if fully_qualified_type == 'class'
+        scope.compiler.evaluate_classes([resource_title], scope, false, true) if fully_qualified_type == CLASS_STRING
         # Turn the resource into a PType (a reference to a resource type)
         # weed out nil's
         resource_to_ptype(resource)
@@ -311,7 +319,7 @@ module Puppet::Pops::Evaluator::Runtime3Support
   # Capitalizes each segment of a qualified name
   #
   def capitalize_qualified_name(name)
-    name.split(/::/).map(&:capitalize).join('::')
+    name.split(/::/).map(&:capitalize).join(NAME_SPACE_SEPARATOR)
   end
 
   # Creates resource overrides for all resource type objects in evaluated_resources. The same set of
@@ -382,7 +390,8 @@ module Puppet::Pops::Evaluator::Runtime3Support
 
   def resource_to_ptype(resource)
     nil if resource.nil?
-    type_calculator.infer(resource)
+    # inference returns the meta type since the 3x Resource is an alternate way to describe a type
+    type_calculator.infer(resource).type
   end
 
   # This is the same type of "truth" as used in the current Puppet DSL.
@@ -423,6 +432,11 @@ module Puppet::Pops::Evaluator::Runtime3Support
     undef_value
   end
 
+  def convert_String(o, scope, undef_value)
+    # although wasteful, needed because user code may mutate these strings in Resources
+    o.frozen? ? o.dup : o
+  end
+
   def convert_Object(o, scope, undef_value)
     o
   end
@@ -453,7 +467,7 @@ module Puppet::Pops::Evaluator::Runtime3Support
     end
   end
 
-  def convert_PAbstractType(o, scope, undef_value)
+  def convert_PAnyType(o, scope, undef_value)
     o
   end
 
@@ -527,6 +541,10 @@ module Puppet::Pops::Evaluator::Runtime3Support
       else
         p[Issues::EMPTY_RESOURCE_SPECIALIZATION] = :ignore
       end
+
+      # Store config issues, ignore or warning
+      p[Issues::RT_NO_STORECONFIGS_EXPORT]    = Puppet[:storeconfigs] ? :ignore : :warning
+      p[Issues::RT_NO_STORECONFIGS]           = Puppet[:storeconfigs] ? :ignore : :warning
     end
   end
 

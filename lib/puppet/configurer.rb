@@ -8,9 +8,9 @@ require 'securerandom'
 class Puppet::Configurer
   require 'puppet/configurer/fact_handler'
   require 'puppet/configurer/plugin_handler'
+  require 'puppet/configurer/downloader_factory'
 
   include Puppet::Configurer::FactHandler
-  include Puppet::Configurer::PluginHandler
 
   # For benchmarking
   include Puppet::Util
@@ -44,13 +44,14 @@ class Puppet::Configurer
     end
   end
 
-  def initialize
+  def initialize(factory = Puppet::Configurer::DownloaderFactory.new)
     Puppet.settings.use(:main, :ssl, :agent)
 
     @running = false
     @splayed = false
     @environment = Puppet[:environment]
     @transaction_uuid = SecureRandom.uuid
+    @handler = Puppet::Configurer::PluginHandler.new(factory)
   end
 
   # Get the remote catalog, yo.  Returns nil if no catalog can be found.
@@ -125,6 +126,17 @@ class Puppet::Configurer
   # This just passes any options on to the catalog,
   # which accepts :tags and :ignoreschedules.
   def run(options = {})
+    pool = Puppet::Network::HTTP::Pool.new(Puppet[:http_keepalive_timeout])
+    begin
+      Puppet.override(:http_pool => pool) do
+        run_internal(options)
+      end
+    ensure
+      pool.close
+    end
+  end
+
+  def run_internal(options)
     # We create the report pre-populated with default settings for
     # environment and transaction_uuid very early, this is to ensure
     # they are sent regardless of any catalog compilation failures or
@@ -225,6 +237,7 @@ class Puppet::Configurer
     send_report(report)
     Puppet.pop_context
   end
+  private :run_internal
 
   def send_report(report)
     puts report.summary if Puppet[:summarize]
@@ -282,5 +295,9 @@ class Puppet::Configurer
   rescue Exception => detail
     Puppet.log_exception(detail, "Could not retrieve catalog from remote server: #{detail}")
     return nil
+  end
+
+  def download_plugins(remote_environment_for_plugins)
+    @handler.download_plugins(remote_environment_for_plugins)
   end
 end

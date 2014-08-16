@@ -25,8 +25,8 @@ module Puppet
         :hook    => proc do |value|
           return unless value
           raise ArgumentError, 'facter has already evaluated facts.' if Facter.instance_variable_get(:@collection)
-          require 'puppet/facts'
-          raise ArgumentError, 'cfacter version 0.2.0 or later is not installed.' unless Puppet::Facts.replace_facter
+          raise ArgumentError, 'cfacter version 0.2.0 or later is not installed.' unless Puppet.features.cfacter?
+          CFacter.initialize
         end
     }
   )
@@ -409,6 +409,17 @@ module Puppet
       end,
       :desc       => "The password for the user of an authenticated HTTP proxy. Requires http_proxy_user.
       NOTE: Special characters must be escaped or encoded for URL compliance",
+    },
+    :http_keepalive_timeout => {
+      :default    => "4s",
+      :type       => :duration,
+      :desc       => "The maximum amount of time a persistent HTTP connection can remain idle in the connection pool, before it is closed.  This timeout should be shorter than the keepalive timeout used on the HTTP server, e.g. Apache KeepAliveTimeout directive.
+      #{AS_DURATION}"
+    },
+    :http_debug => {
+      :default    => false,
+      :type       => :boolean,
+      :desc       => "Whether to write HTTP request and responses to stderr. This should never be used in a production environment."
     },
     :filetimeout => {
       :default    => "15s",
@@ -1022,7 +1033,10 @@ EOT
       :mode => 0660,
       :desc => "This file is literally never used, although Puppet may create it
         as an empty file. For more context, see the `puppetdlog` setting and
-        puppet master's `--logdest` command line option."
+        puppet master's `--logdest` command line option.
+
+        This setting is deprecated and will be removed in a future version of Puppet.",
+      :deprecated => :completely
     },
     :masterhttplog => {
       :default => "$logdir/masterhttp.log",

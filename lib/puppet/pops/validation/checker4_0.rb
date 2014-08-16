@@ -150,9 +150,15 @@ class Puppet::Pops::Validation::Checker4_0
   end
 
   def check_AssignmentExpression(o)
-    acceptor.accept(Issues::UNSUPPORTED_OPERATOR, o, {:operator => o.operator}) unless [:'=', :'+=', :'-='].include? o.operator
-    assign(o.left_expr)
-    rvalue(o.right_expr)
+    case o.operator
+    when :'='
+      assign(o.left_expr)
+      rvalue(o.right_expr)
+    when :'+=', :'-='
+      acceptor.accept(Issues::APPENDS_DELETES_NO_LONGER_SUPPORTED, o, {:operator => o.operator})
+    else
+      acceptor.accept(Issues::UNSUPPORTED_OPERATOR, o, {:operator => o.operator})
+    end
   end
 
   # Checks that operation with :+> is contained in a ResourceOverride or Collector.
@@ -172,6 +178,17 @@ class Puppet::Pops::Validation::Checker4_0
       end
     end
     rvalue(o.value_expr)
+  end
+
+  def check_AttributesOperation(o)
+    # Append operator use is constrained
+    parent = o.eContainer
+    parent = parent.eContainer unless parent.nil?
+    unless parent.is_a?(Model::ResourceExpression)
+      acceptor.accept(Issues::UNSUPPORTED_OPERATOR_IN_CONTEXT, o, :operator=>'* =>')
+    end
+
+    rvalue(o.expr)
   end
 
   def check_BinaryExpression(o)
@@ -407,19 +424,22 @@ class Puppet::Pops::Validation::Checker4_0
   end
 
   def check_ResourceExpression(o)
-    # A resource expression must have a lower case NAME as its type e.g. 'file { ... }'
-    unless o.type_name.is_a? Model::QualifiedName
-      acceptor.accept(Issues::ILLEGAL_EXPRESSION, o.type_name, :feature => 'resource type', :container => o)
-    end
+    # TODO: Can no longer be asserted
 
-    # This is a runtime check - the model is valid, but will have runtime issues when evaluated
-    # and storeconfigs is not set.
-    if acceptor.will_accept?(Issues::RT_NO_STORECONFIGS) && o.exported
-      acceptor.accept(Issues::RT_NO_STORECONFIGS_EXPORT, o)
-    end
+    ## A resource expression must have a lower case NAME as its type e.g. 'file { ... }'
+    #unless o.type_name.is_a? Model::QualifiedName
+    #  acceptor.accept(Issues::ILLEGAL_EXPRESSION, o.type_name, :feature => 'resource type', :container => o)
+    #end
+
   end
 
   def check_ResourceDefaultsExpression(o)
+    if o.form && o.form != :regular
+      acceptor.accept(Issues::NOT_VIRTUALIZEABLE, o)
+    end
+  end
+
+  def check_ResourceOverrideExpression(o)
     if o.form && o.form != :regular
       acceptor.accept(Issues::NOT_VIRTUALIZEABLE, o)
     end
@@ -567,10 +587,6 @@ class Puppet::Pops::Validation::Checker4_0
   # Implement specific rvalue checks for those that are not.
   #
   def rvalue_Expression(o); end
-
-  def rvalue_ResourceDefaultsExpression(o); acceptor.accept(Issues::NOT_RVALUE, o) ; end
-
-  def rvalue_ResourceOverrideExpression(o); acceptor.accept(Issues::NOT_RVALUE, o) ; end
 
   def rvalue_CollectExpression(o)         ; acceptor.accept(Issues::NOT_RVALUE, o) ; end
 
