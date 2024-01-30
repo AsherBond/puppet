@@ -1,9 +1,13 @@
+# frozen_string_literal: true
+
 # This class is used to build {Puppet::Interface::Action actions}.
 # When an action is defined with
 # {Puppet::Interface::ActionManager#action} the block is evaluated
 # within the context of a new instance of this class.
 # @api public
 class Puppet::Interface::ActionBuilder
+  extend Forwardable
+
   # The action under construction
   # @return [Puppet::Interface::Action]
   # @api private
@@ -14,7 +18,16 @@ class Puppet::Interface::ActionBuilder
   # @api private
   def self.build(face, name, &block)
     raise "Action #{name.inspect} must specify a block" unless block
+
     new(face, name, &block).action
+  end
+
+  # Deprecates the action
+  # @return [void]
+  # @api private
+  # @dsl Faces
+  def deprecate
+    @action.deprecate
   end
 
   # Ideally the method we're defining here would be added to the action, and a
@@ -48,12 +61,15 @@ class Puppet::Interface::ActionBuilder
   # @todo this needs more
   # @dsl Faces
   def when_rendering(type = nil, &block)
-    if type.nil? then           # the default error message sucks --daniel 2011-04-18
-      raise ArgumentError, 'You must give a rendering format to when_rendering'
+    if type.nil? then # the default error message sucks --daniel 2011-04-18
+      # TRANSLATORS 'when_rendering' is a method name and should not be translated
+      raise ArgumentError, _('You must give a rendering format to when_rendering')
     end
     if block.nil? then
-      raise ArgumentError, 'You must give a block to when_rendering'
+      # TRANSLATORS 'when_rendering' is a method name and should not be translated
+      raise ArgumentError, _('You must give a block to when_rendering')
     end
+
     @action.set_rendering_method_for(type, block)
   end
 
@@ -61,7 +77,7 @@ class Puppet::Interface::ActionBuilder
   # code to do so.  One or more strings are given, in the style of
   # OptionParser (see example). These strings are parsed to derive a
   # name for the option. Any `-` characters within the option name (ie
-  # excluding the intial `-` or `--` for an option) will be translated
+  # excluding the initial `-` or `--` for an option) will be translated
   # to `_`.The first long option will be used as the name, and the rest
   # are retained as aliases. The original form of the option is used
   # when invoking the face, the translated form is used internally.
@@ -111,11 +127,15 @@ class Puppet::Interface::ActionBuilder
   # Sets the default rendering format
   # @api private
   def render_as(value = nil)
-    value.nil? and raise ArgumentError, "You must give a rendering format to render_as"
+    if value.nil?
+      # TRANSLATORS 'render_as' is a method name and should not be translated
+      raise ArgumentError, _("You must give a rendering format to render_as")
+    end
 
     formats = Puppet::Network::FormatHandler.formats
     unless formats.include? value
-      raise ArgumentError, "#{value.inspect} is not a valid rendering format: #{formats.sort.join(", ")}"
+      raise ArgumentError, _("%{value} is not a valid rendering format: %{formats_list}") %
+                           { value: value.inspect, formats_list: formats.sort.join(", ") }
     end
 
     @action.render_as = value
@@ -124,26 +144,24 @@ class Puppet::Interface::ActionBuilder
   # Metaprogram the simple DSL from the target class.
   Puppet::Interface::Action.instance_methods.grep(/=$/).each do |setter|
     next if setter =~ /^=/
+
     property = setter.to_s.chomp('=')
 
     unless method_defined? property
-      # Using eval because the argument handling semantics are less awful than
-      # when we use the define_method/block version.  The later warns on older
-      # Ruby versions if you pass the wrong number of arguments, but carries
-      # on, which is totally not what we want. --daniel 2011-04-18
-      eval <<-METHOD
-        def #{property}(value)
-          @action.#{property} = value
-        end
-      METHOD
+      # ActionBuilder#<property> delegates to Action#<setter>
+      def_delegator :@action, setter, property
     end
   end
 
   private
+
   def initialize(face, name, &block)
     @face   = face
     @action = Puppet::Interface::Action.new(face, name)
     instance_eval(&block)
-    @action.when_invoked or raise ArgumentError, "actions need to know what to do when_invoked; please add the block"
+    unless @action.when_invoked
+      # TRANSLATORS 'when_invoked' is a method name and should not be translated and 'block' is a Ruby code block
+      raise ArgumentError, _("actions need to know what to do when_invoked; please add the block")
+    end
   end
 end

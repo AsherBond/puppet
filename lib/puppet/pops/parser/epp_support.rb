@@ -1,9 +1,12 @@
+# frozen_string_literal: true
+
+module Puppet::Pops
+module Parser
 # This module is an integral part of the Lexer.
 # It handles scanning of EPP (Embedded Puppet), a form of string/expression interpolation similar to ERB.
 #
 require 'strscan'
-module Puppet::Pops::Parser::EppSupport
-
+module EppSupport
   TOKEN_RENDER_STRING = [:RENDER_STRING, nil, 0]
   TOKEN_RENDER_EXPR   = [:RENDER_EXPR, nil, 0]
 
@@ -12,7 +15,7 @@ module Puppet::Pops::Parser::EppSupport
   #
   def fullscan_epp
     result = []
-    scan_epp {|token, value| result.push([token, value]) }
+    scan_epp { |token, value| result.push([token, value]) }
     result
   end
 
@@ -33,7 +36,7 @@ module Puppet::Pops::Parser::EppSupport
     ctx   = @lexing_context
     queue = @token_queue
 
-    lex_error "Internal Error: No string or file given to lexer to process." unless scn
+    lex_error(Issues::EPP_INTERNAL_ERROR, :error => 'No string or file given to lexer to process.') unless scn
 
     ctx[:epp_mode] = :text
     enqueue_completed([:EPP_START, nil, 0], 0)
@@ -42,19 +45,20 @@ module Puppet::Pops::Parser::EppSupport
 
     # This is the lexer's main loop
     until queue.empty? && scn.eos? do
-      if token = queue.shift || lex_token
-        yield [ ctx[:after] = token[0], token[1] ]
+      token = queue.shift || lex_token
+      if token
+        yield [ctx[:after] = token[0], token[1]]
       end
     end
     if ctx[:epp_open_position]
-      lex_error("Unbalanced epp tag, reached <eof> without closing tag.", ctx[:epp_position])
+      lex_error(Issues::EPP_UNBALANCED_TAG, {}, ctx[:epp_position])
     end
 
     # Signals end of input
     yield [false, false]
   end
 
-  def interpolate_epp(skip_leading=false)
+  def interpolate_epp(skip_leading = false)
     scn = @scanner
     ctx = @lexing_context
     eppscanner = EppScanner.new(scn)
@@ -65,7 +69,9 @@ module Puppet::Pops::Parser::EppSupport
     case eppscanner.mode
     when :text
       # Should be at end of scan, or something is terribly wrong
-      lex_error("Internal error: template scanner returns text mode and is not and end of input") unless @scanner.eos?
+      unless @scanner.eos?
+        lex_error(Issues::EPP_INTERNAL_ERROR, :error => 'template scanner returns text mode and is not and end of input')
+      end
       if s
         # s may be nil if scanned text ends with an epp tag (i.e. no trailing text).
         enqueue_completed([:RENDER_STRING, s, scn.pos - before], before)
@@ -74,7 +80,7 @@ module Puppet::Pops::Parser::EppSupport
       # do nothing else, scanner is at the end
 
     when :error
-      lex_error(eppscanner.message())
+      lex_error(eppscanner.issue)
 
     when :epp
       # It is meaningless to render empty string segments, and it is harmful to do this at
@@ -97,7 +103,7 @@ module Puppet::Pops::Parser::EppSupport
       ctx[:epp_mode] = :expr
       ctx[:epp_open_position] = scn.pos
     else
-      lex_error("Internal Error, Unknown mode #{eppscanner.mode} returned by template scanner")
+      lex_error(Issues::EPP_INTERNAL_ERROR, :error => "Unknown mode #{eppscanner.mode} returned by template scanner")
     end
     nil
   end
@@ -119,7 +125,7 @@ module Puppet::Pops::Parser::EppSupport
   # The scanner supports
   # * scanning text until <%, <%-, <%=
   # * while scanning text:
-  #   * tokens <%% and %%> are translated to <% and %> respetively and is returned as text.
+  #   * tokens <%% and %%> are translated to <% and %>, respectively, and is returned as text.
   #   * tokens <%# and %> (or ending with -%>) and the enclosed text is a comment and is not included in the returned text
   #   * text following a comment that ends with -%> gets trailing whitespace (up to and including a line break) trimmed
   #     and this whitespace is not included in the returned text.
@@ -144,8 +150,8 @@ module Puppet::Pops::Parser::EppSupport
     #
     attr_reader :mode
 
-    # An error message if `mode == :error`, `nil` otherwise.
-    attr_reader :message
+    # An error issue if `mode == :error`, `nil` otherwise.
+    attr_reader :issue
 
     # If the first scan should skip leading whitespace (typically detected by the pp lexer when the
     # pp mode end-token is found (i.e. `-%>`) and then passed on to the scanner.
@@ -159,22 +165,30 @@ module Puppet::Pops::Parser::EppSupport
       @scanner = scanner
     end
 
+    # Here for backwards compatibility.
+    # @deprecated Use issue instead
+    # @return [String] the issue message
+    def message
+      @issue.nil? ? nil : @issue.format
+    end
+
     # Scans from the current position in the configured scanner, advances this scanner's position until the end
     # of the input, or to the first position after a mode switching token (`<%`, `<%-` or `<%=`). Number of processed
     # lines and continuation mode can be obtained via {#lines}, and {#mode}.
     #
     # @return [String, nil] the scanned and processed text, or nil if at the end of the input.
     #
-    def scan(skip_leading=false)
+    def scan(skip_leading = false)
       @mode = :text
       @skip_leading = skip_leading
 
       return nil if scanner.eos?
-      s = ""
+
+      s = ''.dup
       until scanner.eos?
         part = @scanner.scan_until(/(<%)|\z/)
         if @skip_leading
-          part.gsub!(/^[ \t]*\r?\n?/,'')
+          part.sub!(/^[ \t]*\r?(?:\n|\z)?/, '')
           @skip_leading = false
         end
         # The spec for %%> is to transform it into a literal %>. This is done here, as %%> otherwise would go
@@ -189,9 +203,7 @@ module Puppet::Pops::Parser::EppSupport
           # if s ends with <% then this is an error (unbalanced <% %>)
           if s.end_with? "<%"
             @mode = :error
-            @message = "Unbalanced embedded expression - opening <% and reaching end of input"
-          else
-            mode = :epp
+            @issue = Issues::EPP_UNBALANCED_EXPRESSION
           end
           return s
 
@@ -199,7 +211,7 @@ module Puppet::Pops::Parser::EppSupport
           # trim trailing whitespace on same line from accumulated s
           # return text and signal switch to pp mode
           @scanner.getch # drop the -
-          s.gsub!(/\r?\n?[ \t]*<%\z/, '')
+          s.sub!(/[ \t]*<%\z/, '')
           @mode = :epp
           return s
 
@@ -220,6 +232,7 @@ module Puppet::Pops::Parser::EppSupport
 
         when "#"
           # template comment
+
           # drop the scanned <%, and skip past -%>, or %>, but also skip %%>
           s.slice!(-2..-1)
 
@@ -227,10 +240,15 @@ module Puppet::Pops::Parser::EppSupport
           # preceded by a % (i.e. skip %%>)
           part = scanner.scan_until(/[^%]%>/)
           unless part
-            @message = "Reaching end after opening <%# without seeing %>"
+            @issue = Issues::EPP_UNBALANCED_COMMENT
             @mode = :error
             return s
           end
+          # Trim leading whitespace on the same line when start was <%#-
+          if part[1] == '-'
+            s.sub!(/[ \t]*\z/, '')
+          end
+
           @skip_leading = true if part.end_with?("-%>")
           # Continue scanning for more text
 
@@ -243,5 +261,6 @@ module Puppet::Pops::Parser::EppSupport
       end
     end
   end
-
+end
+end
 end

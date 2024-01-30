@@ -1,14 +1,13 @@
+# frozen_string_literal: true
+
 Puppet::Type.type(:package).provide :ports, :parent => :freebsd, :source => :freebsd do
   desc "Support for FreeBSD's ports.  Note that this, too, mixes packages and ports."
 
   commands :portupgrade => "/usr/local/sbin/portupgrade",
-    :portversion => "/usr/local/sbin/portversion",
-    :portuninstall => "/usr/local/sbin/pkg_deinstall",
-    :portinfo => "/usr/sbin/pkg_info"
+           :portversion => "/usr/local/sbin/portversion",
+           :portuninstall => "/usr/local/sbin/pkg_deinstall",
+           :portinfo => "/usr/sbin/pkg_info"
 
-  defaultfor :operatingsystem => :freebsd
-
-  # I hate ports
   %w{INTERACTIVE UNAME}.each do |var|
     ENV.delete(var) if ENV.include?(var)
   end
@@ -20,7 +19,7 @@ Puppet::Type.type(:package).provide :ports, :parent => :freebsd, :source => :fre
 
     output = portupgrade(*cmd)
     if output =~ /\*\* No such /
-      raise Puppet::ExecutionFailure, "Could not find package #{@resource[:name]}"
+      raise Puppet::ExecutionFailure, _("Could not find package %{name}") % { name: @resource[:name] }
     end
   end
 
@@ -46,7 +45,7 @@ Puppet::Type.type(:package).provide :ports, :parent => :freebsd, :source => :fre
 
     unless pkgstuff =~ /^\S+-([^-\s]+)$/
       raise Puppet::Error,
-        "Could not match package info '#{pkgstuff}'"
+            _("Could not match package info '%{pkgstuff}'") % { pkgstuff: pkgstuff }
     end
 
     version = $1
@@ -60,7 +59,7 @@ Puppet::Type.type(:package).provide :ports, :parent => :freebsd, :source => :fre
 
     unless info =~ /\((\w+) has (.+)\)/
       raise Puppet::Error,
-        "Could not match version info '#{info}'"
+            _("Could not match version info '%{info}'") % { info: info }
     end
 
     source, newversion = $1, $2

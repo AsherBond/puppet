@@ -1,15 +1,41 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/confine/true'
 
 describe Puppet::Confine::True do
   it "should be named :true" do
-    Puppet::Confine::True.name.should == :true
+    expect(Puppet::Confine::True.name).to eq(:true)
   end
 
   it "should require a value" do
-    lambda { Puppet::Confine::True.new }.should raise_error(ArgumentError)
+    expect { Puppet::Confine::True.new }.to raise_error(ArgumentError)
+  end
+
+  describe "when passing in a lambda as a value for lazy evaluation" do
+    it "should accept it" do
+      confine = Puppet::Confine::True.new(lambda { true })
+      expect(confine.values).to eql([true])
+    end
+
+    describe "when enforcing cache-positive behavior" do
+      def cached_value_of(confine)
+        confine.instance_variable_get(:@cached_value)
+      end
+
+      it "should cache a true value" do
+        confine = Puppet::Confine::True.new(lambda { true })
+        confine.values
+
+        expect(cached_value_of(confine)).to eql([true])
+      end
+
+      it "should not cache a false value" do
+        confine = Puppet::Confine::True.new(lambda { false })
+        confine.values
+
+        expect(cached_value_of(confine)).to be_nil
+      end
+    end
   end
 
   describe "when testing values" do
@@ -19,34 +45,34 @@ describe Puppet::Confine::True do
     end
 
     it "should use the 'pass?' method to test validity" do
-      @confine.expects(:pass?).with("foo")
+      expect(@confine).to receive(:pass?).with("foo")
       @confine.valid?
     end
 
     it "should return true if the value is not false" do
-      @confine.pass?("else").should be_true
+      expect(@confine.pass?("else")).to be_truthy
     end
 
     it "should return false if the value is false" do
-      @confine.pass?(nil).should be_false
+      expect(@confine.pass?(nil)).to be_falsey
     end
 
     it "should produce the message that a value is false" do
-      @confine.message("eh").should be_include("false")
+      expect(@confine.message("eh")).to be_include("false")
     end
   end
 
   it "should produce the number of false values when asked for a summary" do
     @confine = Puppet::Confine::True.new %w{one two three four}
-    @confine.expects(:pass?).times(4).returns(true).returns(false).returns(true).returns(false)
-    @confine.summary.should == 2
+    expect(@confine).to receive(:pass?).exactly(4).times.and_return(true, false, true, false)
+    expect(@confine.summary).to eq(2)
   end
 
   it "should summarize multiple instances by summing their summaries" do
-    c1 = mock '1', :summary => 1
-    c2 = mock '2', :summary => 2
-    c3 = mock '3', :summary => 3
+    c1 = double('1', :summary => 1)
+    c2 = double('2', :summary => 2)
+    c3 = double('3', :summary => 3)
 
-    Puppet::Confine::True.summarize([c1, c2, c3]).should == 6
+    expect(Puppet::Confine::True.summarize([c1, c2, c3])).to eq(6)
   end
 end

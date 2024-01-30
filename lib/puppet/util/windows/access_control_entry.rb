@@ -1,12 +1,14 @@
+# frozen_string_literal: true
+
 # Windows Access Control Entry
 #
 # Represents an access control entry, which grants or denies a subject,
 # identified by a SID, rights to a securable object.
 #
-# @see http://msdn.microsoft.com/en-us/library/windows/desktop/aa374868(v=vs.85).aspx
+# @see https://msdn.microsoft.com/en-us/library/windows/desktop/aa374868(v=vs.85).aspx
 # @api private
 class Puppet::Util::Windows::AccessControlEntry
-  require 'puppet/util/windows/security'
+  require_relative '../../../puppet/util/windows/security'
   include Puppet::Util::Windows::SID
 
   attr_accessor :sid
@@ -47,7 +49,7 @@ class Puppet::Util::Windows::AccessControlEntry
 
   # Returns true if this ACE applies to child directories.
   #
-  # @return [Boolean] true if the ACE applies to child direcories
+  # @return [Boolean] true if the ACE applies to child directories
   def container_inherit?
     (@flags & CONTAINER_INHERIT_ACE) == CONTAINER_INHERIT_ACE
   end
@@ -60,7 +62,7 @@ class Puppet::Util::Windows::AccessControlEntry
   end
 
   def inspect
-    inheritance = ""
+    inheritance = ''.dup
     inheritance << '(I)' if inherited?
     inheritance << '(OI)' if object_inherit?
     inheritance << '(CI)' if container_inherit?

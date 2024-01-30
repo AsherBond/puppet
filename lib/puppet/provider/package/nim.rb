@@ -1,5 +1,7 @@
-require 'puppet/provider/package'
-require 'puppet/util/package'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/provider/package'
+require_relative '../../../puppet/util/package'
 
 Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
   desc "Installation from an AIX NIM LPP source.  The `source` parameter is required
@@ -13,23 +15,21 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
 
   # The commands we are using on an AIX box are installed standard
   # (except nimclient) nimclient needs the bos.sysmgt.nim.client fileset.
-  commands    :nimclient  => "/usr/sbin/nimclient",
-              :lslpp      => "/usr/bin/lslpp",
-              :rpm        => "rpm"
+  commands    :nimclient => "/usr/sbin/nimclient",
+              :lslpp => "/usr/bin/lslpp",
+              :rpm => "rpm"
 
   # If NIM has not been configured, /etc/niminfo will not be present.
   # However, we have no way of knowing if the NIM server is not configured
   # properly.
-  confine  :exists => "/etc/niminfo"
+  confine :exists => "/etc/niminfo"
 
   has_feature :versionable
 
   attr_accessor :latest_info
 
-
-
   def self.srclistcmd(source)
-    [ command(:nimclient), "-o", "showres", "-a", "installp_flags=L", "-a", "resource=#{source}" ]
+    [command(:nimclient), "-o", "showres", "-a", "installp_flags=L", "-a", "resource=#{source}"]
   end
 
   def uninstall
@@ -44,24 +44,25 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
     when "R"
       rpm "-e", @resource[:name]
     else
-      self.fail("Unrecognized AIX package type identifier: '#{pkg_type}'")
+      self.fail(_("Unrecognized AIX package type identifier: '%{pkg_type}'") % { pkg_type: pkg_type })
     end
 
     # installp will return an exit code of zero even if it didn't uninstall
     # anything... so let's make sure it worked.
     unless query().nil?
-      self.fail "Failed to uninstall package '#{@resource[:name]}'"
+      self.fail _("Failed to uninstall package '%{name}'") % { name: @resource[:name] }
     end
   end
 
   def install(useversion = true)
-    unless source = @resource[:source]
-      self.fail "An LPP source location is required in 'source'"
+    source = @resource[:source]
+    unless source
+      self.fail _("An LPP source location is required in 'source'")
     end
 
     pkg = @resource[:name]
 
-    version_specified = (useversion and (! @resource.should(:ensure).is_a? Symbol))
+    version_specified = (useversion and (!@resource.should(:ensure).is_a? Symbol))
 
     # This is unfortunate for a couple of reasons.  First, because of a subtle
     # difference in the command-line syntax for installing an RPM vs an
@@ -87,8 +88,7 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
       version = nil
       showres_command << "'#{Regexp.escape(pkg)}'"
     end
-    output = Puppet::Util.execute(showres_command)
-
+    output = Puppet::Util::Execution.execute(showres_command)
 
     if (version_specified)
       package_type = determine_package_type(output, pkg, version)
@@ -97,11 +97,13 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
     end
 
     if (package_type == nil)
-      errmsg = "Unable to find package '#{pkg}' "
-      if (version_specified)
-        errmsg << "with version '#{version}' "
-      end
-      errmsg << "on lpp_source '#{source}'"
+
+      errmsg = if version_specified
+                 _("Unable to find package '%{package}' with version '%{version}' on lpp_source '%{source}'") %
+                   { package: pkg, version: version, source: source }
+               else
+                 _("Unable to find package '%{package}' on lpp_source '%{source}'") % { package: pkg, source: source }
+               end
       self.fail errmsg
     end
 
@@ -114,7 +116,7 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
       # Now we know if the package type is RPM or not, and we can adjust our
       # `pkg` string for passing to the install command accordingly.
       if (package_type == :rpm)
-        # RPM's expect a hyphen between the package name and the version number
+        # RPMs expect a hyphen between the package name and the version number
         version_separator = "-"
       else
         # installp/BFF packages expect a space between the package name and the
@@ -133,15 +135,14 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
     case package_type
     when :installp
       if output =~ /^#{Regexp.escape(@resource[:name])}\s+.*\s+Already superseded by.*$/
-        self.fail "NIM package provider is unable to downgrade packages"
+        self.fail _("NIM package provider is unable to downgrade packages")
       end
     when :rpm
       if output =~ /^#{Regexp.escape(@resource[:name])}.* is superseded by.*$/
-        self.fail "NIM package provider is unable to downgrade packages"
+        self.fail _("NIM package provider is unable to downgrade packages")
       end
     end
   end
-
 
   private
 
@@ -151,19 +152,24 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
   # I spent a lot of time trying to figure out a solution that didn't
   # require parsing the `nimclient -o showres` output and was unable to
   # do so.
-  self::HEADER_LINE_REGEX      = /^([^\s]+)\s+[^@]+@@(I|R):(\1)\s+[^\s]+$/
-  self::PACKAGE_LINE_REGEX     = /^.*@@(I|R):(.*)$/
-  self::RPM_PACKAGE_REGEX      = /^(.*)-(.*-\d+) \2$/
+  self::HEADER_LINE_REGEX      = /^([^\s]+)\s+[^@]+@@(I|R|S):(\1)\s+[^\s]+$/
+  self::PACKAGE_LINE_REGEX     = /^.*@@(I|R|S):(.*)$/
+  self::RPM_PACKAGE_REGEX      = /^(.*)-(.*-\d+\w*) \2$/
   self::INSTALLP_PACKAGE_REGEX = /^(.*) (.*)$/
 
   # Here is some sample output that shows what the above regexes will be up
   # against:
-  # FOR AN INSTALLP PACKAGE:
+  # FOR AN INSTALLP(bff) PACKAGE:
   #
   #    mypackage.foo                                                           ALL  @@I:mypackage.foo _all_filesets
-  #    @ 1.2.3.1  MyPackage Runtime Environment                       @@I:mypackage.foo 1.2.3.1
   #    + 1.2.3.4  MyPackage Runtime Environment                       @@I:mypackage.foo 1.2.3.4
   #    + 1.2.3.8  MyPackage Runtime Environment                       @@I:mypackage.foo 1.2.3.8
+  #
+  # FOR AN INSTALLP(bff) PACKAGE with security update:
+  #
+  #    bos.net                                                                 ALL  @@S:bos.net _all_filesets
+  #    + 7.2.0.1  TCP/IP ntp Applications                             @@S:bos.net.tcp.ntp 7.2.0.1
+  #    + 7.2.0.2  TCP/IP ntp Applications                             @@S:bos.net.tcp.ntp 7.2.0.2
   #
   # FOR AN RPM PACKAGE:
   #
@@ -171,7 +177,6 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
   #   @@R:mypackage.foo-1.2.3-1 1.2.3-1
   #   @@R:mypackage.foo-1.2.3-4 1.2.3-4
   #   @@R:mypackage.foo-1.2.3-8 1.2.3-8
-
 
   # Parse the output of a `nimclient -o showres` command.  Returns a two-dimensional
   # hash, where the first-level keys are package names, the second-level keys are
@@ -206,13 +211,14 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
     # looks sane, so we know we're dealing with the kind of output that we
     # are capable of handling.
     unless line.match(self.class::HEADER_LINE_REGEX)
-      self.fail "Unable to parse output from nimclient showres: line does not match expected package header format:\n'#{line}'"
+      self.fail _("Unable to parse output from nimclient showres: line does not match expected package header format:\n'%{line}'") % { line: line }
     end
   end
 
   def parse_installp_package_string(package_string)
-    unless match = package_string.match(self.class::INSTALLP_PACKAGE_REGEX)
-      self.fail "Unable to parse output from nimclient showres: package string does not match expected installp package string format:\n'#{package_string}'"
+    match = package_string.match(self.class::INSTALLP_PACKAGE_REGEX)
+    unless match
+      self.fail _("Unable to parse output from nimclient showres: package string does not match expected installp package string format:\n'%{package_string}'") % { package_string: package_string }
     end
     package_name = match.captures[0]
     version = match.captures[1]
@@ -220,8 +226,9 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
   end
 
   def parse_rpm_package_string(package_string)
-    unless match = package_string.match(self.class::RPM_PACKAGE_REGEX)
-      self.fail "Unable to parse output from nimclient showres: package string does not match expected rpm package string format:\n'#{package_string}'"
+    match = package_string.match(self.class::RPM_PACKAGE_REGEX)
+    unless match
+      self.fail _("Unable to parse output from nimclient showres: package string does not match expected rpm package string format:\n'%{package_string}'") % { package_string: package_string }
     end
     package_name = match.captures[0]
     version = match.captures[1]
@@ -229,20 +236,21 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
   end
 
   def parse_showres_package_line(line)
-    unless match = line.match(self.class::PACKAGE_LINE_REGEX)
-      self.fail "Unable to parse output from nimclient showres: line does not match expected package line format:\n'#{line}'"
+    match = line.match(self.class::PACKAGE_LINE_REGEX)
+    unless match
+      self.fail _("Unable to parse output from nimclient showres: line does not match expected package line format:\n'%{line}'") % { line: line }
     end
 
     package_type_flag = match.captures[0]
     package_string = match.captures[1]
 
     case package_type_flag
-      when "I"
-        parse_installp_package_string(package_string)
-      when "R"
-        parse_rpm_package_string(package_string)
-      else
-        self.fail "Unrecognized package type specifier: '#{package_type_flag}' in package line:\n'#{line}'"
+    when "I", "S"
+      parse_installp_package_string(package_string)
+    when "R"
+      parse_rpm_package_string(package_string)
+    else
+      self.fail _("Unrecognized package type specifier: '%{package_type_flag}' in package line:\n'%{line}'") % { package_type_flag: package_type_flag, line: line }
     end
   end
 
@@ -260,6 +268,7 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
     unless packages.has_key?(package_name)
       return nil
     end
+
     if (packages[package_name].count == 1)
       version = packages[package_name].keys[0]
       return packages[package_name][version], nil
@@ -275,6 +284,7 @@ Puppet::Type.type(:package).provide :nim, :parent => :aix, :source => :aix do
     unless (packages.has_key?(package_name) and packages[package_name].has_key?(version))
       return nil
     end
+
     packages[package_name][version]
   end
 end

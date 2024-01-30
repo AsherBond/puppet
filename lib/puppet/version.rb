@@ -1,13 +1,14 @@
+# frozen_string_literal: true
+
 # The version method and constant are isolated in puppet/version.rb so that a
 # simple `require 'puppet/version'` allows a rubygems gemspec or bundler
 # Gemfile to get the Puppet version of the gem install.
 #
-# The version is programatically settable because we want to allow the
+# The version can be set programmatically because we want to allow the
 # Raketasks and such to set the version based on the output of `git describe`
 
-
 module Puppet
-  PUPPETVERSION = '3.6.2'
+  PUPPETVERSION = '8.5.0'
 
   ##
   # version is a public API method intended to always provide a fast and
@@ -62,10 +63,13 @@ module Puppet
   def self.version
     version_file = File.join(File.dirname(__FILE__), 'VERSION')
     return @puppet_version if @puppet_version
-    if version = read_version_file(version_file)
-      @puppet_version = version
-    end
-    @puppet_version ||= PUPPETVERSION
+
+    @puppet_version = read_version_file(version_file) || PUPPETVERSION
+  end
+
+  # @return [String] containing the puppet version to minor specificity, e.g. "3.0"
+  def self.minor_version
+    self.version.split('.')[0..1].join('.')
   end
 
   def self.version=(version)

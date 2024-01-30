@@ -1,5 +1,7 @@
-require 'puppet/util/profiler'
-require 'puppet/util/profiler/wall_clock'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/profiler'
+require_relative '../../../puppet/util/profiler/wall_clock'
 
 class Puppet::Util::Profiler::Aggregate < Puppet::Util::Profiler::WallClock
   def initialize(logger, identifier)
@@ -7,16 +9,12 @@ class Puppet::Util::Profiler::Aggregate < Puppet::Util::Profiler::WallClock
     @metrics_hash = Metric.new
   end
 
-  def shutdown()
+  def shutdown
     super
     @logger.call("AGGREGATE PROFILING RESULTS:")
     @logger.call("----------------------------")
     print_metrics(@metrics_hash, "")
     @logger.call("----------------------------")
-  end
-
-  def do_start(description, metric_id)
-    super(description, metric_id)
   end
 
   def do_finish(context, description, metric_id)
@@ -42,8 +40,8 @@ class Puppet::Util::Profiler::Aggregate < Puppet::Util::Profiler::WallClock
   end
 
   def print_metrics(metrics_hash, prefix)
-    metrics_hash.sort_by {|k,v| v.time }.reverse.each do |k,v|
-      @logger.call("#{prefix}#{k}: #{v.time} ms (#{v.count} calls)")
+    metrics_hash.sort_by { |_k, v| v.time }.reverse_each do |k, v|
+      @logger.call("#{prefix}#{k}: #{v.time} s (#{v.count} calls)")
       print_metrics(metrics_hash[k], "#{prefix}#{k} -> ")
     end
   end
@@ -82,4 +80,3 @@ class Puppet::Util::Profiler::Aggregate < Puppet::Util::Profiler::WallClock
     end
   end
 end
-

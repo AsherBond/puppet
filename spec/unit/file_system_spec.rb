@@ -5,6 +5,154 @@ require 'puppet/util/platform'
 describe "Puppet::FileSystem" do
   include PuppetSpec::Files
 
+  # different UTF-8 widths
+  # 1-byte A
+  # 2-byte ۿ - http://www.fileformat.info/info/unicode/char/06ff/index.htm - 0xDB 0xBF / 219 191
+  # 3-byte ᚠ - http://www.fileformat.info/info/unicode/char/16A0/index.htm - 0xE1 0x9A 0xA0 / 225 154 160
+  # 4-byte 𠜎 - http://www.fileformat.info/info/unicode/char/2070E/index.htm - 0xF0 0xA0 0x9C 0x8E / 240 160 156 142
+  let (:mixed_utf8) { "A\u06FF\u16A0\u{2070E}" } # Aۿᚠ𠜎
+
+  def with_file_content(content)
+    path = tmpfile('file-system')
+    file = File.new(path, 'wb')
+    file.sync = true
+    file.print content
+
+    yield path
+
+  ensure
+    file.close
+  end
+
+  SYSTEM_SID_BYTES = [1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0]
+
+  def is_current_user_system?
+    SYSTEM_SID_BYTES == Puppet::Util::Windows::ADSI::User.current_user_sid.sid_bytes
+  end
+
+  def expects_public_file(path)
+    if Puppet::Util::Platform.windows?
+      current_sid = Puppet::Util::Windows::SID.name_to_sid(Puppet::Util::Windows::ADSI::User.current_user_name)
+      sd = Puppet::Util::Windows::Security.get_security_descriptor(path)
+      expect(sd.dacl).to contain_exactly(
+        an_object_having_attributes(sid: Puppet::Util::Windows::SID::LocalSystem, mask: 0x1f01ff),
+        an_object_having_attributes(sid: Puppet::Util::Windows::SID::BuiltinAdministrators, mask: 0x1f01ff),
+        an_object_having_attributes(sid: current_sid, mask: 0x1f01ff),
+        an_object_having_attributes(sid: Puppet::Util::Windows::SID::BuiltinUsers, mask: 0x120089)
+      )
+    else
+      expect(File.stat(path).mode & 07777).to eq(0644)
+    end
+  end
+
+  def expects_private_file(path)
+    if Puppet::Util::Platform.windows?
+      current_sid = Puppet::Util::Windows::SID.name_to_sid(Puppet::Util::Windows::ADSI::User.current_user_name)
+      sd = Puppet::Util::Windows::Security.get_security_descriptor(path)
+      expect(sd.dacl).to contain_exactly(
+        an_object_having_attributes(sid: Puppet::Util::Windows::SID::LocalSystem, mask: 0x1f01ff),
+        an_object_having_attributes(sid: Puppet::Util::Windows::SID::BuiltinAdministrators, mask: 0x1f01ff),
+        an_object_having_attributes(sid: current_sid, mask: 0x1f01ff)
+      )
+    else
+      expect(File.stat(path).mode & 07777).to eq(0640)
+    end
+  end
+
+  context "#open" do
+    it "uses the same default mode as File.open, when specifying a nil mode (umask used on non-Windows)" do
+      file = tmpfile('file_to_update')
+      expect(Puppet::FileSystem.exist?(file)).to be_falsey
+
+      Puppet::FileSystem.open(file, nil, 'a') { |fh| fh.write('') }
+
+      expected_perms = Puppet::Util::Platform.windows? ?
+        # default Windows mode based on temp file storage for SYSTEM user or regular user
+        # for Jenkins or other services running as SYSTEM writing to c:\windows\temp
+        # the permissions will typically be SYSTEM(F) / Administrators(F) which is 770
+        # but sometimes there are extra users like IIS_IUSRS granted rights which adds the "extra ace" 2
+        # for local Administrators writing to their own temp folders under c:\users\USER
+        # they will have (F) for themselves, and Users will not have a permission, hence 700
+        (is_current_user_system? ? ['770', '2000770'] : '2000700') :
+        # or for *nix determine expected mode via bitwise AND complement of umask
+        (0100000 | 0666 & ~File.umask).to_s(8)
+      expect([expected_perms].flatten).to include(Puppet::FileSystem.stat(file).mode.to_s(8))
+
+      default_file = tmpfile('file_to_update2')
+      expect(Puppet::FileSystem.exist?(default_file)).to be_falsey
+
+      File.open(default_file, 'a') { |fh| fh.write('') }
+
+      # which matches the behavior of File.open
+      expect(Puppet::FileSystem.stat(file).mode).to eq(Puppet::FileSystem.stat(default_file).mode)
+    end
+
+    it "can accept an octal mode integer" do
+      file = tmpfile('file_to_update')
+      # NOTE: 777 here returns 755, but due to Ruby?
+      Puppet::FileSystem.open(file, 0444, 'a') { |fh| fh.write('') }
+
+      # Behavior may change in the future on Windows, to *actually* change perms
+      # but for now, setting a mode doesn't touch them
+      expected_perms = Puppet::Util::Platform.windows? ?
+        (is_current_user_system? ? ['770', '2000770'] : '2000700') :
+        '100444'
+      expect([expected_perms].flatten).to include(Puppet::FileSystem.stat(file).mode.to_s(8))
+
+      expected_ruby_mode = Puppet::Util::Platform.windows? ?
+        # The Windows behavior has been changed to ignore the mode specified by open
+        # given it's unlikely a caller expects Windows file attributes to be set
+        # therefore mode is explicitly not managed (until PUP-6959 is fixed)
+        #
+        # In default Ruby on Windows a mode controls file attribute setting
+        # (like archive, read-only, etc)
+        # The GetFileInformationByHandle API returns an attributes value that is
+        # a bitmask of Windows File Attribute Constants at
+        # https://msdn.microsoft.com/en-us/library/windows/desktop/gg258117(v=vs.85).aspx
+        '100644' :
+        # On other platforms, the mode should be what was set by octal 0444
+        '100444'
+
+      expect(File.stat(file).mode.to_s(8)).to eq(expected_ruby_mode)
+    end
+
+    it "cannot accept a mode string" do
+      file = tmpfile('file_to_update')
+      expect {
+        Puppet::FileSystem.open(file, "444", 'a') { |fh| fh.write('') }
+      }.to raise_error(TypeError)
+    end
+
+    it "opens, creates ands allows updating of a new file, using by default, the external system encoding" do
+      begin
+        original_encoding = Encoding.default_external
+
+        # this must be set through Ruby API and cannot be mocked - it sets internal state used by File.open
+        # pick a bizarre encoding unlikely to be used in any real tests
+        Encoding.default_external = Encoding::CP737
+
+        file = tmpfile('file_to_update')
+
+        # test writing a UTF-8 string when Default external encoding is something different
+        Puppet::FileSystem.open(file, 0660, 'w') do |fh|
+          # note Ruby behavior which has no external_encoding, but implicitly uses Encoding.default_external
+          expect(fh.external_encoding).to be_nil
+          # write a UTF-8 string to this file
+          fh.write(mixed_utf8)
+        end
+
+        # prove that Ruby implicitly converts read strings back to Encoding.default_external
+        # and that it did that in the previous write
+        written = Puppet::FileSystem.read(file)
+        expect(written.encoding).to eq(Encoding.default_external)
+        expect(written).to eq(mixed_utf8.force_encoding(Encoding.default_external))
+      ensure
+        # carefully roll back to the previous
+        Encoding.default_external = original_encoding
+      end
+    end
+  end
+
   context "#exclusive_open" do
     it "opens ands allows updating of an existing file" do
       file = file_containing("file_to_update", "the contents")
@@ -19,17 +167,37 @@ describe "Puppet::FileSystem" do
       expect(Puppet::FileSystem.read(file)).to eq("updated the contents")
     end
 
-    it "opens, creates ands allows updating of a new file" do
-      file = tmpfile("file_to_update")
+    it "opens, creates ands allows updating of a new file, using by default, the external system encoding" do
+      begin
+        original_encoding = Encoding.default_external
 
-      Puppet::FileSystem.exclusive_open(file, 0660, 'w') do |fh|
-        fh.write("updated new file")
+        # this must be set through Ruby API and cannot be mocked - it sets internal state used by File.open
+        # pick a bizarre encoding unlikely to be used in any real tests
+        Encoding.default_external = Encoding::CP737
+
+        file = tmpfile('file_to_update')
+
+        # test writing a UTF-8 string when Default external encoding is something different
+        Puppet::FileSystem.exclusive_open(file, 0660, 'w') do |fh|
+          # note Ruby behavior which has no external_encoding, but implicitly uses Encoding.default_external
+          expect(fh.external_encoding).to be_nil
+          # write a UTF-8 string to this file
+          fh.write(mixed_utf8)
+        end
+
+        # prove that Ruby implicitly converts read strings back to Encoding.default_external
+        # and that it did that in the previous write
+        written = Puppet::FileSystem.read(file)
+        expect(written.encoding).to eq(Encoding.default_external)
+        expect(written).to eq(mixed_utf8.force_encoding(Encoding.default_external))
+      ensure
+        # carefully roll back to the previous
+        Encoding.default_external = original_encoding
       end
-
-      expect(Puppet::FileSystem.read(file)).to eq("updated new file")
     end
 
-    it "excludes other processes from updating at the same time", :unless => Puppet::Util::Platform.windows? do
+    it "excludes other processes from updating at the same time",
+       unless: Puppet::Util::Platform.windows? || Puppet::Util::Platform.jruby? do
       file = file_containing("file_to_update", "0")
 
       increment_counter_in_multiple_processes(file, 5, 'r+')
@@ -37,7 +205,8 @@ describe "Puppet::FileSystem" do
       expect(Puppet::FileSystem.read(file)).to eq("5")
     end
 
-    it "excludes other processes from updating at the same time even when creating the file", :unless => Puppet::Util::Platform.windows? do
+    it "excludes other processes from updating at the same time even when creating the file",
+       unless: Puppet::Util::Platform.windows? || Puppet::Util::Platform.jruby? do
       file = tmpfile("file_to_update")
 
       increment_counter_in_multiple_processes(file, 5, 'a+')
@@ -45,7 +214,8 @@ describe "Puppet::FileSystem" do
       expect(Puppet::FileSystem.read(file)).to eq("5")
     end
 
-    it "times out if the lock cannot be aquired in a specified amount of time", :unless => Puppet::Util::Platform.windows? do
+    it "times out if the lock cannot be acquired in a specified amount of time",
+       unless: Puppet::Util::Platform.windows? || Puppet::Util::Platform.jruby? do
       file = tmpfile("file_to_update")
 
       child = spawn_process_that_locks(file)
@@ -53,7 +223,7 @@ describe "Puppet::FileSystem" do
       expect do
         Puppet::FileSystem.exclusive_open(file, 0666, 'a', 0.1) do |f|
         end
-      end.to raise_error(Timeout::Error)
+      end.to raise_error(Timeout::Error, /Timeout waiting for exclusive lock on #{file}/)
 
       Process.kill(9, child)
     end
@@ -96,9 +266,85 @@ describe "Puppet::FileSystem" do
     end
   end
 
+  context "read_preserve_line_endings" do
+    it "should read a file with line feed" do
+      with_file_content("file content \n") do |file|
+        expect(Puppet::FileSystem.read_preserve_line_endings(file)).to eq("file content \n")
+      end
+    end
+
+    it "should read a file with carriage return line feed" do
+      with_file_content("file content \r\n") do |file|
+        expect(Puppet::FileSystem.read_preserve_line_endings(file)).to eq("file content \r\n")
+      end
+    end
+
+    it "should read a mixed file using only the first line newline when lf" do
+      with_file_content("file content \nsecond line \r\n") do |file|
+        expect(Puppet::FileSystem.read_preserve_line_endings(file)).to eq("file content \nsecond line \r\n")
+      end
+    end
+
+    it "should read a mixed file using only the first line newline when crlf" do
+      with_file_content("file content \r\nsecond line \n") do |file|
+        expect(Puppet::FileSystem.read_preserve_line_endings(file)).to eq("file content \r\nsecond line \n")
+      end
+    end
+
+    it "should ignore leading BOM" do
+      with_file_content("\uFEFFfile content \n") do |file|
+        expect(Puppet::FileSystem.read_preserve_line_endings(file)).to eq("file content \n")
+      end
+    end
+
+    it "should not warn about misusage of BOM with non-UTF encoding" do
+      allow(Encoding).to receive(:default_external).and_return(Encoding::US_ASCII)
+      with_file_content("file content \n") do |file|
+        expect{ Puppet::FileSystem.read_preserve_line_endings(file) }.not_to output(/BOM with non-UTF encoding US-ASCII is nonsense/).to_stderr
+      end
+    end
+  end
+
+  context "read without an encoding specified" do
+    it "returns strings as Encoding.default_external" do
+      temp_file = file_containing('test.txt', 'hello world')
+
+      contents = Puppet::FileSystem.read(temp_file)
+
+      expect(contents.encoding).to eq(Encoding.default_external)
+      expect(contents).to eq('hello world')
+    end
+  end
+
+  context "read should allow an encoding to be specified" do
+    # First line of Rune version of Rune poem at http://www.columbia.edu/~fdc/utf8/
+    # characters chosen since they will not parse on Windows with codepage 437 or 1252
+    # Section 3.2.1.3 of Ruby spec guarantees that \u strings are encoded as UTF-8
+    let (:rune_utf8) { "\u16A0\u16C7\u16BB" } # 'ᚠᛇᚻ'
+
+    it "and should read a UTF8 file properly" do
+      temp_file = file_containing('utf8.txt', rune_utf8)
+
+      contents = Puppet::FileSystem.read(temp_file, :encoding => 'utf-8')
+
+      expect(contents.encoding).to eq(Encoding::UTF_8)
+      expect(contents).to eq(rune_utf8)
+    end
+
+    it "does not strip the UTF8 BOM (Byte Order Mark) if present in a file" do
+      bom = "\uFEFF"
+
+      temp_file = file_containing('utf8bom.txt', "#{bom}#{rune_utf8}")
+      contents = Puppet::FileSystem.read(temp_file, :encoding => 'utf-8')
+
+      expect(contents.encoding).to eq(Encoding::UTF_8)
+      expect(contents).to eq("#{bom}#{rune_utf8}")
+    end
+  end
+
   describe "symlink",
     :if => ! Puppet.features.manages_symlinks? &&
-    Puppet.features.microsoft_windows? do
+    Puppet::Util::Platform.windows? do
 
     let(:file)         { tmpfile("somefile") }
     let(:missing_file) { tmpfile("missingfile") }
@@ -113,7 +359,7 @@ describe "Puppet::FileSystem" do
     end
 
     it "should return false when trying to check if a path is a symlink" do
-      Puppet::FileSystem.symlink?(file).should be_false
+      expect(Puppet::FileSystem.symlink?(file)).to be_falsey
     end
 
     it "should raise an error when trying to read a symlink" do
@@ -121,7 +367,7 @@ describe "Puppet::FileSystem" do
     end
 
     it "should return a File::Stat instance when calling stat on an existing file" do
-      Puppet::FileSystem.stat(file).should be_instance_of(File::Stat)
+      expect(Puppet::FileSystem.stat(file)).to be_instance_of(File::Stat)
     end
 
     it "should raise Errno::ENOENT when calling stat on a missing file" do
@@ -129,7 +375,7 @@ describe "Puppet::FileSystem" do
     end
 
     it "should fall back to stat when trying to lstat a file" do
-      Puppet::Util::Windows::File.expects(:stat).with(Puppet::FileSystem.assert_path(file))
+      expect(Puppet::Util::Windows::File).to receive(:stat).with(Puppet::FileSystem.assert_path(file))
 
       Puppet::FileSystem.lstat(file)
     end
@@ -146,27 +392,27 @@ describe "Puppet::FileSystem" do
     end
 
     it "should return true for exist? on a present file" do
-      Puppet::FileSystem.exist?(file).should be_true
+      expect(Puppet::FileSystem.exist?(file)).to be_truthy
     end
 
     it "should return true for file? on a present file" do
-      Puppet::FileSystem.file?(file).should be_true
+      expect(Puppet::FileSystem.file?(file)).to be_truthy
     end
 
-    it "should return false for exist? on a non-existant file" do
-      Puppet::FileSystem.exist?(missing_file).should be_false
+    it "should return false for exist? on a non-existent file" do
+      expect(Puppet::FileSystem.exist?(missing_file)).to be_falsey
     end
 
     it "should return true for exist? on a present directory" do
-      Puppet::FileSystem.exist?(dir).should be_true
+      expect(Puppet::FileSystem.exist?(dir)).to be_truthy
     end
 
     it "should return false for exist? on a dangling symlink" do
       symlink = tmpfile("somefile_link")
       Puppet::FileSystem.symlink(missing_file, symlink)
 
-      Puppet::FileSystem.exist?(missing_file).should be_false
-      Puppet::FileSystem.exist?(symlink).should be_false
+      expect(Puppet::FileSystem.exist?(missing_file)).to be_falsey
+      expect(Puppet::FileSystem.exist?(symlink)).to be_falsey
     end
 
     it "should return true for exist? on valid symlinks" do
@@ -174,9 +420,70 @@ describe "Puppet::FileSystem" do
         symlink = tmpfile("#{Puppet::FileSystem.basename(target).to_s}_link")
         Puppet::FileSystem.symlink(target, symlink)
 
-        Puppet::FileSystem.exist?(target).should be_true
-        Puppet::FileSystem.exist?(symlink).should be_true
+        expect(Puppet::FileSystem.exist?(target)).to be_truthy
+        expect(Puppet::FileSystem.exist?(symlink)).to be_truthy
       end
+    end
+
+    it "should return false for exist? when resolving a cyclic symlink chain" do
+      # point symlink -> file
+      symlink = tmpfile("somefile_link")
+      Puppet::FileSystem.symlink(file, symlink)
+
+      # point symlink2 -> symlink
+      symlink2 = tmpfile("somefile_link2")
+      Puppet::FileSystem.symlink(symlink, symlink2)
+
+      # point symlink3 -> symlink2
+      symlink3 = tmpfile("somefile_link3")
+      Puppet::FileSystem.symlink(symlink2, symlink3)
+
+      # yank file, temporarily dangle
+      ::File.delete(file)
+
+      # and trash it so that we can recreate it OK on windows
+      Puppet::FileSystem.unlink(symlink)
+
+      # point symlink -> symlink3 to create a cycle
+      Puppet::FileSystem.symlink(symlink3, symlink)
+
+      expect(Puppet::FileSystem.exist?(symlink3)).to be_falsey
+    end
+
+    it "should return true for exist? when resolving a symlink chain pointing to a file" do
+      # point symlink -> file
+      symlink = tmpfile("somefile_link")
+      Puppet::FileSystem.symlink(file, symlink)
+
+      # point symlink2 -> symlink
+      symlink2 = tmpfile("somefile_link2")
+      Puppet::FileSystem.symlink(symlink, symlink2)
+
+      # point symlink3 -> symlink2
+      symlink3 = tmpfile("somefile_link3")
+      Puppet::FileSystem.symlink(symlink2, symlink3)
+
+      expect(Puppet::FileSystem.exist?(symlink3)).to be_truthy
+    end
+
+    it "should return false for exist? when resolving a symlink chain that dangles" do
+      # point symlink -> file
+      symlink = tmpfile("somefile_link")
+      Puppet::FileSystem.symlink(file, symlink)
+
+      # point symlink2 -> symlink
+      symlink2 = tmpfile("somefile_link2")
+      Puppet::FileSystem.symlink(symlink, symlink2)
+
+      # point symlink3 -> symlink2
+      symlink3 = tmpfile("somefile_link3")
+      Puppet::FileSystem.symlink(symlink2, symlink3)
+
+      # yank file, and make symlink dangle
+      ::File.delete(file)
+
+      # symlink3 is now indirectly dangled
+      expect(Puppet::FileSystem.exist?(symlink3)).to be_falsey
     end
 
     it "should not create a symlink when the :noop option is specified" do
@@ -184,8 +491,8 @@ describe "Puppet::FileSystem" do
         symlink = tmpfile("#{Puppet::FileSystem.basename(target)}_link")
         Puppet::FileSystem.symlink(target, symlink, { :noop => true })
 
-        Puppet::FileSystem.exist?(target).should be_true
-        Puppet::FileSystem.exist?(symlink).should be_false
+        expect(Puppet::FileSystem.exist?(target)).to be_truthy
+        expect(Puppet::FileSystem.exist?(symlink)).to be_falsey
       end
     end
 
@@ -196,8 +503,8 @@ describe "Puppet::FileSystem" do
       [file, dir].each do |target|
         expect { Puppet::FileSystem.symlink(target, existing_file) }.to raise_error(Errno::EEXIST)
 
-        Puppet::FileSystem.exist?(existing_file).should be_true
-        Puppet::FileSystem.symlink?(existing_file).should be_false
+        expect(Puppet::FileSystem.exist?(existing_file)).to be_truthy
+        expect(Puppet::FileSystem.symlink?(existing_file)).to be_falsey
       end
     end
 
@@ -205,11 +512,11 @@ describe "Puppet::FileSystem" do
       existing_dir = tmpdir("#{Puppet::FileSystem.basename(file)}_dir")
 
       [file, dir].each do |target|
-        Puppet::FileSystem.symlink(target, existing_dir).should == 0
+        expect(Puppet::FileSystem.symlink(target, existing_dir)).to eq(0)
 
-        Puppet::FileSystem.exist?(existing_dir).should be_true
-        File.directory?(existing_dir).should be_true
-        Puppet::FileSystem.symlink?(existing_dir).should be_false
+        expect(Puppet::FileSystem.exist?(existing_dir)).to be_truthy
+        expect(File.directory?(existing_dir)).to be_truthy
+        expect(Puppet::FileSystem.symlink?(existing_dir)).to be_falsey
       end
     end
 
@@ -219,11 +526,11 @@ describe "Puppet::FileSystem" do
         symlink = tmpfile("#{Puppet::FileSystem.basename(existing_dir)}_link")
         Puppet::FileSystem.symlink(existing_dir, symlink)
 
-        Puppet::FileSystem.readlink(symlink).should == Puppet::FileSystem.path_string(existing_dir)
+        expect(Puppet::FileSystem.readlink(symlink)).to eq(Puppet::FileSystem.path_string(existing_dir))
 
         # now try to point it at the new target, no error raised, but file system unchanged
-        Puppet::FileSystem.symlink(target, symlink).should == 0
-        Puppet::FileSystem.readlink(symlink).should == existing_dir.to_s
+        expect(Puppet::FileSystem.symlink(target, symlink)).to eq(0)
+        expect(Puppet::FileSystem.readlink(symlink)).to eq(existing_dir.to_s)
       end
     end
 
@@ -236,7 +543,7 @@ describe "Puppet::FileSystem" do
 
       [file, dir].each do |target|
         expect { Puppet::FileSystem.symlink(target, symlink) }.to raise_error(Errno::EEXIST)
-        Puppet::FileSystem.readlink(symlink).should == file_2.to_s
+        expect(Puppet::FileSystem.readlink(symlink)).to eq(file_2.to_s)
       end
     end
 
@@ -244,12 +551,12 @@ describe "Puppet::FileSystem" do
       [file, dir].each do |target|
         existing_file = tmpfile("#{Puppet::FileSystem.basename(target)}_existing")
         FileUtils.touch(existing_file)
-        Puppet::FileSystem.symlink?(existing_file).should be_false
+        expect(Puppet::FileSystem.symlink?(existing_file)).to be_falsey
 
         Puppet::FileSystem.symlink(target, existing_file, { :force => true })
 
-        Puppet::FileSystem.symlink?(existing_file).should be_true
-        Puppet::FileSystem.readlink(existing_file).should == target.to_s
+        expect(Puppet::FileSystem.symlink?(existing_file)).to be_truthy
+        expect(Puppet::FileSystem.readlink(existing_file)).to eq(target.to_s)
       end
     end
 
@@ -260,11 +567,11 @@ describe "Puppet::FileSystem" do
         existing_symlink = tmpfile("#{Puppet::FileSystem.basename(existing_file)}_link")
         Puppet::FileSystem.symlink(existing_file, existing_symlink)
 
-        Puppet::FileSystem.readlink(existing_symlink).should == existing_file.to_s
+        expect(Puppet::FileSystem.readlink(existing_symlink)).to eq(existing_file.to_s)
 
         Puppet::FileSystem.symlink(target, existing_symlink, { :force => true })
 
-        Puppet::FileSystem.readlink(existing_symlink).should == target.to_s
+        expect(Puppet::FileSystem.readlink(existing_symlink)).to eq(target.to_s)
       end
     end
 
@@ -272,9 +579,9 @@ describe "Puppet::FileSystem" do
       [file, dir].each do |target|
         existing_dir = tmpdir("#{Puppet::FileSystem.basename(target)}_existing")
 
-        Puppet::FileSystem.symlink(target, existing_dir, { :force => true }).should == 0
+        expect(Puppet::FileSystem.symlink(target, existing_dir, { :force => true })).to eq(0)
 
-        Puppet::FileSystem.symlink?(existing_dir).should be_false
+        expect(Puppet::FileSystem.symlink?(existing_dir)).to be_falsey
       end
     end
 
@@ -284,11 +591,11 @@ describe "Puppet::FileSystem" do
         existing_symlink = tmpfile("#{Puppet::FileSystem.basename(existing_dir)}_link")
         Puppet::FileSystem.symlink(existing_dir, existing_symlink)
 
-        Puppet::FileSystem.readlink(existing_symlink).should == existing_dir.to_s
+        expect(Puppet::FileSystem.readlink(existing_symlink)).to eq(existing_dir.to_s)
 
-        Puppet::FileSystem.symlink(target, existing_symlink, { :force => true }).should == 0
+        expect(Puppet::FileSystem.symlink(target, existing_symlink, { :force => true })).to eq(0)
 
-        Puppet::FileSystem.readlink(existing_symlink).should == existing_dir.to_s
+        expect(Puppet::FileSystem.readlink(existing_symlink)).to eq(existing_dir.to_s)
       end
     end
 
@@ -296,11 +603,11 @@ describe "Puppet::FileSystem" do
       [ tmpfile('bogus1'),
         Pathname.new(tmpfile('bogus2')),
         Puppet::Util::WatchedFile.new(tmpfile('bogus3'))
-        ].each { |f| Puppet::FileSystem.exist?(f).should be_false  }
+        ].each { |f| expect(Puppet::FileSystem.exist?(f)).to be_falsey  }
     end
 
     it "should return a File::Stat instance when calling stat on an existing file" do
-      Puppet::FileSystem.stat(file).should be_instance_of(File::Stat)
+      expect(Puppet::FileSystem.stat(file)).to be_instance_of(File::Stat)
     end
 
     it "should raise Errno::ENOENT when calling stat on a missing file" do
@@ -311,12 +618,12 @@ describe "Puppet::FileSystem" do
       symlink = tmpfile("somefile_link")
       Puppet::FileSystem.symlink(file, symlink)
 
-      Puppet::FileSystem.symlink?(symlink).should be_true
+      expect(Puppet::FileSystem.symlink?(symlink)).to be_truthy
     end
 
     it "should report symlink? as false on file, directory and missing files" do
       [file, dir, missing_file].each do |f|
-      Puppet::FileSystem.symlink?(f).should be_false
+      expect(Puppet::FileSystem.symlink?(f)).to be_falsey
       end
     end
 
@@ -325,8 +632,8 @@ describe "Puppet::FileSystem" do
       Puppet::FileSystem.symlink(file, symlink)
 
       stat = Puppet::FileSystem.lstat(symlink)
-      stat.should be_instance_of(File::Stat)
-      stat.ftype.should == 'link'
+      expect(stat).to be_instance_of(File::Stat)
+      expect(stat.ftype).to eq('link')
     end
 
     it "should return a File::Stat of ftype 'link' when calling lstat on a symlink pointing to missing file" do
@@ -334,8 +641,8 @@ describe "Puppet::FileSystem" do
       Puppet::FileSystem.symlink(missing_file, symlink)
 
       stat = Puppet::FileSystem.lstat(symlink)
-      stat.should be_instance_of(File::Stat)
-      stat.ftype.should == 'link'
+      expect(stat).to be_instance_of(File::Stat)
+      expect(stat.ftype).to eq('link')
     end
 
     it "should return a File::Stat of ftype 'file' when calling stat on a symlink pointing to existing file" do
@@ -343,8 +650,8 @@ describe "Puppet::FileSystem" do
       Puppet::FileSystem.symlink(file, symlink)
 
       stat = Puppet::FileSystem.stat(symlink)
-      stat.should be_instance_of(File::Stat)
-      stat.ftype.should == 'file'
+      expect(stat).to be_instance_of(File::Stat)
+      expect(stat.ftype).to eq('file')
     end
 
     it "should return a File::Stat of ftype 'directory' when calling stat on a symlink pointing to existing directory" do
@@ -352,8 +659,8 @@ describe "Puppet::FileSystem" do
       Puppet::FileSystem.symlink(dir, symlink)
 
       stat = Puppet::FileSystem.stat(symlink)
-      stat.should be_instance_of(File::Stat)
-      stat.ftype.should == 'directory'
+      expect(stat).to be_instance_of(File::Stat)
+      expect(stat.ftype).to eq('directory')
 
       # on Windows, this won't get cleaned up if still linked
       Puppet::FileSystem.unlink(symlink)
@@ -368,7 +675,7 @@ describe "Puppet::FileSystem" do
       symlink2 = tmpfile("somefile_link2")
       Puppet::FileSystem.symlink(symlink, symlink2)
 
-      Puppet::FileSystem.stat(symlink2).ftype.should == 'file'
+      expect(Puppet::FileSystem.stat(symlink2).ftype).to eq('file')
     end
 
 
@@ -383,8 +690,8 @@ describe "Puppet::FileSystem" do
       symlink = tmpfile("somefile_link")
       Puppet::FileSystem.symlink(file, symlink)
 
-      Puppet::FileSystem.exist?(file).should be_true
-      Puppet::FileSystem.readlink(symlink).should == file.to_s
+      expect(Puppet::FileSystem.exist?(file)).to be_truthy
+      expect(Puppet::FileSystem.readlink(symlink)).to eq(file.to_s)
     end
 
     it "should not resolve entire symlink chain with readlink on a symlink'd symlink" do
@@ -396,16 +703,36 @@ describe "Puppet::FileSystem" do
       symlink2 = tmpfile("somefile_link2")
       Puppet::FileSystem.symlink(symlink, symlink2)
 
-      Puppet::FileSystem.exist?(file).should be_true
-      Puppet::FileSystem.readlink(symlink2).should == symlink.to_s
+      expect(Puppet::FileSystem.exist?(file)).to be_truthy
+      expect(Puppet::FileSystem.readlink(symlink2)).to eq(symlink.to_s)
     end
 
     it "should be able to readlink to resolve the physical path to a dangling symlink" do
       symlink = tmpfile("somefile_link")
       Puppet::FileSystem.symlink(missing_file, symlink)
 
-      Puppet::FileSystem.exist?(missing_file).should be_false
-      Puppet::FileSystem.readlink(symlink).should == missing_file.to_s
+      expect(Puppet::FileSystem.exist?(missing_file)).to be_falsey
+      expect(Puppet::FileSystem.readlink(symlink)).to eq(missing_file.to_s)
+    end
+
+    it "should be able to unlink a dangling symlink pointed at a file" do
+      symlink = tmpfile("somefile_link")
+      Puppet::FileSystem.symlink(file, symlink)
+      ::File.delete(file)
+      Puppet::FileSystem.unlink(symlink)
+
+      expect(Puppet::FileSystem).to_not be_exist(file)
+      expect(Puppet::FileSystem).to_not be_exist(symlink)
+    end
+
+    it "should be able to unlink a dangling symlink pointed at a directory" do
+      symlink = tmpfile("somedir_link")
+      Puppet::FileSystem.symlink(dir, symlink)
+      Dir.rmdir(dir)
+      Puppet::FileSystem.unlink(symlink)
+
+      expect(Puppet::FileSystem).to_not be_exist(dir)
+      expect(Puppet::FileSystem).to_not be_exist(symlink)
     end
 
     it "should delete only the symlink and not the target when calling unlink instance method" do
@@ -413,13 +740,13 @@ describe "Puppet::FileSystem" do
         symlink = tmpfile("#{Puppet::FileSystem.basename(target)}_link")
         Puppet::FileSystem.symlink(target, symlink)
 
-        Puppet::FileSystem.exist?(target).should be_true
-        Puppet::FileSystem.readlink(symlink).should == target.to_s
+        expect(Puppet::FileSystem.exist?(target)).to be_truthy
+        expect(Puppet::FileSystem.readlink(symlink)).to eq(target.to_s)
 
-        Puppet::FileSystem.unlink(symlink).should == 1 # count of files
+        expect(Puppet::FileSystem.unlink(symlink)).to eq(1) # count of files
 
-        Puppet::FileSystem.exist?(target).should be_true
-        Puppet::FileSystem.exist?(symlink).should be_false
+        expect(Puppet::FileSystem.exist?(target)).to be_truthy
+        expect(Puppet::FileSystem.exist?(symlink)).to be_falsey
       end
     end
 
@@ -428,48 +755,48 @@ describe "Puppet::FileSystem" do
         symlink = tmpfile("#{Puppet::FileSystem.basename(target)}_link")
         Puppet::FileSystem.symlink(target, symlink)
 
-        Puppet::FileSystem.exist?(target).should be_true
-        Puppet::FileSystem.readlink(symlink).should == target.to_s
+        expect(Puppet::FileSystem.exist?(target)).to be_truthy
+        expect(Puppet::FileSystem.readlink(symlink)).to eq(target.to_s)
 
-        Puppet::FileSystem.unlink(symlink).should == 1  # count of files
+        expect(Puppet::FileSystem.unlink(symlink)).to eq(1)  # count of files
 
-        Puppet::FileSystem.exist?(target).should be_true
-        Puppet::FileSystem.exist?(symlink).should be_false
+        expect(Puppet::FileSystem.exist?(target)).to be_truthy
+        expect(Puppet::FileSystem.exist?(symlink)).to be_falsey
       end
     end
 
     describe "unlink" do
       it "should delete files with unlink" do
-        Puppet::FileSystem.exist?(file).should be_true
+        expect(Puppet::FileSystem.exist?(file)).to be_truthy
 
-        Puppet::FileSystem.unlink(file).should == 1  # count of files
+        expect(Puppet::FileSystem.unlink(file)).to eq(1)  # count of files
 
-        Puppet::FileSystem.exist?(file).should be_false
+        expect(Puppet::FileSystem.exist?(file)).to be_falsey
       end
 
       it "should delete files with unlink class method" do
-        Puppet::FileSystem.exist?(file).should be_true
+        expect(Puppet::FileSystem.exist?(file)).to be_truthy
 
-        Puppet::FileSystem.unlink(file).should == 1  # count of files
+        expect(Puppet::FileSystem.unlink(file)).to eq(1)  # count of files
 
-        Puppet::FileSystem.exist?(file).should be_false
+        expect(Puppet::FileSystem.exist?(file)).to be_falsey
       end
 
       it "should delete multiple files with unlink class method" do
         paths = (1..3).collect do |i|
           f = tmpfile("somefile_#{i}")
           FileUtils.touch(f)
-          Puppet::FileSystem.exist?(f).should be_true
+          expect(Puppet::FileSystem.exist?(f)).to be_truthy
           f.to_s
         end
 
-        Puppet::FileSystem.unlink(*paths).should == 3  # count of files
+        expect(Puppet::FileSystem.unlink(*paths)).to eq(3)  # count of files
 
-        paths.each { |p| Puppet::FileSystem.exist?(p).should be_false  }
+        paths.each { |p| expect(Puppet::FileSystem.exist?(p)).to be_falsey  }
       end
 
       it "should raise Errno::EPERM or Errno::EISDIR when trying to delete a directory with the unlink class method" do
-        Puppet::FileSystem.exist?(dir).should be_true
+        expect(Puppet::FileSystem.exist?(dir)).to be_truthy
 
         ex = nil
         begin
@@ -478,31 +805,394 @@ describe "Puppet::FileSystem" do
           ex = e
         end
 
-        [
+        expect([
           Errno::EPERM, # Windows and OSX
           Errno::EISDIR # Linux
-        ].should include(ex.class)
+        ]).to include(ex.class)
 
-        Puppet::FileSystem.exist?(dir).should be_true
+        expect(Puppet::FileSystem.exist?(dir)).to be_truthy
+      end
+
+      it "should raise Errno::EACCESS when trying to delete a file whose parent directory does not allow execute/traverse", unless: Puppet::Util::Platform.windows? do
+        dir = tmpdir('file_system_unlink')
+        path = File.join(dir, 'deleteme')
+        mode = Puppet::FileSystem.stat(dir).mode
+        Puppet::FileSystem.chmod(0, dir)
+        begin
+          # JRuby 9.2.21.0 drops the path from the message..
+          message = Puppet::Util::Platform.jruby? ? /^Permission denied/ : /^Permission denied .* #{path}/
+          expect {
+            Puppet::FileSystem.unlink(path)
+          }.to raise_error(Errno::EACCES, message)
+        ensure
+          Puppet::FileSystem.chmod(mode, dir)
+        end
       end
     end
 
     describe "exclusive_create" do
       it "should create a file that doesn't exist" do
-        Puppet::FileSystem.exist?(missing_file).should be_false
+        expect(Puppet::FileSystem.exist?(missing_file)).to be_falsey
 
         Puppet::FileSystem.exclusive_create(missing_file, nil) {}
 
-        Puppet::FileSystem.exist?(missing_file).should be_true
+        expect(Puppet::FileSystem.exist?(missing_file)).to be_truthy
       end
 
       it "should raise Errno::EEXIST creating a file that does exist" do
-        Puppet::FileSystem.exist?(file).should be_true
+        expect(Puppet::FileSystem.exist?(file)).to be_truthy
 
         expect do
           Puppet::FileSystem.exclusive_create(file, nil) {}
         end.to raise_error(Errno::EEXIST)
       end
+    end
+
+    describe 'expand_path' do
+      it 'should raise an error when given nil, like Ruby File.expand_path' do
+        expect { File.expand_path(nil) }.to raise_error(TypeError)
+
+        # match Ruby behavior
+        expect { Puppet::FileSystem.expand_path(nil) }.to raise_error(TypeError)
+      end
+
+      it 'with an expanded path passed to Dir.glob, the same expanded path will be returned' do
+        # this exists specifically for Puppet::Pops::Loader::ModuleLoaders::FileBased#add_to_index
+        # which should receive an expanded path value from it's parent Environment
+        # and will later compare values generated by Dir.glob
+        tmp_long_file = tmpfile('foo.bar', tmpdir('super-long-thing-that-Windows-shortens'))
+        Puppet::FileSystem.touch(tmp_long_file)
+        expanded_path = Puppet::FileSystem.expand_path(tmp_long_file)
+
+        expect(expanded_path).to eq(Dir.glob(expanded_path).first)
+      end
+
+      describe 'on non-Windows', :unless => Puppet::Util::Platform.windows? do
+        it 'should produce the same results as the Ruby File.expand_path' do
+          # on Windows this may be 8.3 style, but not so on other platforms
+          # only done since expect(::File).to receive(:expand_path).with(path).at_least(:once)
+          # cannot be used since it will cause a stack overflow
+          path = tmpdir('foobar')
+
+          expect(Puppet::FileSystem.expand_path(path)).to eq(File.expand_path(path))
+        end
+      end
+
+      describe 'on Windows', :if => Puppet::Util::Platform.windows? do
+        let(:nonexist_file) { 'C:\\file~1.ext' }
+        let(:nonexist_path) { 'C:\\progra~1\\missing\\path\\file.ext' }
+
+        ['/', '\\'].each do |slash|
+          it "should return the absolute path including system drive letter when given #{slash}, like Ruby File.expand_path" do
+
+            # regardless of slash direction, return value is drive letter
+            expanded = Puppet::FileSystem.expand_path(slash)
+            expect(expanded).to match(/^[a-z]:/i)
+          end
+        end
+
+        it 'should behave like Rubys File.expand_path for a file that doesnt exist' do
+          expect(Puppet::FileSystem.exist?(nonexist_file)).to be_falsey
+          # this will change c:\\file~1.ext to c:/file~1.ext (existing Ruby behavior), but not expand any ~
+          ruby_expanded = File.expand_path(nonexist_file)
+          expect(ruby_expanded).to match(/~/)
+          expect(Puppet::FileSystem.expand_path(nonexist_file)).to eq(ruby_expanded)
+        end
+
+        it 'should behave like Rubys File.expand_path for a file with a parent path that doesnt exist' do
+          expect(Puppet::FileSystem.exist?(nonexist_path)).to be_falsey
+          # this will change c:\\progra~1 to c:/progra~1 (existing Ruby behavior), but not expand any ~
+          ruby_expanded = File.expand_path(nonexist_path)
+          expect(ruby_expanded).to match(/~/)
+          expect(Puppet::FileSystem.expand_path(nonexist_path)).to eq(ruby_expanded)
+        end
+
+        it 'should expand a shortened path completely, unlike Ruby File.expand_path' do
+          tmp_long_dir = tmpdir('super-long-thing-that-Windows-shortens')
+          short_path = Puppet::Util::Windows::File.get_short_pathname(tmp_long_dir)
+
+          # a shortened path to the temp dir will have a least 2 ~
+          # for instance, C:\\Users\\Administrator\\AppData\\Local\\Temp\\rspecrun2016####-####-#######\\super-long-thing-that-Windows-shortens\
+          # or C:\\Windows\\Temp\\rspecrun2016####-####-#######\\super-long-thing-that-Windows-shortens\
+          # will shorten to Temp\\rspecr~#\\super-~1
+          expect(short_path).to match(/~.*~/)
+
+          # expand with Ruby, noting not all ~ have been expanded
+          # which is the primary reason that a Puppet helper exists
+          ruby_expanded = File.expand_path(short_path)
+          expect(ruby_expanded).to match(/~/)
+
+          # Puppet expansion uses the Windows API and has no ~ remaining
+          puppet_expanded = Puppet::FileSystem.expand_path(short_path)
+          expect(puppet_expanded).to_not match(/~/)
+
+          # and the directories are one and the same
+          expect(File.identical?(short_path, puppet_expanded)).to be_truthy
+        end
+      end
+    end
+  end
+
+  describe '#replace_file' do
+    let(:dest) { tmpfile('replace_file') }
+    let(:content) { "some data" }
+
+    context 'when creating' do
+      it 'writes the data' do
+        Puppet::FileSystem.replace_file(dest) { |f| f.write(content) }
+
+        expect(Puppet::FileSystem.binread(dest)).to eq(content)
+      end
+
+      it 'writes in binary mode' do
+        Puppet::FileSystem.replace_file(dest) { |f| f.write("\x00\x01\x02") }
+
+        expect(Puppet::FileSystem.binread(dest)).to eq("\x00\x01\x02")
+      end
+
+      context 'on posix', unless: Puppet::Util::Platform.windows? do
+        it 'applies the default mode 0640' do
+          Puppet::FileSystem.replace_file(dest) { |f| f.write(content) }
+
+          mode = Puppet::FileSystem.stat(dest).mode
+          expect(mode & 07777).to eq(0640)
+        end
+
+        it 'applies the specified mode' do
+          Puppet::FileSystem.replace_file(dest, 0777) { |f| f.write(content) }
+
+          mode = Puppet::FileSystem.stat(dest).mode
+          expect(mode & 07777).to eq(0777)
+        end
+
+        it 'raises EACCES if we do not have permission' do
+          dir = tmpdir('file_system')
+          dest = File.join(dir, 'unwritable')
+
+          Puppet::FileSystem.chmod(0600, dir)
+
+          expect {
+            Puppet::FileSystem.replace_file(dest) { |_| }
+          }.to raise_error(Errno::EACCES, /Permission denied/)
+        end
+
+        it 'creates a read-only file' do
+          Puppet::FileSystem.replace_file(dest, 0400) { |f| f.write(content) }
+
+          expect(Puppet::FileSystem.binread(dest)).to eq(content)
+
+          mode = Puppet::FileSystem.stat(dest).mode
+          expect(mode & 07777).to eq(0400)
+        end
+
+        it 'preserves file ownership' do
+          FileUtils.touch(dest)
+          allow(File).to receive(:lstat).and_call_original
+          allow(File).to receive(:lstat).with(Pathname.new(dest)).and_return(double(uid: 1, gid: 2, 'directory?': false))
+
+          allow(File).to receive(:chown).and_call_original
+          expect(FileUtils).to receive(:chown).with(1, 2, any_args)
+
+          Puppet::FileSystem.replace_file(dest, 0644) { |f| f.write(content) }
+        end
+      end
+
+      context 'on windows', if: Puppet::Util::Platform.windows? do
+        it 'does not grant users access by default' do
+          Puppet::FileSystem.replace_file(dest) { |f| f.write(content) }
+
+          expects_private_file(dest)
+        end
+
+        it 'applies the specified mode' do
+          Puppet::FileSystem.replace_file(dest, 0644) { |f| f.write(content) }
+
+          expects_public_file(dest)
+        end
+
+        it 'rejects unsupported modes' do
+          expect {
+            Puppet::FileSystem.replace_file(dest, 0755) { |_| }
+          }.to raise_error(ArgumentError, /Only modes 0644, 0640, 0660, and 0440 are allowed/)
+        end
+
+        it 'falls back to fully qualified user name when sid retrieval fails' do
+          current_user_sid = Puppet::Util::Windows::SID.name_to_sid(Puppet::Util::Windows::ADSI::User.current_user_name)
+          allow(Puppet::Util::Windows::SID).to receive(:name_to_sid).with(Puppet::Util::Windows::ADSI::User.current_user_name).and_return(nil, current_user_sid)
+          allow(Puppet::Util::Windows::SID).to receive(:name_to_sid).with(Puppet::Util::Windows::ADSI::User.current_sam_compatible_user_name).and_call_original
+
+          Puppet::FileSystem.replace_file(dest, 0644) { |f| f.write(content) }
+          expects_public_file(dest)
+        end
+      end
+    end
+
+    context "when overwriting" do
+      before :each do
+        FileUtils.touch(dest)
+      end
+
+      it 'overwrites the content' do
+        Puppet::FileSystem.replace_file(dest) { |f| f.write(content) }
+
+        expect(Puppet::FileSystem.binread(dest)).to eq(content)
+      end
+
+      it 'raises ISDIR if the destination is a directory' do
+        dir = tmpdir('file_system')
+
+        expect {
+          Puppet::FileSystem.replace_file(dir) { |f| f.write(content) }
+        }.to raise_error(Errno::EISDIR, /Is a directory/)
+      end
+
+      it 'preserves the existing content if an error is raised' do
+        File.write(dest, 'existing content')
+
+        Puppet::FileSystem.replace_file(dest) { |f| raise 'whoops' } rescue nil
+
+        expect(Puppet::FileSystem.binread(dest)).to eq('existing content')
+      end
+
+      context 'on posix', unless: Puppet::Util::Platform.windows? do
+        it 'preserves the existing mode' do
+          Puppet::FileSystem.chmod(0600, dest)
+
+          Puppet::FileSystem.replace_file(dest) { |f| f.write(content) }
+
+          mode = Puppet::FileSystem.stat(dest).mode
+          expect(mode & 07777).to eq(0600)
+        end
+
+        it 'applies the specified mode' do
+          Puppet::FileSystem.chmod(0600, dest)
+
+          Puppet::FileSystem.replace_file(dest, 0777) { |f| f.write(content) }
+
+          mode = Puppet::FileSystem.stat(dest).mode
+          expect(mode & 07777).to eq(0777)
+        end
+
+        it 'updates a read-only file' do
+          Puppet::FileSystem.chmod(0400, dest)
+
+          Puppet::FileSystem.replace_file(dest) { |f| f.write(content) }
+
+          expect(Puppet::FileSystem.binread(dest)).to eq(content)
+
+          mode = Puppet::FileSystem.stat(dest).mode
+          expect(mode & 07777).to eq(0400)
+        end
+      end
+
+      context 'on windows', if: Puppet::Util::Platform.windows? do
+        it 'preserves the existing mode' do
+          old_sd = Puppet::Util::Windows::Security.get_security_descriptor(dest)
+
+          Puppet::FileSystem.replace_file(dest) { |f| f.write(content) }
+
+          new_sd = Puppet::Util::Windows::Security.get_security_descriptor(dest)
+          expect(old_sd.owner).to eq(new_sd.owner)
+          expect(old_sd.group).to eq(new_sd.group)
+          old_sd.dacl.each do |ace|
+            expect(new_sd.dacl).to include(an_object_having_attributes(sid: ace.sid, mask: ace.mask))
+          end
+        end
+
+        it 'applies 0644 mode' do
+          Puppet::FileSystem.replace_file(dest, 0644) { |f| f.write(content) }
+
+          expects_public_file(dest)
+        end
+
+        [0660, 0640, 0600, 0440].each do |mode|
+          it "applies #{mode} mode" do
+            Puppet::FileSystem.replace_file(dest, mode) { |f| f.write(content) }
+            current_sid = Puppet::Util::Windows::SID.name_to_sid(Puppet::Util::Windows::ADSI::User.current_user_name)
+            sd = Puppet::Util::Windows::Security.get_security_descriptor(dest)
+
+            expect(sd.dacl).to contain_exactly(
+              an_object_having_attributes(sid: Puppet::Util::Windows::SID::LocalSystem, mask: 0x1f01ff),
+              an_object_having_attributes(sid: Puppet::Util::Windows::SID::BuiltinAdministrators, mask: 0x1f01ff),
+              an_object_having_attributes(sid: current_sid, mask: 0x1f01ff),
+            )
+          end
+        end
+
+        it 'raises Errno::EACCES if access is denied' do
+          allow(Puppet::Util::Windows::Security).to receive(:get_security_descriptor).and_raise(Puppet::Util::Windows::Error.new('access denied', 5))
+
+          expect {
+            Puppet::FileSystem.replace_file(dest) { |f| f.write(content) }
+          }.to raise_error(Errno::EACCES, /Access is denied/)
+        end
+
+        it 'raises SystemCallError otherwise' do
+          allow(Puppet::Util::Windows::Security).to receive(:get_security_descriptor).and_raise(Puppet::Util::Windows::Error.new('arena is trashed', 7))
+
+          expect {
+            Puppet::FileSystem.replace_file(dest) { |f| f.write(content) }
+          }.to raise_error(SystemCallError, /The storage control blocks were destroyed/)
+        end
+      end
+    end
+  end
+
+  context '#touch' do
+    let(:dest) { tmpfile('touch_file') }
+
+    it 'creates a file' do
+      Puppet::FileSystem.touch(dest)
+
+      expect(File).to be_file(dest)
+    end
+
+    it 'updates the mtime for an existing file' do
+      Puppet::FileSystem.touch(dest)
+
+      now = Time.now
+      allow(Time).to receive(:now).and_return(now)
+
+      Puppet::FileSystem.touch(dest)
+
+      expect(File.mtime(dest)).to be_within(1).of(now)
+    end
+
+    it 'allows the mtime to be passed in' do
+      tomorrow = Time.now + (24 * 60 * 60)
+
+      Puppet::FileSystem.touch(dest, mtime: tomorrow)
+
+      expect(File.mtime(dest)).to be_within(1).of(tomorrow)
+    end
+  end
+
+  context '#chmod' do
+    let(:dest) { tmpfile('abs_file') }
+
+    it "changes the mode given an absolute string" do
+      Puppet::FileSystem.touch(dest)
+      Puppet::FileSystem.chmod(0644, dest)
+      expect(File.stat(dest).mode & 0777).to eq(0644)
+    end
+
+    it "returns true if given an absolute pathname" do
+      Puppet::FileSystem.touch(dest)
+      Puppet::FileSystem.chmod(0644, Pathname.new(dest))
+      expect(File.stat(dest).mode & 0777).to eq(0644)
+    end
+
+    it "raises if the file doesn't exist" do
+      klass = Puppet::Util::Platform.windows? ? Puppet::Error : Errno::ENOENT
+      expect {
+        Puppet::FileSystem.chmod(0644, dest)
+      }.to raise_error(klass)
+    end
+
+    it "raises ArgumentError if dest is invalid" do
+      expect {
+        Puppet::FileSystem.chmod(0644, nil)
+      }.to raise_error(ArgumentError, /expected Pathname, got: 'NilClass'/)
     end
   end
 end

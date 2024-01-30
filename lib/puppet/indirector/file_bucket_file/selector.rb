@@ -1,4 +1,6 @@
-require 'puppet/indirector/code'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/indirector/code'
 
 module Puppet::FileBucketFile
   class Selector < Puppet::Indirector::Code
@@ -50,4 +52,3 @@ module Puppet::FileBucketFile
     end
   end
 end
-

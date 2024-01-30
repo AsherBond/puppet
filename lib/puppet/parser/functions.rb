@@ -1,5 +1,9 @@
-require 'puppet/util/autoload'
-require 'puppet/parser/scope'
+# frozen_string_literal: true
+
+require_relative '../../puppet/util/autoload'
+require_relative '../../puppet/parser/scope'
+require_relative '../../puppet/pops/adaptable'
+require_relative '../../puppet/concurrent/lock'
 
 # A module for managing parser functions.  Each specified function
 # is added to a central module that then gets included into the Scope
@@ -17,15 +21,47 @@ module Puppet::Parser::Functions
   #
   # @api private
   def self.reset
-    @modules = {}
-
     # Runs a newfunction to create a function for each of the log levels
+    root_env = Puppet.lookup(:root_environment)
+    AnonymousModuleAdapter.clear(root_env)
     Puppet::Util::Log.levels.each do |level|
       newfunction(level,
-                  :environment => Puppet.lookup(:root_environment),
-                  :doc => "Log a message on the server at level #{level.to_s}.") do |vals|
+                  :environment => root_env,
+                  :doc => "Log a message on the server at level #{level}.") do |vals|
         send(level, vals.join(" "))
       end
+    end
+  end
+
+  class AutoloaderDelegate
+    attr_reader :delegatee
+
+    def initialize
+      @delegatee = Puppet::Util::Autoload.new(self, "puppet/parser/functions")
+    end
+
+    def loadall(env = Puppet.lookup(:current_environment))
+      if Puppet[:strict] != :off
+        Puppet.warn_once('deprecations', 'Puppet::Parser::Functions#loadall', _("The method 'Puppet::Parser::Functions.autoloader#loadall' is deprecated in favor of using 'Scope#call_function'."))
+      end
+
+      @delegatee.loadall(env)
+    end
+
+    def load(name, env = Puppet.lookup(:current_environment))
+      if Puppet[:strict] != :off
+        Puppet.warn_once('deprecations', "Puppet::Parser::Functions#load('#{name}')", _("The method 'Puppet::Parser::Functions.autoloader#load(\"%{name}\")' is deprecated in favor of using 'Scope#call_function'.") % { name: name })
+      end
+
+      @delegatee.load(name, env)
+    end
+
+    def loaded?(name)
+      if Puppet[:strict] != :off
+        Puppet.warn_once('deprecations', "Puppet::Parser::Functions.loaded?('#{name}')", _("The method 'Puppet::Parser::Functions.autoloader#loaded?(\"%{name}\")' is deprecated in favor of using 'Scope#call_function'.") % { name: name })
+      end
+
+      @delegatee.loaded?(name)
     end
   end
 
@@ -33,30 +69,47 @@ module Puppet::Parser::Functions
   #
   # @api private
   def self.autoloader
-    @autoloader ||= Puppet::Util::Autoload.new(
-      self, "puppet/parser/functions", :wrap => false
-    )
+    @autoloader ||= AutoloaderDelegate.new
   end
+
+  # An adapter that ties the anonymous module that acts as the container for all 3x functions to the environment
+  # where the functions are created. This adapter ensures that the life-cycle of those functions doesn't exceed
+  # the life-cycle of the environment.
+  #
+  # @api private
+  class AnonymousModuleAdapter < Puppet::Pops::Adaptable::Adapter
+    attr_accessor :module
+
+    def self.create_adapter(env)
+      adapter = super(env)
+      adapter.module = Module.new do
+        @metadata = {}
+
+        def self.all_function_info
+          @metadata
+        end
+
+        def self.get_function_info(name)
+          @metadata[name]
+        end
+
+        def self.add_function_info(name, info)
+          @metadata[name] = info
+        end
+      end
+      adapter
+    end
+  end
+
+  @environment_module_lock = Puppet::Concurrent::Lock.new
 
   # Get the module that functions are mixed into corresponding to an
   # environment
   #
   # @api private
   def self.environment_module(env)
-    @modules[env.name] ||= Module.new do
-      @metadata = {}
-
-      def self.all_function_info
-        @metadata
-      end
-
-      def self.get_function_info(name)
-        @metadata[name]
-      end
-
-      def self.add_function_info(name, info)
-        @metadata[name] = info
-      end
+    @environment_module_lock.synchronize do
+      AnonymousModuleAdapter.adapt(env).module
     end
   end
 
@@ -72,7 +125,7 @@ module Puppet::Parser::Functions
   # extend the behavior and functionality of Puppet.
   #
   # See also [Docs: Custom
-  # Functions](http://docs.puppetlabs.com/guides/custom_functions.html)
+  # Functions](https://puppet.com/docs/puppet/5.5/lang_write_functions_in_puppet.html)
   #
   # @example Define a new Puppet DSL Function
   #     >> Puppet::Parser::Functions.newfunction(:double, :arity => 1,
@@ -115,7 +168,7 @@ module Puppet::Parser::Functions
   #   This string will be extracted by documentation generation tools.
   #
   # @option options [Integer] :arity (-1) the
-  #   [arity](http://en.wikipedia.org/wiki/Arity) of the function.  When
+  #   [arity](https://en.wikipedia.org/wiki/Arity) of the function.  When
   #   specified as a positive integer the function is expected to receive
   #   _exactly_ the specified number of arguments.  When specified as a
   #   negative number, the function is expected to receive _at least_ the
@@ -136,13 +189,13 @@ module Puppet::Parser::Functions
     name = name.intern
     environment = options[:environment] || Puppet.lookup(:current_environment)
 
-    Puppet.warning "Overwriting previous definition for function #{name}" if get_function(name, environment)
+    Puppet.warning _("Overwriting previous definition for function %{name}") % { name: name } if get_function(name, environment)
 
     arity = options[:arity] || -1
     ftype = options[:type] || :statement
 
     unless ftype == :statement or ftype == :rvalue
-      raise Puppet::DevError, "Invalid statement type #{ftype.inspect}"
+      raise Puppet::DevError, _("Invalid statement type %{type}") % { type: ftype.inspect }
     end
 
     # the block must be installed as a method because it may use "return",
@@ -154,21 +207,24 @@ module Puppet::Parser::Functions
     env_module = environment_module(environment)
 
     env_module.send(:define_method, fname) do |*args|
-      Puppet::Util::Profiler.profile("Called #{name}", [:functions, name]) do
+      Puppet::Util::Profiler.profile(_("Called %{name}") % { name: name }, [:functions, name]) do
         if args[0].is_a? Array
           if arity >= 0 and args[0].size != arity
-            raise ArgumentError, "#{name}(): Wrong number of arguments given (#{args[0].size} for #{arity})"
-          elsif arity < 0 and args[0].size < (arity+1).abs
-            raise ArgumentError, "#{name}(): Wrong number of arguments given (#{args[0].size} for minimum #{(arity+1).abs})"
+            raise ArgumentError, _("%{name}(): Wrong number of arguments given (%{arg_count} for %{arity})") % { name: name, arg_count: args[0].size, arity: arity }
+          elsif arity < 0 and args[0].size < (arity + 1).abs
+            raise ArgumentError, _("%{name}(): Wrong number of arguments given (%{arg_count} for minimum %{min_arg_count})") % { name: name, arg_count: args[0].size, min_arg_count: (arity + 1).abs }
           end
-          self.send(real_fname, args[0])
+
+          r = Puppet::Pops::Evaluator::Runtime3FunctionArgumentConverter.convert_return(self.send(real_fname, args[0]))
+          # avoid leaking aribtrary value if not being an rvalue function
+          options[:type] == :rvalue ? r : nil
         else
-          raise ArgumentError, "custom functions must be called with a single array that contains the arguments. For example, function_example([1]) instead of function_example(1)"
+          raise ArgumentError, _("custom functions must be called with a single array that contains the arguments. For example, function_example([1]) instead of function_example(1)")
         end
       end
     end
 
-    func = {:arity => arity, :type => ftype, :name => fname}
+    func = { :arity => arity, :type => ftype, :name => fname }
     func[:doc] = options[:doc] if options[:doc]
 
     env_module.add_function_info(name, func)
@@ -188,9 +244,9 @@ module Puppet::Parser::Functions
   def self.function(name, environment = Puppet.lookup(:current_environment))
     name = name.intern
 
-    func = nil
-    unless func = get_function(name, environment)
-      autoloader.load(name, environment)
+    func = get_function(name, environment)
+    unless func
+      autoloader.delegatee.load(name, environment)
       func = get_function(name, environment)
     end
 
@@ -202,11 +258,11 @@ module Puppet::Parser::Functions
   end
 
   def self.functiondocs(environment = Puppet.lookup(:current_environment))
-    autoloader.loadall
+    autoloader.delegatee.loadall(environment)
 
-    ret = ""
+    ret = ''.dup
 
-    merged_functions(environment).sort { |a,b| a[0].to_s <=> b[0].to_s }.each do |name, hash|
+    merged_functions(environment).sort { |a, b| a[0].to_s <=> b[0].to_s }.each do |name, hash|
       ret << "#{name}\n#{"-" * name.to_s.length}\n"
       if hash[:doc]
         ret << Puppet::Util::Docs.scrub(hash[:doc])
@@ -257,6 +313,12 @@ module Puppet::Parser::Functions
 
     def get_function(name, environment)
       environment_module(environment).get_function_info(name.intern) || environment_module(Puppet.lookup(:root_environment)).get_function_info(name.intern)
+    end
+  end
+
+  class Error
+    def self.is4x(name)
+      raise Puppet::ParseError, _("%{name}() can only be called using the 4.x function API. See Scope#call_function") % { name: name }
     end
   end
 end

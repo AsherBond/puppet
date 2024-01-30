@@ -1,13 +1,13 @@
+# frozen_string_literal: true
+
 # This is our main way of managing processes right now.
 #
 # a service is distinct from a process in that services
 # can only be managed through the interface of an init script
 # which is why they have a search path for initscripts and such
 
-
 module Puppet
-
-  newtype(:service) do
+  Type.newtype(:service) do
     @doc = "Manage running services.  Service support unfortunately varies
       widely by platform --- some platforms have very little if any concept of a
       running service, and some have a very codified and powerful concept.
@@ -33,20 +33,37 @@ module Puppet
       * If you do neither, the service's stop and start commands will be used."
 
     feature :refreshable, "The provider can restart the service.",
-      :methods => [:restart]
+            :methods => [:restart]
 
-    feature :enableable, "The provider can enable and disable the service",
-      :methods => [:disable, :enable, :enabled?]
+    feature :enableable, "The provider can enable and disable the service.",
+            :methods => [:disable, :enable, :enabled?]
+
+    feature :delayed_startable, "The provider can set service to delayed start",
+            :methods => [:delayed_start]
+
+    feature :manual_startable, "The provider can set service to manual start",
+            :methods => [:manual_start]
 
     feature :controllable, "The provider uses a control variable."
 
     feature :flaggable, "The provider can pass flags to the service."
 
+    feature :maskable, "The provider can 'mask' the service.",
+            :methods => [:mask]
+
+    feature :configurable_timeout, "The provider can specify a minumum timeout for syncing service properties"
+
+    feature :manages_logon_credentials, "The provider can specify the logon credentials used for a service"
+
     newproperty(:enable, :required_features => :enableable) do
       desc "Whether a service should be enabled to start at boot.
-        This property behaves quite differently depending on the platform;
+        This property behaves differently depending on the platform;
         wherever possible, it relies on local tools to enable or disable
-        a given service."
+        a given service. Default values depend on the platform.
+
+        If you don't specify a value for the `enable` attribute, Puppet leaves
+        that aspect of the service alone and your operating system determines
+        the behavior."
 
       newvalue(:true, :event => :service_enabled) do
         provider.enable
@@ -56,24 +73,34 @@ module Puppet
         provider.disable
       end
 
-      newvalue(:manual, :event => :service_manual_start) do
+      newvalue(:manual, :event => :service_manual_start, :required_features => :manual_startable) do
         provider.manual_start
+      end
+
+      # This only makes sense on systemd systems. Otherwise, it just defaults
+      # to disable.
+      newvalue(:mask, :event => :service_disabled, :required_features => :maskable) do
+        provider.mask
       end
 
       def retrieve
         provider.enabled?
       end
 
-      validate do |value|
-        if value == :manual and !Puppet.features.microsoft_windows?
-          raise Puppet::Error.new("Setting enable to manual is only supported on Microsoft Windows.")
-        end
+      newvalue(:delayed, :event => :service_delayed_start, :required_features => :delayed_startable) do
+        provider.delayed_start
+      end
+
+      def insync?(current)
+        return provider.enabled_insync?(current) if provider.respond_to?(:enabled_insync?)
+
+        super(current)
       end
     end
 
     # Handle whether the service should actually be running right now.
     newproperty(:ensure) do
-      desc "Whether a service should be running."
+      desc "Whether a service should be running. Default values depend on the platform."
 
       newvalue(:stopped, :event => :service_stopped) do
         provider.stop
@@ -91,15 +118,43 @@ module Puppet
       end
 
       def sync
+        property = @resource.property(:logonaccount)
+        if property
+          val = property.retrieve
+          property.sync unless property.safe_insync?(val)
+        end
+
         event = super()
 
-        if property = @resource.property(:enable)
+        property = @resource.property(:enable)
+        if property
           val = property.retrieve
           property.sync unless property.safe_insync?(val)
         end
 
         event
       end
+    end
+
+    newproperty(:logonaccount, :required_features => :manages_logon_credentials) do
+      desc "Specify an account for service logon"
+
+      def insync?(current)
+        return provider.logonaccount_insync?(current) if provider.respond_to?(:logonaccount_insync?)
+
+        super(current)
+      end
+    end
+
+    newparam(:logonpassword, :required_features => :manages_logon_credentials) do
+      desc "Specify a password for service logon. Default value is an empty string (when logonaccount is specified)."
+
+      validate do |value|
+        raise ArgumentError, _("Passwords cannot include ':'") if value.is_a?(String) && value.include?(":")
+      end
+
+      sensitive true
+      defaultto { @resource[:logonaccount] ? "" : nil }
     end
 
     newproperty(:flags, :required_features => :flaggable) do
@@ -115,8 +170,7 @@ module Puppet
 
     newparam(:hasstatus) do
       desc "Declare whether the service's init script has a functional status
-        command; defaults to `true`. This attribute's default value changed in
-        Puppet 2.7.0.
+        command. This attribute's default value changed in Puppet 2.7.0.
 
         The init script's status command must return 0 if the service is
         running and a nonzero value otherwise. Ideally, these exit codes
@@ -204,20 +258,34 @@ module Puppet
       desc "The control variable used to manage services (originally for HP-UX).
         Defaults to the upcased service name plus `START` replacing dots with
         underscores, for those providers that support the `controllable` feature."
-      defaultto { resource.name.gsub(".","_").upcase + "_START" if resource.provider.controllable? }
+      defaultto { resource.name.tr(".", "_").upcase + "_START" if resource.provider.controllable? }
     end
 
     newparam :hasrestart do
       desc "Specify that an init script has a `restart` command.  If this is
         false and you do not specify a command in the `restart` attribute,
-        the init script's `stop` and `start` commands will be used.
-
-        Defaults to false."
+        the init script's `stop` and `start` commands will be used."
       newvalues(:true, :false)
     end
 
     newparam(:manifest) do
       desc "Specify a command to config a service, or a path to a manifest to do so."
+    end
+
+    newparam(:timeout, :required_features => :configurable_timeout) do
+      desc "Specify an optional minimum timeout (in seconds) for puppet to wait when syncing service properties"
+      defaultto { provider.respond_to?(:default_timeout) ? provider.default_timeout : 10 }
+
+      munge do |value|
+        begin
+          value = value.to_i
+          raise if value < 1
+
+          value
+        rescue
+          raise Puppet::Error.new(_("\"%{value}\" is not a positive integer: the timeout parameter must be specified as a positive integer") % { value: value })
+        end
+      end
     end
 
     # Basically just a synonym for restarting.  Used to respond
@@ -228,6 +296,16 @@ module Puppet
         provider.restart
       else
         debug "Skipping restart; service is not running"
+      end
+    end
+
+    def self.needs_ensure_retrieved
+      false
+    end
+
+    validate do
+      if @parameters[:logonpassword] && @parameters[:logonaccount].nil?
+        raise Puppet::Error.new(_("The 'logonaccount' parameter is mandatory when setting 'logonpassword'."))
       end
     end
   end

@@ -33,13 +33,6 @@ require 'rbconfig'
 require 'find'
 require 'fileutils'
 require 'tempfile'
-begin
-  require 'ftools' # apparently on some system ftools doesn't get loaded
-  $haveftools = true
-rescue LoadError
-  puts "ftools not found.  Using FileUtils instead.."
-  $haveftools = false
-end
 require 'optparse'
 require 'ostruct'
 
@@ -51,7 +44,7 @@ rescue LoadError
   $haverdoc = false
 end
 
-PREREQS = %w{openssl facter cgi hiera}
+PREREQS = %w{openssl facter cgi}
 MIN_FACTER_VERSION = 1.5
 
 InstallOptions = OpenStruct.new
@@ -67,33 +60,7 @@ def do_configs(configs, target, strip = 'conf/')
   Dir.mkdir(target) unless File.directory? target
   configs.each do |cf|
     ocf = File.join(InstallOptions.config_dir, cf.gsub(/#{strip}/, ''))
-    if $haveftools
-      File.install(cf, ocf, 0644, true)
-    else
-      FileUtils.install(cf, ocf, {:mode => 0644, :preserve => true, :verbose => true})
-    end
-  end
-
-  if $operatingsystem == 'windows'
-    src_dll = 'ext/windows/eventlog/puppetres.dll'
-    dst_dll = File.join(InstallOptions.bin_dir, 'puppetres.dll')
-    if $haveftools
-      File.install(src_dll, dst_dll, 0644, true)
-    else
-      FileUtils.install(src_dll, dst_dll, {:mode => 0644, :preserve => true, :verbose => true})
-    end
-
-    require 'win32/registry'
-    include Win32::Registry::Constants
-
-    begin
-      Win32::Registry::HKEY_LOCAL_MACHINE.create('SYSTEM\CurrentControlSet\services\eventlog\Application\Puppet', KEY_ALL_ACCESS | 0x0100) do |reg|
-        reg.write_s('EventMessageFile', dst_dll.tr('/', '\\'))
-        reg.write_i('TypesSupported', 0x7)
-      end
-    rescue Win32::Registry::Error => e
-      warn "Failed to create puppet eventlog registry key: #{e}"
-    end
+    FileUtils.install(cf, ocf, mode: 0644, preserve: true, verbose: true)
   end
 end
 
@@ -110,15 +77,9 @@ def do_libs(libs, strip = 'lib/')
     next if File.directory? lf
     olf = File.join(InstallOptions.site_dir, lf.sub(/^#{strip}/, ''))
     op = File.dirname(olf)
-    if $haveftools
-      File.makedirs(op, true)
-      File.chmod(0755, op)
-      File.install(lf, olf, 0644, true)
-    else
-      FileUtils.makedirs(op, {:mode => 0755, :verbose => true})
-      FileUtils.chmod(0755, op)
-      FileUtils.install(lf, olf, {:mode => 0644, :preserve => true, :verbose => true})
-    end
+    FileUtils.makedirs(op, mode: 0755, verbose: true)
+    FileUtils.chmod(0755, op)
+    FileUtils.install(lf, olf, mode: 0644, preserve: true, verbose: true)
   end
 end
 
@@ -126,18 +87,27 @@ def do_man(man, strip = 'man/')
   man.each do |mf|
     omf = File.join(InstallOptions.man_dir, mf.gsub(/#{strip}/, ''))
     om = File.dirname(omf)
-    if $haveftools
-      File.makedirs(om, true)
-      File.chmod(0755, om)
-      File.install(mf, omf, 0644, true)
-    else
-      FileUtils.makedirs(om, {:mode => 0755, :verbose => true})
-      FileUtils.chmod(0755, om)
-      FileUtils.install(mf, omf, {:mode => 0644, :preserve => true, :verbose => true})
+    FileUtils.makedirs(om, mode: 0755, verbose: true)
+    FileUtils.chmod(0755, om)
+    FileUtils.install(mf, omf, mode: 0644, preserve: true, verbose: true)
+    # Solaris does not support gzipped man pages. When called with
+    # --no-check-prereqs/without facter the default gzip behavior still applies
+    unless $osname == "Solaris"
+      gzip = %x{which gzip}
+      gzip.chomp!
+      %x{#{gzip} -f #{omf}}
     end
-    gzip = %x{which gzip}
-    gzip.chomp!
-    %x{#{gzip} -f #{omf}}
+  end
+end
+
+def do_locales(locale, strip = 'locales/')
+  locale.each do |lf|
+    next if File.directory? lf
+    olf = File.join(InstallOptions.locale_dir, lf.sub(/^#{strip}/, ''))
+    op = File.dirname(olf)
+    FileUtils.makedirs(op, mode: 0755, verbose: true)
+    FileUtils.chmod(0755, op)
+    FileUtils.install(lf, olf, mode: 0644, preserve: true, verbose: true)
   end
 end
 
@@ -152,12 +122,12 @@ def check_prereqs
         facter_version = Facter.version.to_f
         if facter_version < MIN_FACTER_VERSION
           puts "Facter version: #{facter_version}; minimum required: #{MIN_FACTER_VERSION}; cannot install"
-          exit -1
+          exit(-1)
         end
       end
     rescue LoadError
       puts "Could not load #{pre}; cannot install"
-      exit -1
+      exit(-1)
     end
   }
 end
@@ -166,14 +136,14 @@ end
 # Prepare the file installation.
 #
 def prepare_installation
-  $operatingsystem = Facter["operatingsystem"].value
-
   InstallOptions.configs = true
+  InstallOptions.check_prereqs = true
+  InstallOptions.batch_files = true
 
   # Only try to do docs if we're sure they have rdoc
   if $haverdoc
     InstallOptions.rdoc  = true
-    InstallOptions.ri  = $operatingsystem != "windows"
+    InstallOptions.ri  = true
   else
     InstallOptions.rdoc  = false
     InstallOptions.ri  = false
@@ -189,21 +159,35 @@ def prepare_installation
     opts.on('--[no-]ri', 'Prevents the creation of RI output.', 'Default off on mswin32.') do |onri|
       InstallOptions.ri = onri
     end
-    opts.on('--[no-]tests', 'Prevents the execution of unit tests.', 'Default off.') do |ontest|
-      InstallOptions.tests = ontest
-      warn "The tests flag is no longer functional in Puppet and is deprecated as of Dec 19, 2012. It will be removed in a future version of Puppet."
-    end
     opts.on('--[no-]configs', 'Prevents the installation of config files', 'Default off.') do |ontest|
       InstallOptions.configs = ontest
     end
     opts.on('--destdir[=OPTIONAL]', 'Installation prefix for all targets', 'Default essentially /') do |destdir|
       InstallOptions.destdir = destdir
     end
-    opts.on('--configdir[=OPTIONAL]', 'Installation directory for config files', 'Default /etc/puppet') do |configdir|
+    opts.on('--configdir[=OPTIONAL]', 'Installation directory for config files', 'Default /etc/puppetlabs/puppet') do |configdir|
       InstallOptions.configdir = configdir
+    end
+    opts.on('--codedir[=OPTIONAL]', 'Installation directory for code files', 'Default /etc/puppetlabs/code') do |codedir|
+      InstallOptions.codedir = codedir
+    end
+    opts.on('--vardir[=OPTIONAL]', 'Installation directory for var files', 'Default /opt/puppetlabs/puppet/cache') do |vardir|
+      InstallOptions.vardir = vardir
+    end
+    opts.on('--publicdir[=OPTIONAL]', 'Installation directory for public files such as the `last_run_summary.yaml` report', 'Default /opt/puppetlabs/puppet/public') do |publicdir|
+      InstallOptions.publicdir = publicdir
+    end
+    opts.on('--rundir[=OPTIONAL]', 'Installation directory for state files', 'Default /var/run/puppetlabs') do |rundir|
+      InstallOptions.rundir = rundir
+    end
+    opts.on('--logdir[=OPTIONAL]', 'Installation directory for log files', 'Default /var/log/puppetlabs/puppet') do |logdir|
+      InstallOptions.logdir = logdir
     end
     opts.on('--bindir[=OPTIONAL]', 'Installation directory for binaries', 'overrides RbConfig::CONFIG["bindir"]') do |bindir|
       InstallOptions.bindir = bindir
+    end
+    opts.on('--localedir[=OPTIONAL]', 'Installation directory for locale information', 'Default /opt/puppetlabs/puppet/share/locale') do |localedir|
+      InstallOptions.localedir = localedir
     end
     opts.on('--ruby[=OPTIONAL]', 'Ruby interpreter to use with installation', 'overrides ruby used to call install.rb') do |ruby|
       InstallOptions.ruby = ruby
@@ -213,6 +197,12 @@ def prepare_installation
     end
     opts.on('--mandir[=OPTIONAL]', 'Installation directory for man pages', 'overrides RbConfig::CONFIG["mandir"]') do |mandir|
       InstallOptions.mandir = mandir
+    end
+    opts.on('--[no-]check-prereqs', 'Prevents validation of prerequisite libraries', 'Default on') do |prereq|
+      InstallOptions.check_prereqs = prereq
+    end
+    opts.on('--no-batch-files', 'Prevents installation of batch files for windows', 'Default off') do |batch_files|
+      InstallOptions.batch_files = false
     end
     opts.on('--quick', 'Performs a quick installation. Only the', 'installation is done.') do |quick|
       InstallOptions.rdoc    = false
@@ -244,24 +234,75 @@ def prepare_installation
     RbConfig::CONFIG['bindir'] = "/usr/bin"
   end
 
+  # Here we only set $osname if we have opted to check for prereqs.
+  # Otherwise facter won't be guaranteed to be present.
+  if InstallOptions.check_prereqs
+    check_prereqs
+    $osname = Facter.value('os.name')
+  end
+
   if not InstallOptions.configdir.nil?
     configdir = InstallOptions.configdir
-  elsif $operatingsystem == "windows"
-    begin
-      require 'win32/dir'
-    rescue LoadError => e
-      puts "Cannot run on Microsoft Windows without the win32-process, win32-dir & win32-service gems: #{e}"
-      exit -1
-    end
-    configdir = File.join(Dir::COMMON_APPDATA, "PuppetLabs", "puppet", "etc")
+  elsif $osname == "windows"
+    configdir = File.join(ENV['ALLUSERSPROFILE'], "PuppetLabs", "puppet", "etc")
   else
-    configdir = "/etc/puppet"
+    configdir = "/etc/puppetlabs/puppet"
+  end
+
+  if not InstallOptions.codedir.nil?
+    codedir = InstallOptions.codedir
+  elsif $osname == "windows"
+    codedir = File.join(ENV['ALLUSERSPROFILE'], "PuppetLabs", "code")
+  else
+    codedir = "/etc/puppetlabs/code"
+  end
+
+  if not InstallOptions.vardir.nil?
+    vardir = InstallOptions.vardir
+  elsif $osname == "windows"
+    vardir = File.join(ENV['ALLUSERSPROFILE'], "PuppetLabs", "puppet", "cache")
+  else
+    vardir = "/opt/puppetlabs/puppet/cache"
+  end
+
+  if not InstallOptions.publicdir.nil?
+    publicdir = InstallOptions.publicdir
+  elsif $osname == "windows"
+    publicdir = File.join(ENV['ALLUSERSPROFILE'], "PuppetLabs", "puppet", "public")
+  else
+    publicdir = "/opt/puppetlabs/puppet/public"
+  end
+
+  if not InstallOptions.rundir.nil?
+    rundir = InstallOptions.rundir
+  elsif $osname == "windows"
+    rundir = File.join(ENV['ALLUSERSPROFILE'], "PuppetLabs", "puppet", "var", "run")
+  else
+    rundir = "/var/run/puppetlabs"
+  end
+
+  if not InstallOptions.logdir.nil?
+    logdir = InstallOptions.logdir
+  elsif $osname == "windows"
+    logdir = File.join(ENV['ALLUSERSPROFILE'], "PuppetLabs", "puppet", "var", "log")
+  else
+    logdir = "/var/log/puppetlabs/puppet"
   end
 
   if not InstallOptions.bindir.nil?
     bindir = InstallOptions.bindir
   else
     bindir = RbConfig::CONFIG['bindir']
+  end
+
+  if not InstallOptions.localedir.nil?
+    localedir = InstallOptions.localedir
+  else
+    if $osname == "windows"
+      localedir = File.join(ENV['PROGRAMFILES'], "Puppet Labs", "Puppet", "puppet", "share", "locale")
+    else
+      localedir = "/opt/puppetlabs/puppet/share/locale"
+    end
   end
 
   if not InstallOptions.sitelibdir.nil?
@@ -296,20 +337,38 @@ def prepare_installation
   end
 
   configdir = join(destdir, configdir)
+  codedir = join(destdir, codedir)
+  vardir = join(destdir, vardir)
+  publicdir = join(destdir, publicdir)
+  rundir = join(destdir, rundir)
+  logdir = join(destdir, logdir)
   bindir = join(destdir, bindir)
+  localedir = join(destdir, localedir)
   mandir = join(destdir, mandir)
   sitelibdir = join(destdir, sitelibdir)
 
   FileUtils.makedirs(configdir) if InstallOptions.configs
+  FileUtils.makedirs(codedir)
   FileUtils.makedirs(bindir)
   FileUtils.makedirs(mandir)
   FileUtils.makedirs(sitelibdir)
+  FileUtils.makedirs(vardir)
+  FileUtils.makedirs(publicdir)
+  FileUtils.makedirs(rundir)
+  FileUtils.makedirs(logdir)
+  FileUtils.makedirs(localedir)
 
   InstallOptions.site_dir = sitelibdir
+  InstallOptions.codedir = codedir
   InstallOptions.config_dir = configdir
-  InstallOptions.bin_dir  = bindir
-  InstallOptions.lib_dir  = libdir
-  InstallOptions.man_dir  = mandir
+  InstallOptions.bin_dir = bindir
+  InstallOptions.lib_dir = libdir
+  InstallOptions.man_dir = mandir
+  InstallOptions.var_dir = vardir
+  InstallOptions.public_dir = publicdir
+  InstallOptions.run_dir = rundir
+  InstallOptions.log_dir = logdir
+  InstallOptions.locale_dir = localedir
 end
 
 ##
@@ -317,7 +376,7 @@ end
 # by stripping the drive letter, but only if the basedir is not empty.
 #
 def join(basedir, dir)
-  return "#{basedir}#{dir[2..-1]}" if $operatingsystem == "windows" and basedir.length > 0 and dir.length > 2
+  return "#{basedir}#{dir[2..-1]}" if $osname == "windows" and basedir.length > 0 and dir.length > 2
 
   "#{basedir}#{dir}"
 end
@@ -339,6 +398,7 @@ end
 
 def build_ri(files)
   return unless $haverdoc
+  return if $osname == "windows"
   begin
     ri = RDoc::RDoc.new
     #ri.document(["--ri-site", "--merge"] + files)
@@ -367,63 +427,73 @@ def install_binfile(from, op_file, target)
 
   File.open(from) do |ip|
     File.open(tmp_file.path, "w") do |op|
-      op.puts "#!#{ruby}"
+      op.puts "#!#{ruby}" unless $osname == "windows"
       contents = ip.readlines
       contents.shift if contents[0] =~ /^#!/
       op.write contents.join
     end
   end
 
-  if $operatingsystem == "windows"
+  if $osname == "windows" && InstallOptions.batch_files
     installed_wrapper = false
 
-    if File.exists?("#{from}.bat")
-      FileUtils.install("#{from}.bat", File.join(target, "#{op_file}.bat"), :mode => 0755, :preserve => true, :verbose => true)
-      installed_wrapper = true
-    end
+    unless File.extname(from) =~ /\.(cmd|bat)/
+      if File.exist?("#{from}.bat")
+        FileUtils.install("#{from}.bat", File.join(target, "#{op_file}.bat"), mode: 0755, preserve: true, verbose: true)
+        installed_wrapper = true
+      end
 
-    if File.exists?("#{from}.cmd")
-      FileUtils.install("#{from}.cmd", File.join(target, "#{op_file}.cmd"), :mode => 0755, :preserve => true, :verbose => true)
-      installed_wrapper = true
-    end
+      if File.exist?("#{from}.cmd")
+        FileUtils.install("#{from}.cmd", File.join(target, "#{op_file}.cmd"), mode: 0755, preserve: true, verbose: true)
+        installed_wrapper = true
+      end
 
-    if not installed_wrapper
-      tmp_file2 = Tempfile.new('puppet-wrapper')
-      cwv = <<-EOS
+      if not installed_wrapper
+        tmp_file2 = Tempfile.new('puppet-wrapper')
+        cwv = <<-EOS
 @echo off
-setlocal
-set RUBY_BIN=%~dp0
-set RUBY_BIN=%RUBY_BIN:\\=/%
-"%RUBY_BIN%ruby.exe" -x "%RUBY_BIN%puppet" %*
+SETLOCAL
+if exist "%~dp0environment.bat" (
+  call "%~dp0environment.bat" %0 %*
+) else (
+  SET "PATH=%~dp0;%PATH%"
+)
+ruby.exe -S -- puppet %*
 EOS
-      File.open(tmp_file2.path, "w") { |cw| cw.puts cwv }
-      FileUtils.install(tmp_file2.path, File.join(target, "#{op_file}.bat"), :mode => 0755, :preserve => true, :verbose => true)
+        File.open(tmp_file2.path, "w") { |cw| cw.puts cwv }
+        FileUtils.install(tmp_file2.path, File.join(target, "#{op_file}.bat"), mode: 0755, preserve: true, verbose: true)
 
-      tmp_file2.unlink
-      installed_wrapper = true
+        tmp_file2.unlink
+      end
     end
   end
-  FileUtils.install(tmp_file.path, File.join(target, op_file), :mode => 0755, :preserve => true, :verbose => true)
+  FileUtils.install(tmp_file.path, File.join(target, op_file), mode: 0755, preserve: true, verbose: true)
   tmp_file.unlink
 end
 
 # Change directory into the puppet root so we don't get the wrong files for install.
 FileUtils.cd File.dirname(__FILE__) do
   # Set these values to what you want installed.
-  configs = glob(%w{conf/auth.conf})
+  configs = glob(%w{conf/puppet.conf conf/hiera.yaml})
   bins  = glob(%w{bin/*})
-  rdoc  = glob(%w{bin/* lib/**/*.rb README* }).reject { |e| e=~ /\.(bat|cmd)$/ }
-  ri    = glob(%w{bin/*.rb lib/**/*.rb}).reject { |e| e=~ /\.(bat|cmd)$/ }
+  #rdoc  = glob(%w{bin/* lib/**/*.rb README* }).reject { |e| e=~ /\.(bat|cmd)$/ }
+  #ri    = glob(%w{bin/*.rb lib/**/*.rb}).reject { |e| e=~ /\.(bat|cmd)$/ }
   man   = glob(%w{man/man[0-9]/*})
   libs  = glob(%w{lib/**/*})
+  locales = glob(%w{locales/**/*})
 
-  check_prereqs
   prepare_installation
+
+  if $osname == "windows"
+    windows_bins = glob(%w{ext/windows/*bat})
+  end
 
   #build_rdoc(rdoc) if InstallOptions.rdoc
   #build_ri(ri) if InstallOptions.ri
   do_configs(configs, InstallOptions.config_dir) if InstallOptions.configs
   do_bins(bins, InstallOptions.bin_dir)
+  do_bins(windows_bins, InstallOptions.bin_dir, 'ext/windows/') if $osname == "windows" && InstallOptions.batch_files
   do_libs(libs)
-  do_man(man) unless $operatingsystem == "windows"
+  do_locales(locales)
+  do_man(man) unless $osname == "windows"
 end

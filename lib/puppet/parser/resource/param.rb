@@ -1,18 +1,24 @@
-require 'puppet/parser/yaml_trimmer'
+# frozen_string_literal: true
 
 # The parameters we stick in Resources.
 class Puppet::Parser::Resource::Param
   include Puppet::Util
   include Puppet::Util::Errors
-  include Puppet::Util::MethodHelper
-  include Puppet::Parser::YamlTrimmer
 
   attr_accessor :name, :value, :source, :add, :file, :line
 
-  def initialize(hash)
-    set_options(hash)
-    requiredopts(:name, :value)
-    @name = @name.intern
+  def initialize(name: nil, value: nil, source: nil, line: nil, file: nil, add: nil)
+    @value = value
+    @source = source
+    @line = line
+    @file = file
+    @add = add
+
+    unless name
+      # This must happen after file and line are set to have them reported in the error
+      self.fail(Puppet::ResourceError, "'name' is a required option for #{self.class}")
+    end
+    @name = name.intern
   end
 
   def line_to_i
@@ -21,5 +27,11 @@ class Puppet::Parser::Resource::Param
 
   def to_s
     "#{self.name} => #{self.value}"
+  end
+
+  def self.from_param(param, value)
+    new_param = param.dup
+    new_param.value = value
+    return new_param
   end
 end

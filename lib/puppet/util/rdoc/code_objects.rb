@@ -1,7 +1,8 @@
+# frozen_string_literal: true
+
 require 'rdoc/code_objects'
 
 module RDoc
-
   # This modules contains various class that are used to hold information
   # about the various Puppet language structures we found while parsing.
   #
@@ -13,16 +14,11 @@ module RDoc
     attr_accessor :module_name, :global
   end
 
-  # Add top level comments to a class or module regardless of whether we are
-  # using rdoc1 or rdoc2+
+  # Add top level comments to a class or module
   # @api private
   module AddClassModuleComment
     def add_comment(comment, location = nil)
-      if PUPPET_RDOC_VERSION == 1
-        self.comment = comment
-      else
-        super
-      end
+      super
     end
   end
 
@@ -34,22 +30,14 @@ module RDoc
 
     attr_accessor :facts, :plugins
 
-    def initialize(name,superclass=nil)
+    def initialize(name, superclass = nil)
       @facts = []
       @plugins = []
       @nodes = {}
-      super(name,superclass)
+      super(name, superclass)
     end
 
     def add_plugin(plugin)
-      if PUPPET_RDOC_VERSION == 1
-        add_to(@plugins, plugin)
-      else
-        add_plugin_rdoc2(plugin)
-      end
-    end
-
-    def add_plugin_rdoc2(plugin)
       name = plugin.name
       type = plugin.type
       meth = AnyMethod.new("*args", name)
@@ -58,55 +46,31 @@ module RDoc
       meth.document_self = true
       meth.singleton = false
       meth.comment = plugin.comment
-      if type == 'function'
+      case type
+      when 'function'
         @function_container ||= add_module(NormalModule, "__functions__")
         @function_container.add_method(meth)
-      elsif type == 'type'
+      when 'type'
         @type_container ||= add_module(NormalModule, "__types__")
         @type_container.add_method(meth)
       end
     end
 
     def add_fact(fact)
-      if PUPPET_RDOC_VERSION == 1
-        add_to(@facts, fact)
-      else
-        add_fact_rdoc2(fact)
-      end
-    end
-
-    def add_fact_rdoc2(fact)
       @fact_container ||= add_module(NormalModule, "__facts__")
       confine_str = fact.confine.empty? ? '' : fact.confine.to_s
       const = Constant.new(fact.name, confine_str, fact.comment)
       @fact_container.add_constant(const)
     end
 
-    def add_node(name, superclass)
-      if PUPPET_RDOC_VERSION == 1
-        add_node_rdoc1(name, superclass)
-      else
-        add_node_rdoc2(name, superclass)
-      end
-    end
-
-    def add_node_rdoc1(name, superclass)
-      cls = @nodes[name]
-      unless cls
-        cls = PuppetNode.new(name, superclass)
-        @nodes[name] = cls if !@done_documenting
-        cls.parent = self
-        cls.section = @current_section
-      end
-      cls
-    end
-
     # Adds a module called __nodes__ and adds nodes to it as classes
     #
-    def add_node_rdoc2(name,superclass)
-      if cls = @nodes[name]
+    def add_node(name, superclass)
+      cls = @nodes[name]
+      if cls
         return cls
       end
+
       @node_container ||= add_module(NormalModule, "__nodes__")
       cls = @node_container.add_class(PuppetNode, name, superclass)
       @nodes[name] = cls if !@done_documenting
@@ -114,15 +78,15 @@ module RDoc
     end
 
     def each_fact
-      @facts.each {|c| yield c}
+      @facts.each { |c| yield c }
     end
 
     def each_plugin
-      @plugins.each {|c| yield c}
+      @plugins.each { |c| yield c }
     end
 
     def each_node
-      @nodes.each {|c| yield c}
+      @nodes.each { |c| yield c }
     end
 
     def nodes
@@ -139,7 +103,7 @@ module RDoc
     attr_accessor :resource_list, :requires, :childs, :realizes
 
     def initialize(name, superclass)
-      super(name,superclass)
+      super(name, superclass)
       @resource_list = []
       @requires = []
       @realizes = []
@@ -181,7 +145,7 @@ module RDoc
     # or class1::class2#method. Since our definitions are mapped to RDoc methods
     # but are written class1::class2::define we need to perform the lookup by
     # ourselves.
-    def find_symbol(symbol, method=nil)
+    def find_symbol(symbol, method = nil)
       result = super(symbol)
       if not result and symbol =~ /::/
         modules = symbol.split(/::/)
@@ -191,10 +155,10 @@ module RDoc
           if result
             last_name = ""
             previous = nil
-            modules.each do |module_name|
+            modules.each do |mod|
               previous = result
-              last_name = module_name
-              result = result.find_module_named(module_name)
+              last_name = mod
+              result = result.find_module_named(mod)
               break unless result
             end
             unless result
@@ -214,7 +178,6 @@ module RDoc
       end
       result
     end
-
   end
 
   # PuppetNode holds a puppet node
@@ -222,10 +185,6 @@ module RDoc
   # A node is just a variation of a class
   class PuppetNode < PuppetClass
     include AddClassModuleComment
-
-    def initialize(name, superclass)
-      super(name,superclass)
-    end
 
     def is_module?
       false

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'ffi'
 
 module Puppet::Util::Windows::COM
@@ -14,7 +16,7 @@ module Puppet::Util::Windows::COM
   module_function :SUCCEEDED, :FAILED
 
   def raise_if_hresult_failed(name, *args)
-    failed = FAILED(result = send(name, *args)) and raise "#{name} failed (hresult #{format('%#08x', result)})."
+    failed = FAILED(result = send(name, *args)) and raise _("%{name} failed (hresult %{result}).") % { name: name, result: format('%#08x', result) }
 
     result
   ensure
@@ -49,7 +51,7 @@ module Puppet::Util::Windows::COM
   CLSCTX_ALL = CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER | CLSCTX_REMOTE_SERVER
   CLSCTX_SERVER = CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER | CLSCTX_REMOTE_SERVER
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/ms686615(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/ms686615(v=vs.85).aspx
   # HRESULT CoCreateInstance(
   #   _In_   REFCLSID rclsid,
   #   _In_   LPUNKNOWN pUnkOuter,
@@ -59,7 +61,7 @@ module Puppet::Util::Windows::COM
   # );
   ffi_lib :ole32
   attach_function_private :CoCreateInstance,
-    [:pointer, :lpunknown, :dword, :pointer, :lpvoid], :hresult
+                          [:pointer, :lpunknown, :dword, :pointer, :lpvoid], :hresult
 
   # code modified from Unknownr project https://github.com/rpeev/Unknownr
   # licensed under MIT
@@ -67,7 +69,7 @@ module Puppet::Util::Windows::COM
     def self.[](*args)
       spec, iid, *ifaces = args.reverse
 
-      spec.each { |name, signature| signature[0].unshift(:pointer) }
+      spec.each { |_name, signature| signature[0].unshift(:pointer) }
 
       Class.new(FFI::Struct) do
         const_set(:IID, iid)
@@ -76,8 +78,9 @@ module Puppet::Util::Windows::COM
           vtable_hash = Hash[(ifaces.map { |iface| iface::VTBL::SPEC.to_a } << spec.to_a).flatten(1)]
           const_set(:SPEC, vtable_hash)
 
-          layout \
+          layout(
             *self::SPEC.map { |name, signature| [name, callback(*signature)] }.flatten
+          )
         end
 
         const_set(:VTBL, vtable)
@@ -119,7 +122,7 @@ module Puppet::Util::Windows::COM
 
       self
     ensure
-      instance.Release if instance && ! instance.null?
+      instance.Release if instance && !instance.null?
     end
   end
 
@@ -139,8 +142,9 @@ module Puppet::Util::Windows::COM
         self::VTBL.members.each do |name|
           define_method(name) do |*args|
             if Puppet::Util::Windows::COM.FAILED(result = @vtbl[name].call(self, *args))
-              raise Puppet::Util::Windows::Error.new("Failed to call #{self}::#{name} with HRESULT: #{result}.", result)
+              raise Puppet::Util::Windows::Error.new(_("Failed to call %{klass}::%{name} with HRESULT: %{result}.") % { klass: self, name: name, result: result }, result)
             end
+
             result
           end
         end
@@ -166,7 +170,7 @@ module Puppet::Util::Windows::COM
           FFI::MemoryPointer.new(:pointer) do |ppv|
             hr = Puppet::Util::Windows::COM.CoCreateInstance(self.class::CLSID, FFI::Pointer::NULL, @opts[:clsctx], self.class::IID, ppv)
             if Puppet::Util::Windows::COM.FAILED(hr)
-              raise "CoCreateInstance failed (#{self.class})."
+              raise _("CoCreateInstance failed (%{klass}).") % { klass: self.class }
             end
 
             self.pointer = ppv.read_pointer
@@ -180,8 +184,9 @@ module Puppet::Util::Windows::COM
         self::VTBL.members.each do |name|
           define_method(name) do |*args|
             if Puppet::Util::Windows::COM.FAILED(result = @vtbl[name].call(self, *args))
-              raise Puppet::Util::Windows::Error.new("Failed to call #{self}::#{name} with HRESULT: #{result}.", result)
+              raise Puppet::Util::Windows::Error.new(_("Failed to call %{klass}::%{name} with HRESULT: %{result}.") % { klass: self, name: name, result: result }, result)
             end
+
             result
           end
         end
@@ -194,7 +199,6 @@ module Puppet::Util::Windows::COM
 
   IUnknown = Interface[
     FFI::WIN32::GUID['00000000-0000-0000-C000-000000000046'],
-
     QueryInterface: [[:pointer, :pointer], :hresult],
     AddRef: [[], :win32_ulong],
     Release: [[], :win32_ulong]
@@ -202,14 +206,14 @@ module Puppet::Util::Windows::COM
 
   Unknown = Instance[IUnknown]
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/ms678543(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/ms678543(v=vs.85).aspx
   # HRESULT CoInitialize(
   #   _In_opt_  LPVOID pvReserved
   # );
   ffi_lib :ole32
   attach_function_private :CoInitialize, [:lpvoid], :hresult
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/ms688715(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/ms688715(v=vs.85).aspx
   # void CoUninitialize(void);
   ffi_lib :ole32
   attach_function_private :CoUninitialize, [], :void

@@ -1,7 +1,13 @@
 test_name "Can enumerate environments via an HTTP endpoint"
 
-def master_port(agent)
-  setting_on(agent, "agent", "masterport")
+tag 'audit:high',
+    'audit:integration',
+    'server'
+
+confine :except, :platform => /osx/ # see PUP-4820
+
+def server_port(agent)
+  setting_on(agent, "agent", "serverport")
 end
 
 def setting_on(host, section, name)
@@ -17,7 +23,7 @@ def full_path(host, path)
 end
 
 def curl_master_from(agent, path, headers = '', &block)
-  url = "https://#{master}:#{master_port(agent)}#{path}"
+  url = "https://#{master}:#{server_port(agent)}#{path}"
   cert_path = full_path(agent, setting_on(agent, "agent", "hostcert"))
   key_path = full_path(agent, setting_on(agent, "agent", "hostprivkey"))
   curl_base = "curl --tlsv1 -sg --cert \"#{cert_path}\" --key \"#{key_path}\" -k -H '#{headers}'"
@@ -25,14 +31,14 @@ def curl_master_from(agent, path, headers = '', &block)
   on agent, "#{curl_base} '#{url}'", &block
 end
 
-master_user = on(master, "puppet master --configprint user").stdout.strip
+master_user = puppet_config(master, 'user', section: 'master')
 environments_dir = create_tmpdir_for_user master, "environments"
 apply_manifest_on(master, <<-MANIFEST)
 File {
   ensure => directory,
   owner => #{master_user},
-  group => #{master['group']},
-  mode => 0770,
+  group => #{master.puppet['group']},
+  mode => "0770",
 }
 
 file {
@@ -52,18 +58,16 @@ if master.is_pe?
 end
 
 with_puppet_running_on(master, master_opts) do
-  agents.each do |agent|
-    step "Ensure that an unauthenticated client cannot access the environments list" do
-      on agent, "curl --tlsv1 -ksv https://#{master}:#{master_port(agent)}/v2.0/environments", :acceptable_exit_codes => [0,7] do
-        assert_match(/< HTTP\/1\.\d 403/, stderr)
-      end
+  step "Ensure that an unauthenticated client cannot access the environments list" do
+    on master, "curl --tlsv1 -ksv https://#{master}:#{server_port(master)}/puppet/v3/environments", :acceptable_exit_codes => [0,7] do
+      assert_match(/< HTTP\/1\.\d 403/, stderr)
     end
+  end
 
-    step "Ensure that an authenticated client can retrieve the list of environments" do
-      curl_master_from(agent, '/v2.0/environments') do
-        data = JSON.parse(stdout)
-        assert_equal(["env1", "env2", "production"], data["environments"].keys.sort)
-      end
+  step "Ensure that an authenticated client can retrieve the list of environments" do
+    curl_master_from(master, '/puppet/v3/environments') do
+      data = JSON.parse(stdout)
+      assert_equal(["env1", "env2", "production"], data["environments"].keys.sort)
     end
   end
 end

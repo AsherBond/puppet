@@ -1,3 +1,9 @@
+# frozen_string_literal: true
+
+require_relative '../../../puppet/pops/evaluator/external_syntax_support'
+
+module Puppet::Pops
+module Validation
 # A Validator validates a model.
 #
 # Validation is performed on each model element in isolation. Each method should validate the model element's state
@@ -9,25 +15,35 @@
 #       Model objects via their metamodel. (I.e an extra call to multiplicity check in polymorph check).
 #       This is however mostly valuable when validating model to model transformations, and is therefore T.B.D
 #
-class Puppet::Pops::Validation::Checker4_0
-  Issues = Puppet::Pops::Issues
-  Model = Puppet::Pops::Model
+class Checker4_0 < Evaluator::LiteralEvaluator
+  include Puppet::Pops::Evaluator::ExternalSyntaxSupport
 
   attr_reader :acceptor
+  attr_reader :migration_checker
+
+  def self.check_visitor
+    # Class instance variable rather than Class variable because methods visited
+    # may be overridden in subclass
+    @check_visitor ||= Visitor.new(nil, 'check', 0, 0)
+  end
+
   # Initializes the validator with a diagnostics producer. This object must respond to
   # `:will_accept?` and `:accept`.
   #
   def initialize(diagnostics_producer)
-    @@check_visitor       ||= Puppet::Pops::Visitor.new(nil, "check", 0, 0)
-    @@rvalue_visitor      ||= Puppet::Pops::Visitor.new(nil, "rvalue", 0, 0)
-    @@hostname_visitor    ||= Puppet::Pops::Visitor.new(nil, "hostname", 1, 2)
-    @@assignment_visitor  ||= Puppet::Pops::Visitor.new(nil, "assign", 0, 1)
-    @@query_visitor       ||= Puppet::Pops::Visitor.new(nil, "query", 0, 0)
-    @@top_visitor         ||= Puppet::Pops::Visitor.new(nil, "top", 1, 1)
-    @@relation_visitor    ||= Puppet::Pops::Visitor.new(nil, "relation", 0, 0)
-    @@idem_visitor        ||= Puppet::Pops::Visitor.new(self, "idem", 0, 0)
+    super()
+    @@rvalue_visitor      ||= Visitor.new(nil, "rvalue", 0, 0)
+    @@hostname_visitor    ||= Visitor.new(nil, "hostname", 1, 2)
+    @@assignment_visitor  ||= Visitor.new(nil, "assign", 0, 1)
+    @@query_visitor       ||= Visitor.new(nil, "query", 0, 0)
+    @@relation_visitor    ||= Visitor.new(nil, "relation", 0, 0)
+    @@idem_visitor        ||= Visitor.new(nil, "idem", 0, 0)
 
+    @check_visitor = self.class.check_visitor
     @acceptor = diagnostics_producer
+
+    # Use null migration checker unless given in context
+    @migration_checker = (Puppet.lookup(:migration_checker) { Migration::MigrationChecker.new() })
   end
 
   # Validates the entire model by visiting each model element and calling `check`.
@@ -36,19 +52,25 @@ class Puppet::Pops::Validation::Checker4_0
   #
   def validate(model)
     # tree iterate the model, and call check for each element
+    @path = []
     check(model)
-    model.eAllContents.each {|m| check(m) }
+    internal_check_top_construct_in_module(model)
+    model._pcore_all_contents(@path) { |element| check(element) }
+  end
+
+  def container(index = -1)
+    @path[index]
   end
 
   # Performs regular validity check
   def check(o)
-    @@check_visitor.visit_this_0(self, o)
+    @check_visitor.visit_this_0(self, o)
   end
 
   # Performs check if this is a vaid hostname expression
   # @param single_feature_name [String, nil] the name of a single valued hostname feature of the value's container. e.g. 'parent'
-  def hostname(o, semantic, single_feature_name = nil)
-    @@hostname_visitor.visit_this_2(self, o, semantic, single_feature_name)
+  def hostname(o, semantic)
+    @@hostname_visitor.visit_this_1(self, o, semantic)
   end
 
   # Performs check if this is valid as a query
@@ -66,9 +88,34 @@ class Puppet::Pops::Validation::Checker4_0
     @@rvalue_visitor.visit_this_0(self, o)
   end
 
+  #---TOP CHECK
   # Performs check if this is valid as a container of a definition (class, define, node)
-  def top(o, definition)
-    @@top_visitor.visit_this_1(self, o, definition)
+  def top(definition, idx = -1)
+    o = container(idx)
+    idx -= 1
+    case o
+    when NilClass, Model::ApplyExpression, Model::HostClassDefinition, Model::Program
+      # ok, stop scanning parents
+    when Model::BlockExpression
+      c = container(idx)
+      if !c.is_a?(Model::Program) &&
+         (definition.is_a?(Model::FunctionDefinition) || definition.is_a?(Model::TypeAlias) || definition.is_a?(Model::TypeDefinition))
+
+        # not ok. These can never be nested in a block
+        acceptor.accept(Issues::NOT_ABSOLUTE_TOP_LEVEL, definition)
+      else
+        # ok, if this is a block representing the body of a class, or is top level
+        top(definition, idx)
+      end
+    when Model::LambdaExpression
+      # A LambdaExpression is a BlockExpression, and this check is needed to prevent the polymorph method for BlockExpression
+      # to accept a lambda.
+      # A lambda can not iteratively create classes, nodes or defines as the lambda does not have a closure.
+      acceptor.accept(Issues::NOT_TOP_LEVEL, definition)
+    else
+      # fail, reached a container that is not top level
+      acceptor.accept(Issues::NOT_TOP_LEVEL, definition)
+    end
   end
 
   # Checks the LHS of an assignment (is it assignable?).
@@ -89,7 +136,7 @@ class Puppet::Pops::Validation::Checker4_0
 
   # Returns the last expression in a block, or the expression, if that expression is idem
   def ends_with_idem(o)
-    if o.is_a?(Puppet::Pops::Model::BlockExpression)
+    if o.is_a?(Model::BlockExpression)
       last = o.statements[-1]
       idem(last) ? last : nil
     else
@@ -101,7 +148,7 @@ class Puppet::Pops::Validation::Checker4_0
 
   def assign_VariableExpression(o, via_index)
     varname_string = varname_to_s(o.expr)
-    if varname_string =~ Puppet::Pops::Patterns::NUMERIC_VAR_NAME
+    if varname_string =~ Patterns::NUMERIC_VAR_NAME
       acceptor.accept(Issues::ILLEGAL_NUMERIC_ASSIGNMENT, o, :varname => varname_string)
     end
     # Can not assign to something in another namespace (i.e. a '::' in the name is not legal)
@@ -110,9 +157,9 @@ class Puppet::Pops::Validation::Checker4_0
         acceptor.accept(Issues::CROSS_SCOPE_ASSIGNMENT, o, :name => varname_string)
       end
     end
+
     # TODO: Could scan for reassignment of the same variable if done earlier in the same container
     #       Or if assigning to a parameter (more work).
-    # TODO: Investigate if there are invalid cases for += assignment
   end
 
   def assign_AccessExpression(o, via_index)
@@ -123,6 +170,10 @@ class Puppet::Pops::Validation::Checker4_0
       # Then the left expression must be assignable-via-index
       assign(o.left_expr, true)
     end
+  end
+
+  def assign_LiteralList(o, via_index)
+    o.values.each { |x| assign(x) }
   end
 
   def assign_Object(o, via_index)
@@ -138,7 +189,7 @@ class Puppet::Pops::Validation::Checker4_0
   end
 
   def check_Factory(o)
-    check(o.current)
+    check(o.model)
   end
 
   def check_AccessExpression(o)
@@ -151,13 +202,13 @@ class Puppet::Pops::Validation::Checker4_0
 
   def check_AssignmentExpression(o)
     case o.operator
-    when :'='
+    when '='
       assign(o.left_expr)
       rvalue(o.right_expr)
-    when :'+=', :'-='
-      acceptor.accept(Issues::APPENDS_DELETES_NO_LONGER_SUPPORTED, o, {:operator => o.operator})
+    when '+=', '-='
+      acceptor.accept(Issues::APPENDS_DELETES_NO_LONGER_SUPPORTED, o, { :operator => o.operator })
     else
-      acceptor.accept(Issues::UNSUPPORTED_OPERATOR, o, {:operator => o.operator})
+      acceptor.accept(Issues::UNSUPPORTED_OPERATOR, o, { :operator => o.operator })
     end
   end
 
@@ -170,11 +221,11 @@ class Puppet::Pops::Validation::Checker4_0
   # * ResourceDefaults (ILLEGAL)
   #
   def check_AttributeOperation(o)
-    if o.operator == :'+>'
+    if o.operator == '+>'
       # Append operator use is constrained
-      parent = o.eContainer
-      unless parent.is_a?(Model::CollectExpression) || parent.is_a?(Model::ResourceOverrideExpression)
-        acceptor.accept(Issues::ILLEGAL_ATTRIBUTE_APPEND, o, {:name=>o.attribute_name, :parent=>parent})
+      p = container
+      unless p.is_a?(Model::CollectExpression) || p.is_a?(Model::ResourceOverrideExpression)
+        acceptor.accept(Issues::ILLEGAL_ATTRIBUTE_APPEND, o, { :name => o.attribute_name, :parent => p })
       end
     end
     rvalue(o.value_expr)
@@ -182,12 +233,20 @@ class Puppet::Pops::Validation::Checker4_0
 
   def check_AttributesOperation(o)
     # Append operator use is constrained
-    parent = o.eContainer
-    parent = parent.eContainer unless parent.nil?
-    unless parent.is_a?(Model::ResourceExpression)
-      acceptor.accept(Issues::UNSUPPORTED_OPERATOR_IN_CONTEXT, o, :operator=>'* =>')
+    p = container
+    case p
+    when Model::AbstractResource
+      # do nothing
+    when Model::CollectExpression
+      # do nothing
+    else
+      # protect against just testing a snippet that has no parent, error message will be a bit strange
+      # but it is not for a real program.
+      parent2 = p.nil? ? o : container(-2)
+      unless parent2.is_a?(Model::AbstractResource)
+        acceptor.accept(Issues::UNSUPPORTED_OPERATOR_IN_CONTEXT, parent2, :operator => '* =>')
+      end
     end
-
     rvalue(o.expr)
   end
 
@@ -196,31 +255,61 @@ class Puppet::Pops::Validation::Checker4_0
     rvalue(o.right_expr)
   end
 
+  def resource_without_title?(o)
+    if o.instance_of?(Model::BlockExpression)
+      statements = o.statements
+      statements.length == 2 && statements[0].instance_of?(Model::QualifiedName) && statements[1].instance_of?(Model::LiteralHash)
+    else
+      false
+    end
+  end
+
   def check_BlockExpression(o)
-    o.statements[0..-2].each do |statement|
-      if idem(statement)
-        acceptor.accept(Issues::IDEM_EXPRESSION_NOT_LAST, statement)
-        break # only flag the first
+    if resource_without_title?(o)
+      acceptor.accept(Issues::RESOURCE_WITHOUT_TITLE, o, :name => o.statements[0].value)
+    else
+      o.statements[0..-2].each do |statement|
+        if idem(statement)
+          acceptor.accept(Issues::IDEM_EXPRESSION_NOT_LAST, statement)
+          break # only flag the first
+        end
       end
     end
   end
 
   def check_CallNamedFunctionExpression(o)
-    case o.functor_expr
-    when Puppet::Pops::Model::QualifiedName
+    functor = o.functor_expr
+    if functor.is_a?(Model::QualifiedReference) ||
+       functor.is_a?(Model::AccessExpression) && functor.left_expr.is_a?(Model::QualifiedReference)
+      # ok (a call to a type)
+      return nil
+    end
+
+    case functor
+    when Model::QualifiedName
       # ok
       nil
-    when Puppet::Pops::Model::RenderStringExpression
+    when Model::RenderStringExpression
       # helpful to point out this easy to make Epp error
       acceptor.accept(Issues::ILLEGAL_EPP_PARAMETERS, o)
     else
-      acceptor.accept(Issues::ILLEGAL_EXPRESSION, o.functor_expr, {:feature=>'function name', :container => o})
+      acceptor.accept(Issues::ILLEGAL_EXPRESSION, o.functor_expr, { :feature => 'function name', :container => o })
     end
   end
 
   def check_EppExpression(o)
-    if o.eContainer.is_a?(Puppet::Pops::Model::LambdaExpression)
-      internal_check_no_capture(o.eContainer, o)
+    p = container
+    if p.is_a?(Model::LambdaExpression)
+      internal_check_no_capture(p, o)
+      internal_check_parameter_name_uniqueness(p)
+    end
+  end
+
+  def check_HeredocExpression(o)
+    # Only syntax check static text in heredoc during validation - dynamic text is validated by the evaluator.
+    expr = o.text_expr
+    if expr.is_a?(Model::LiteralString)
+      assert_external_syntax(nil, expr.value, o.syntax, o.text_expr)
     end
   end
 
@@ -232,8 +321,17 @@ class Puppet::Pops::Validation::Checker4_0
 
   def check_CaseExpression(o)
     rvalue(o.test)
-    # There should only be one LiteralDefault case option value
-    # TODO: Implement this check
+    # There can only be one LiteralDefault case option value
+    found_default = false
+    o.options.each do |option|
+      option.values.each do |value|
+        if value.is_a?(Model::LiteralDefault)
+          # Flag the second default as 'unreachable'
+          acceptor.accept(Issues::DUPLICATE_DEFAULT, value, :container => o) if found_default
+          found_default = true
+        end
+      end
+    end
   end
 
   def check_CaseOption(o)
@@ -242,23 +340,16 @@ class Puppet::Pops::Validation::Checker4_0
 
   def check_CollectExpression(o)
     unless o.type_expr.is_a? Model::QualifiedReference
-      acceptor.accept(Issues::ILLEGAL_EXPRESSION, o.type_expr, :feature=> 'type name', :container => o)
-    end
-
-    # If a collect expression tries to collect exported resources and storeconfigs is not on
-    # then it will not work... This was checked in the parser previously. This is a runtime checking
-    # thing as opposed to a language thing.
-    if acceptor.will_accept?(Issues::RT_NO_STORECONFIGS) && o.query.is_a?(Model::ExportedQuery)
-      acceptor.accept(Issues::RT_NO_STORECONFIGS, o)
+      acceptor.accept(Issues::ILLEGAL_EXPRESSION, o.type_expr, :feature => 'type name', :container => o)
     end
   end
 
   # Only used for function names, grammar should not be able to produce something faulty, but
-  # check anyway if model is created programatically (it will fail in transformation to AST for sure).
+  # check anyway if model is created programmatically (it will fail in transformation to AST for sure).
   def check_NamedAccessExpression(o)
     name = o.right_expr
     unless name.is_a? Model::QualifiedName
-      acceptor.accept(Issues::ILLEGAL_EXPRESSION, name, :feature=> 'function name', :container => o.eContainer)
+      acceptor.accept(Issues::ILLEGAL_EXPRESSION, name, :feature => 'function name', :container => container)
     end
   end
 
@@ -282,41 +373,154 @@ class Puppet::Pops::Validation::Checker4_0
     'regexp' => true,
     'pattern' => true,
     'runtime' => true,
+    'init' => true,
+    'object' => true,
+    'sensitive' => true,
+    'semver' => true,
+    'semverrange' => true,
+    'string' => true,
+    'timestamp' => true,
+    'timespan' => true,
+    'typeset' => true,
+  }
+
+  FUTURE_RESERVED_WORDS = {
+    'plan' => true
   }
 
   # for 'class', 'define', and function
   def check_NamedDefinition(o)
-    top(o.eContainer, o)
-    if o.name !~ Puppet::Pops::Patterns::CLASSREF
-      acceptor.accept(Issues::ILLEGAL_DEFINITION_NAME, o, {:name=>o.name})
+    top(o)
+    if o.name !~ Patterns::CLASSREF_DECL
+      acceptor.accept(Issues::ILLEGAL_DEFINITION_NAME, o, { :name => o.name })
     end
 
-    if RESERVED_TYPE_NAMES[o.name()]
-      acceptor.accept(Issues::RESERVED_TYPE_NAME, o, {:name => o.name})
+    internal_check_file_namespace(o)
+    internal_check_reserved_type_name(o, o.name)
+    internal_check_future_reserved_word(o, o.name)
+  end
+
+  def check_TypeAlias(o)
+    top(o)
+    if o.name !~ Patterns::CLASSREF_EXT_DECL
+      acceptor.accept(Issues::ILLEGAL_DEFINITION_NAME, o, { :name => o.name })
+    end
+    internal_check_reserved_type_name(o, o.name)
+    internal_check_type_ref(o, o.type_expr)
+  end
+
+  def check_TypeMapping(o)
+    top(o)
+    lhs = o.type_expr
+    lhs_type = 0 # Not Runtime
+    if lhs.is_a?(Model::AccessExpression)
+      left = lhs.left_expr
+      if left.is_a?(Model::QualifiedReference) && left.cased_value == 'Runtime'
+        lhs_type = 1 # Runtime
+        keys = lhs.keys
+
+        # Must be a literal string or pattern replacement
+        lhs_type = 2 if keys.size == 2 && pattern_with_replacement?(keys[1])
+      end
     end
 
-    if violator = ends_with_idem(o.body)
-      acceptor.accept(Issues::IDEM_NOT_ALLOWED_LAST, violator, {:container => o})
+    if lhs_type == 0
+      # This is not a TypeMapping. Something other than Runtime[] on LHS
+      acceptor.accept(Issues::UNSUPPORTED_EXPRESSION, o)
+    else
+      rhs = o.mapping_expr
+      if pattern_with_replacement?(rhs)
+        acceptor.accept(Issues::ILLEGAL_SINGLE_TYPE_MAPPING, o) if lhs_type == 1
+      elsif type_ref?(rhs)
+        acceptor.accept(Issues::ILLEGAL_REGEXP_TYPE_MAPPING, o) if lhs_type == 2
+      else
+        acceptor.accept(lhs_type == 1 ? Issues::ILLEGAL_SINGLE_TYPE_MAPPING : Issues::ILLEGAL_REGEXP_TYPE_MAPPING, o)
+      end
     end
+  end
+
+  def pattern_with_replacement?(o)
+    if o.is_a?(Model::LiteralList)
+      v = o.values
+      v.size == 2 && v[0].is_a?(Model::LiteralRegularExpression) && v[1].is_a?(Model::LiteralString)
+    else
+      false
+    end
+  end
+
+  def type_ref?(o)
+    o = o.left_expr if o.is_a?(Model::AccessExpression)
+    o.is_a?(Model::QualifiedReference)
+  end
+
+  def check_TypeDefinition(o)
+    top(o)
+    internal_check_reserved_type_name(o, o.name)
+    # TODO: Check TypeDefinition body. For now, just error out
+    acceptor.accept(Issues::UNSUPPORTED_EXPRESSION, o)
+  end
+
+  def check_FunctionDefinition(o)
+    check_NamedDefinition(o)
+    internal_check_return_type(o)
+    internal_check_parameter_name_uniqueness(o)
   end
 
   def check_HostClassDefinition(o)
     check_NamedDefinition(o)
     internal_check_no_capture(o)
+    internal_check_parameter_name_uniqueness(o)
     internal_check_reserved_params(o)
+    internal_check_no_idem_last(o)
+    internal_check_parameter_type_literal(o)
   end
 
   def check_ResourceTypeDefinition(o)
     check_NamedDefinition(o)
     internal_check_no_capture(o)
+    internal_check_parameter_name_uniqueness(o)
     internal_check_reserved_params(o)
+    internal_check_no_idem_last(o)
+  end
+
+  def internal_check_parameter_type_literal(o)
+    o.parameters.each do |p|
+      next unless p.type_expr
+
+      type = nil
+      catch :not_literal do
+        type = literal(p.type_expr)
+      end
+      acceptor.accept(Issues::ILLEGAL_NONLITERAL_PARAMETER_TYPE, p, { name: p.name, type_class: p.type_expr.class }) if type.nil?
+    end
+  end
+
+  def internal_check_return_type(o)
+    r = o.return_type
+    internal_check_type_ref(o, r) unless r.nil?
+  end
+
+  def internal_check_type_ref(o, r)
+    n = r.is_a?(Model::AccessExpression) ? r.left_expr : r
+    if n.is_a? Model::QualifiedReference
+      internal_check_future_reserved_word(r, n.value)
+    else
+      acceptor.accept(Issues::ILLEGAL_EXPRESSION, r, :feature => 'a type reference', :container => o)
+    end
+  end
+
+  def internal_check_no_idem_last(o)
+    violator = ends_with_idem(o.body)
+    if violator
+      acceptor.accept(Issues::IDEM_NOT_ALLOWED_LAST, violator, { :container => o }) unless resource_without_title?(violator)
+    end
   end
 
   def internal_check_capture_last(o)
-    accepted_index = o.parameters.size() -1
+    accepted_index = o.parameters.size() - 1
     o.parameters.each_with_index do |p, index|
       if p.captures_rest && index != accepted_index
-        acceptor.accept(Issues::CAPTURES_REST_NOT_LAST, p, {:param_name => p.name})
+        acceptor.accept(Issues::CAPTURES_REST_NOT_LAST, p, { :param_name => p.name })
       end
     end
   end
@@ -324,9 +528,153 @@ class Puppet::Pops::Validation::Checker4_0
   def internal_check_no_capture(o, container = o)
     o.parameters.each do |p|
       if p.captures_rest
-        acceptor.accept(Issues::CAPTURES_REST_NOT_SUPPORTED, p, {:container => container, :param_name => p.name})
+        acceptor.accept(Issues::CAPTURES_REST_NOT_SUPPORTED, p, { :container => container, :param_name => p.name })
       end
     end
+  end
+
+  def internal_check_reserved_type_name(o, name)
+    if RESERVED_TYPE_NAMES[name]
+      acceptor.accept(Issues::RESERVED_TYPE_NAME, o, { :name => name })
+    end
+  end
+
+  def internal_check_future_reserved_word(o, name)
+    if FUTURE_RESERVED_WORDS[name]
+      acceptor.accept(Issues::FUTURE_RESERVED_WORD, o, { :word => name })
+    end
+  end
+
+  NO_NAMESPACE = :no_namespace
+  NO_PATH = :no_path
+  BAD_MODULE_FILE = :bad_module_file
+
+  def internal_check_file_namespace(o)
+    file = o.locator.file
+    return if file.nil? || file == '' # e.g. puppet apply -e '...'
+
+    file_namespace = namespace_for_file(file)
+    return if file_namespace == NO_NAMESPACE
+
+    # Downcasing here because check is case-insensitive
+    if file_namespace == BAD_MODULE_FILE || !o.name.downcase.start_with?(file_namespace)
+      acceptor.accept(Issues::ILLEGAL_DEFINITION_LOCATION, o, { :name => o.name, :file => file })
+    end
+  end
+
+  def internal_check_top_construct_in_module(prog)
+    return unless prog.is_a?(Model::Program) && !prog.body.nil?
+
+    # Check that this is a module autoloaded file
+    file = prog.locator.file
+    return if file.nil?
+    return if namespace_for_file(file) == NO_NAMESPACE
+
+    body = prog.body
+    return if prog.body.is_a?(Model::Nop) # Ignore empty or comment-only files
+
+    if (body.is_a?(Model::BlockExpression))
+      body.statements.each { |s| acceptor.accept(Issues::ILLEGAL_TOP_CONSTRUCT_LOCATION, s) unless valid_top_construct?(s) }
+    else
+      acceptor.accept(Issues::ILLEGAL_TOP_CONSTRUCT_LOCATION, body) unless valid_top_construct?(body)
+    end
+  end
+
+  def valid_top_construct?(o)
+    o.is_a?(Model::Definition) && !o.is_a?(Model::NodeDefinition)
+  end
+
+  # @api private
+  class Puppet::Util::FileNamespaceAdapter < Puppet::Pops::Adaptable::Adapter
+    attr_accessor :file_to_namespace
+
+    def self.create_adapter(env)
+      adapter = super(env)
+      adapter.file_to_namespace = {}
+      adapter
+    end
+  end
+
+  def namespace_for_file(file)
+    env = Puppet.lookup(:current_environment)
+    return NO_NAMESPACE if env.nil?
+
+    adapter = Puppet::Util::FileNamespaceAdapter.adapt(env)
+
+    file_namespace = adapter.file_to_namespace[file]
+    return file_namespace unless file_namespace.nil? # No cache entry, so we do the calculation
+
+    path = Pathname.new(file)
+
+    return adapter.file_to_namespace[file] = NO_NAMESPACE if path.extname != ".pp"
+
+    path = path.expand_path
+
+    return adapter.file_to_namespace[file] = NO_NAMESPACE if initial_manifest?(path, env.manifest)
+
+    # All auto-loaded files from modules come from a module search path dir
+    relative_path = get_module_relative_path(path, env.full_modulepath)
+
+    return adapter.file_to_namespace[file] = NO_NAMESPACE if relative_path == NO_PATH
+
+    # If a file comes from a module, but isn't in the right place, always error
+    names = dir_to_names(relative_path)
+
+    return adapter.file_to_namespace[file] = (names == BAD_MODULE_FILE ? BAD_MODULE_FILE : names.join("::").freeze)
+  end
+
+  def initial_manifest?(path, manifest_setting)
+    return false if manifest_setting.nil? || manifest_setting == :no_manifest
+
+    string_path = path.to_s
+
+    string_path == manifest_setting || string_path.start_with?(manifest_setting)
+  end
+
+  # Get the path of +file_path+ relative to the first directory in
+  # +modulepath_directories+ that is an ancestor of +file_path+. Return NO_PATH
+  # if none is found.
+  def get_module_relative_path(file_path, modulepath_directories)
+    clean_file = file_path.cleanpath.to_s
+    parent_path = modulepath_directories.find { |path_dir| is_parent_dir_of?(path_dir, clean_file) }
+    return NO_PATH if parent_path.nil?
+
+    file_path.relative_path_from(Pathname.new(parent_path))
+  end
+  private :get_module_relative_path
+
+  def is_parent_dir_of?(parent_dir, child_dir)
+    parent_dir_path = Pathname.new(parent_dir)
+    clean_parent = parent_dir_path.cleanpath.to_s + File::SEPARATOR
+
+    return child_dir.start_with?(clean_parent)
+  end
+  private :is_parent_dir_of?
+
+  def dir_to_names(relative_path)
+    # Downcasing here because check is case-insensitive
+    path_components = relative_path.to_s.downcase.split(File::SEPARATOR)
+
+    # Example definition dir: manifests in this path:
+    # <module name>/manifests/<module subdir>/<classfile>.pp
+    dir = path_components[1]
+
+    # How can we get this result?
+    # If it is not an initial manifest, it must come from a module,
+    # and from the manifests dir there.  This may never get used...
+    return BAD_MODULE_FILE unless dir == 'manifests' || dir == 'functions' || dir == 'types' || dir == 'plans'
+
+    names = path_components[2..-2] # Directories inside module
+    names.unshift(path_components[0]) # Name of the module itself
+
+    # Do not include name of module init file at top level of module
+    # e.g. <module name>/manifests/init.pp
+    filename = path_components[-1]
+    if !(path_components.length == 3 && filename == 'init.pp')
+      names.push(filename[0..-4]) # Remove .pp from filename
+    end
+
+    names
   end
 
   RESERVED_PARAMETERS = {
@@ -337,8 +685,15 @@ class Puppet::Pops::Validation::Checker4_0
   def internal_check_reserved_params(o)
     o.parameters.each do |p|
       if RESERVED_PARAMETERS[p.name]
-        acceptor.accept(Issues::RESERVED_PARAMETER, p, {:container => o, :param_name => p.name})
+        acceptor.accept(Issues::RESERVED_PARAMETER, p, { :container => o, :param_name => p.name })
       end
+    end
+  end
+
+  def internal_check_parameter_name_uniqueness(o)
+    unique = Set.new
+    o.parameters.each do |p|
+      acceptor.accept(Issues::DUPLICATE_PARAMETER, p, { :param_name => p.name }) unless unique.add?(p.name)
     end
   end
 
@@ -350,24 +705,43 @@ class Puppet::Pops::Validation::Checker4_0
     rvalue(o.key)
     rvalue(o.value)
     # In case there are additional things to forbid than non-rvalues
-    # acceptor.accept(Issues::ILLEGAL_EXPRESSION, o.key, :feature => 'hash key', :container => o.eContainer)
+    # acceptor.accept(Issues::ILLEGAL_EXPRESSION, o.key, :feature => 'hash key', :container => container)
   end
 
   def check_LambdaExpression(o)
     internal_check_capture_last(o)
+    internal_check_return_type(o)
   end
 
   def check_LiteralList(o)
-    o.values.each {|v| rvalue(v) }
+    o.values.each { |v| rvalue(v) }
+  end
+
+  def check_LiteralInteger(o)
+    v = o.value
+    if v < MIN_INTEGER || v > MAX_INTEGER
+      acceptor.accept(Issues::NUMERIC_OVERFLOW, o, { :value => v })
+    end
+  end
+
+  def check_LiteralHash(o)
+    # the keys of a literal hash may be non-literal expressions. They cannot be checked.
+    unique = Set.new
+    o.entries.each do |entry|
+      catch(:not_literal) do
+        literal_key = literal(entry.key)
+        acceptor.accept(Issues::DUPLICATE_KEY, entry, { :key => literal_key }) if unique.add?(literal_key).nil?
+      end
+    end
   end
 
   def check_NodeDefinition(o)
     # Check that hostnames are valid hostnames (or regular expressions)
     hostname(o.host_matches, o)
-    hostname(o.parent, o, 'parent') unless o.parent.nil?
-    top(o.eContainer, o)
-    if violator = ends_with_idem(o.body)
-      acceptor.accept(Issues::IDEM_NOT_ALLOWED_LAST, violator, {:container => o})
+    top(o)
+    violator = ends_with_idem(o.body)
+    if violator
+      acceptor.accept(Issues::IDEM_NOT_ALLOWED_LAST, violator, { :container => o }) unless resource_without_title?(violator)
     end
     unless o.parent.nil?
       acceptor.accept(Issues::ILLEGAL_NODE_INHERITANCE, o.parent)
@@ -386,13 +760,13 @@ class Puppet::Pops::Validation::Checker4_0
   # DOH: QualifiedReferences are created with LOWER CASE NAMES at parse time
   def check_QualifiedReference(o)
     # Is this a valid qualified name?
-    if o.value !~ Puppet::Pops::Patterns::CLASSREF
-      acceptor.accept(Issues::ILLEGAL_CLASSREF, o, {:name=>o.value})
+    if o.cased_value !~ Patterns::CLASSREF_EXT
+      acceptor.accept(Issues::ILLEGAL_CLASSREF, o, { :name => o.cased_value })
     end
   end
 
   def check_QueryExpression(o)
-    query(o.expr) if o.expr  # is optional
+    query(o.expr) if o.expr # is optional
   end
 
   def relation_Object(o)
@@ -404,12 +778,29 @@ class Puppet::Pops::Validation::Checker4_0
   def relation_RelationshipExpression(o); end
 
   def check_Parameter(o)
-    if o.name =~ /^[0-9]+$/
+    if o.name =~ /^(?:0x)?[0-9]+$/
       acceptor.accept(Issues::ILLEGAL_NUMERIC_PARAMETER, o, :name => o.name)
+    end
+
+    unless o.name =~ Patterns::PARAM_NAME
+      acceptor.accept(Issues::ILLEGAL_PARAM_NAME, o, :name => o.name)
+    end
+    return unless o.value
+
+    internal_check_illegal_assignment(o.value)
+  end
+
+  def internal_check_illegal_assignment(o)
+    if o.is_a?(Model::AssignmentExpression)
+      acceptor.accept(Issues::ILLEGAL_ASSIGNMENT_CONTEXT, o)
+    else
+      # recursively check all contents unless it's a lambda expression. A lambda may contain
+      # local assignments
+      o._pcore_contents { |model| internal_check_illegal_assignment(model) } unless o.is_a?(Model::LambdaExpression)
     end
   end
 
-  #relationship_side: resource
+  # relationship_side: resource
   #  | resourceref
   #  | collection
   #  | variable
@@ -424,33 +815,57 @@ class Puppet::Pops::Validation::Checker4_0
   end
 
   def check_ResourceExpression(o)
-    # TODO: Can no longer be asserted
+    # The expression for type name cannot be statically checked - this is instead done at runtime
+    # to enable better error message of the result of the expression rather than the static instruction.
+    # (This can be revised as there are static constructs that are illegal, but require updating many
+    # tests that expect the detailed reporting).
+    type_name_expr = o.type_name
+    if o.form && o.form != 'regular' && type_name_expr.is_a?(Model::QualifiedName) && type_name_expr.value == 'class'
+      acceptor.accept(Issues::CLASS_NOT_VIRTUALIZABLE, o)
+    end
+  end
 
-    ## A resource expression must have a lower case NAME as its type e.g. 'file { ... }'
-    #unless o.type_name.is_a? Model::QualifiedName
-    #  acceptor.accept(Issues::ILLEGAL_EXPRESSION, o.type_name, :feature => 'resource type', :container => o)
-    #end
-
+  def check_ResourceBody(o)
+    seenUnfolding = false
+    o.operations.each do |ao|
+      if ao.is_a?(Model::AttributesOperation)
+        if seenUnfolding
+          acceptor.accept(Issues::MULTIPLE_ATTRIBUTES_UNFOLD, ao)
+        else
+          seenUnfolding = true
+        end
+      end
+    end
   end
 
   def check_ResourceDefaultsExpression(o)
-    if o.form && o.form != :regular
+    if o.form != 'regular'
       acceptor.accept(Issues::NOT_VIRTUALIZEABLE, o)
     end
   end
 
   def check_ResourceOverrideExpression(o)
-    if o.form && o.form != :regular
+    if o.form != 'regular'
       acceptor.accept(Issues::NOT_VIRTUALIZEABLE, o)
     end
   end
 
   def check_ReservedWord(o)
-    acceptor.accept(Issues::RESERVED_WORD, o, :word => o.word)
+    if o.future
+      acceptor.accept(Issues::FUTURE_RESERVED_WORD, o, :word => o.word)
+    else
+      acceptor.accept(Issues::RESERVED_WORD, o, :word => o.word)
+    end
   end
 
   def check_SelectorExpression(o)
     rvalue(o.left_expr)
+    # There can only be one LiteralDefault case option value
+    defaults = o.selectors.select { |v| v.matching_expr.is_a?(Model::LiteralDefault) }
+    unless defaults.size <= 1
+      # Flag the second default as 'unreachable'
+      acceptor.accept(Issues::DUPLICATE_DEFAULT, defaults[1].matching_expr, :container => o)
+    end
   end
 
   def check_SelectorEntry(o)
@@ -468,18 +883,21 @@ class Puppet::Pops::Validation::Checker4_0
 
   # Checks that variable is either strictly 0, or a non 0 starting decimal number, or a valid VAR_NAME
   def check_VariableExpression(o)
-    # The expression must be a qualified name
-    if !o.expr.is_a?(Model::QualifiedName)
+    # The expression must be a qualified name or an integer
+    name_expr = o.expr
+    return if name_expr.is_a?(Model::LiteralInteger)
+
+    if !name_expr.is_a?(Model::QualifiedName)
       acceptor.accept(Issues::ILLEGAL_EXPRESSION, o, :feature => 'name', :container => o)
     else
-      # name must be either a decimal value, or a valid NAME
+      # name must be either a decimal string value, or a valid NAME
       name = o.expr.value
-      if name[0,1] =~ /[0-9]/
-        unless name =~ Puppet::Pops::Patterns::NUMERIC_VAR_NAME
+      if name[0, 1] =~ /[0-9]/
+        unless name =~ Patterns::NUMERIC_VAR_NAME
           acceptor.accept(Issues::ILLEGAL_NUMERIC_VAR_NAME, o, :name => name)
         end
       else
-        unless name =~ Puppet::Pops::Patterns::VAR_NAME
+        unless name =~ Patterns::VAR_NAME
           acceptor.accept(Issues::ILLEGAL_VAR_NAME, o, :name => name)
         end
       end
@@ -489,30 +907,28 @@ class Puppet::Pops::Validation::Checker4_0
   #--- HOSTNAME CHECKS
 
   # Transforms Array of host matching expressions into a (Ruby) array of AST::HostName
-  def hostname_Array(o, semantic, single_feature_name)
-    if single_feature_name
-      acceptor.accept(Issues::ILLEGAL_EXPRESSION, o, {:feature=>single_feature_name, :container=>semantic})
-    end
-    o.each {|x| hostname(x, semantic, false) }
+  def hostname_Array(o, semantic)
+    o.each { |x| hostname(x, semantic) }
   end
 
-  def hostname_String(o, semantic, single_feature_name)
+  def hostname_String(o, semantic)
     # The 3.x checker only checks for illegal characters - if matching /[^-\w.]/ the name is invalid,
     # but this allows pathological names like "a..b......c", "----"
     # TODO: Investigate if more illegal hostnames should be flagged.
     #
-    if o =~ Puppet::Pops::Patterns::ILLEGAL_HOSTNAME_CHARS
+    if o =~ Patterns::ILLEGAL_HOSTNAME_CHARS
       acceptor.accept(Issues::ILLEGAL_HOSTNAME_CHARS, semantic, :hostname => o)
     end
   end
 
-  def hostname_LiteralValue(o, semantic, single_feature_name)
-    hostname_String(o.value.to_s, o, single_feature_name)
+  def hostname_LiteralValue(o, semantic)
+    hostname_String(o.value.to_s, o)
   end
 
-  def hostname_ConcatenatedString(o, semantic, single_feature_name)
+  def hostname_ConcatenatedString(o, semantic)
     # Puppet 3.1. only accepts a concatenated string without interpolated expressions
-    if the_expr = o.segments.index {|s| s.is_a?(Model::TextExpression) }
+    the_expr = o.segments.index { |s| s.is_a?(Model::TextExpression) }
+    if the_expr
       acceptor.accept(Issues::ILLEGAL_HOSTNAME_INTERPOLATION, o.segments[the_expr].expr)
     elsif o.segments.size() != 1
       # corner case, bad model, concatenation of several plain strings
@@ -520,32 +936,32 @@ class Puppet::Pops::Validation::Checker4_0
     else
       # corner case, may be ok, but lexer may have replaced with plain string, this is
       # here if it does not
-      hostname_String(o.segments[0], o.segments[0], false)
+      hostname_String(o.segments[0], o.segments[0])
     end
   end
 
-  def hostname_QualifiedName(o, semantic, single_feature_name)
-    hostname_String(o.value.to_s, o, single_feature_name)
+  def hostname_QualifiedName(o, semantic)
+    hostname_String(o.value.to_s, o)
   end
 
-  def hostname_QualifiedReference(o, semantic, single_feature_name)
-    hostname_String(o.value.to_s, o, single_feature_name)
+  def hostname_QualifiedReference(o, semantic)
+    hostname_String(o.value.to_s, o)
   end
 
-  def hostname_LiteralNumber(o, semantic, single_feature_name)
+  def hostname_LiteralNumber(o, semantic)
     # always ok
   end
 
-  def hostname_LiteralDefault(o, semantic, single_feature_name)
+  def hostname_LiteralDefault(o, semantic)
     # always ok
   end
 
-  def hostname_LiteralRegularExpression(o, semantic, single_feature_name)
+  def hostname_LiteralRegularExpression(o, semantic)
     # always ok
   end
 
-  def hostname_Object(o, semantic, single_feature_name)
-    acceptor.accept(Issues::ILLEGAL_EXPRESSION, o, {:feature=> single_feature_name || 'hostname', :container=>semantic})
+  def hostname_Object(o, semantic)
+    acceptor.accept(Issues::ILLEGAL_EXPRESSION, o, { :feature => 'hostname', :container => semantic })
   end
 
   #---QUERY CHECKS
@@ -558,7 +974,7 @@ class Puppet::Pops::Validation::Checker4_0
   # Puppet AST only allows == and !=
   #
   def query_ComparisonExpression(o)
-    acceptor.accept(Issues::ILLEGAL_QUERY_EXPRESSION, o) unless [:'==', :'!='].include? o.operator
+    acceptor.accept(Issues::ILLEGAL_QUERY_EXPRESSION, o) unless ['==', '!='].include? o.operator
   end
 
   # Allows AND, OR, and checks if left/right are allowed in query.
@@ -588,45 +1004,20 @@ class Puppet::Pops::Validation::Checker4_0
   #
   def rvalue_Expression(o); end
 
-  def rvalue_CollectExpression(o)         ; acceptor.accept(Issues::NOT_RVALUE, o) ; end
-
-  def rvalue_Definition(o)                ; acceptor.accept(Issues::NOT_RVALUE, o) ; end
-
-  def rvalue_NodeDefinition(o)            ; acceptor.accept(Issues::NOT_RVALUE, o) ; end
-
-  def rvalue_UnaryExpression(o)           ; rvalue o.expr                 ; end
-
-  #---TOP CHECK
-
-  def top_NilClass(o, definition)
-    # ok, reached the top, no more parents
+  def rvalue_CollectExpression(o)
+    acceptor.accept(Issues::NOT_RVALUE, o)
   end
 
-  def top_Object(o, definition)
-    # fail, reached a container that is not top level
-    acceptor.accept(Issues::NOT_TOP_LEVEL, definition)
+  def rvalue_Definition(o)
+    acceptor.accept(Issues::NOT_RVALUE, o)
   end
 
-  def top_BlockExpression(o, definition)
-    # ok, if this is a block representing the body of a class, or is top level
-    top o.eContainer, definition
+  def rvalue_NodeDefinition(o)
+    acceptor.accept(Issues::NOT_RVALUE, o)
   end
 
-  def top_HostClassDefinition(o, definition)
-    # ok, stop scanning parents
-  end
-
-  def top_Program(o, definition)
-    # ok
-  end
-
-  # A LambdaExpression is a BlockExpression, and this method is needed to prevent the polymorph method for BlockExpression
-  # to accept a lambda.
-  # A lambda can not iteratively create classes, nodes or defines as the lambda does not have a closure.
-  #
-  def top_LambdaExpression(o, definition)
-    # fail, stop scanning parents
-    acceptor.accept(Issues::NOT_TOP_LEVEL, definition)
+  def rvalue_UnaryExpression(o)
+    rvalue o.expr
   end
 
   #--IDEM CHECK
@@ -655,7 +1046,7 @@ class Puppet::Pops::Validation::Checker4_0
   end
 
   def idem_Factory(o)
-    idem(o.current)
+    idem(o.model)
   end
 
   def idem_AccessExpression(o)
@@ -664,6 +1055,10 @@ class Puppet::Pops::Validation::Checker4_0
 
   def idem_BinaryExpression(o)
     true
+  end
+
+  def idem_MatchExpression(o)
+    false # can have side effect of setting $n match variables
   end
 
   def idem_RelationshipExpression(o)
@@ -696,7 +1091,7 @@ class Puppet::Pops::Validation::Checker4_0
 
   def idem_BlockExpression(o)
     # productive if there is at least one productive expression
-    ! o.statements.any? {|expr| !idem(expr) }
+    !o.statements.any? { |expr| !idem(expr) }
   end
 
   # Returns true even though there may be interpolated expressions that have side effect.
@@ -717,19 +1112,27 @@ class Puppet::Pops::Validation::Checker4_0
     true
   end
 
+  # An apply expression exists purely for the side effect of applying a
+  # catalog somewhere, so it always has side effects
+  def idem_ApplyExpression(o)
+    false
+  end
+
   def idem_IfExpression(o)
-    [o.test, o.then_expr, o.else_expr].all? {|e| idem(e) }
+    [o.test, o.then_expr, o.else_expr].all? { |e| idem(e) }
   end
 
   # Case expression is idem, if test, and all options are idem
   def idem_CaseExpression(o)
     return false if !idem(o.test)
-    ! o.options.any? {|opt| !idem(opt) }
+
+    !o.options.any? { |opt| !idem(opt) }
   end
 
   # An option is idem if values and the then_expression are idem
   def idem_CaseOption(o)
     return false if o.values.any? { |value| !idem(value) }
+
     idem(o.then_expr)
   end
 
@@ -747,4 +1150,6 @@ class Puppet::Pops::Validation::Checker4_0
       nil
     end
   end
+end
+end
 end

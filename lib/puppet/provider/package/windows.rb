@@ -1,6 +1,8 @@
-require 'puppet/provider/package'
-require 'puppet/util/windows'
-require 'puppet/provider/package/windows/package'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/provider/package'
+require_relative '../../../puppet/util/windows'
+require_relative 'windows/package'
 
 Puppet::Type.type(:package).provide(:windows, :parent => Puppet::Provider::Package) do
   desc "Windows package management.
@@ -12,16 +14,16 @@ Puppet::Type.type(:package).provide(:windows, :parent => Puppet::Provider::Packa
 
     This provider supports the `install_options` and `uninstall_options`
     attributes, which allow command-line flags to be passed to the installer.
-    These options should be specified as a string (e.g. '--flag'), a hash (e.g. {'--flag' => 'value'}),
-    or an array where each element is either a string or a hash.
+    These options should be specified as an array where each element is either
+    a string or a hash.
 
     If the executable requires special arguments to perform a silent install or
     uninstall, then the appropriate arguments should be specified using the
     `install_options` or `uninstall_options` attributes, respectively.  Puppet
     will automatically quote any option that contains spaces."
 
-  confine    :operatingsystem => :windows
-  defaultfor :operatingsystem => :windows
+  confine    'os.name' => :windows
+  defaultfor 'os.name' => :windows
 
   has_feature :installable
   has_feature :uninstallable
@@ -30,6 +32,20 @@ Puppet::Type.type(:package).provide(:windows, :parent => Puppet::Provider::Packa
   has_feature :versionable
 
   attr_accessor :package
+
+  class << self
+    attr_accessor :paths
+  end
+
+  def self.post_resource_eval
+    @paths.each do |path|
+      begin
+        Puppet::FileSystem.unlink(path)
+      rescue => detail
+        raise Puppet::Error.new(_("Error when unlinking %{path}: %{detail}") % { path: path, detail: detail.message }, detail)
+      end
+    end if @paths
+  end
 
   # Return an array of provider instances
   def self.instances
@@ -42,8 +58,8 @@ Puppet::Type.type(:package).provide(:windows, :parent => Puppet::Provider::Packa
 
   def self.to_hash(pkg)
     {
-      :name     => pkg.name,
-      :ensure   => pkg.version || :installed,
+      :name => pkg.name,
+      :ensure => pkg.version || :installed,
       :provider => :windows
     }
   end
@@ -63,19 +79,23 @@ Puppet::Type.type(:package).provide(:windows, :parent => Puppet::Provider::Packa
     installer = Puppet::Provider::Package::Windows::Package.installer_class(resource)
 
     command = [installer.install_command(resource), install_options].flatten.compact.join(' ')
-    output = execute(command, :failonfail => false, :combine => true)
+    working_dir = File.dirname(resource[:source])
+    unless Puppet::FileSystem.exist?(working_dir)
+      working_dir = nil
+    end
+    output = execute(command, :failonfail => false, :combine => true, :cwd => working_dir, :suppress_window => true)
 
     check_result(output.exitstatus)
   end
 
   def uninstall
     command = [package.uninstall_command, uninstall_options].flatten.compact.join(' ')
-    output = execute(command, :failonfail => false, :combine => true)
+    output = execute(command, :failonfail => false, :combine => true, :suppress_window => true)
 
     check_result(output.exitstatus)
   end
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa368542(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa368542(v=vs.85).aspx
   self::ERROR_SUCCESS                  = 0
   self::ERROR_SUCCESS_REBOOT_INITIATED = 1641
   self::ERROR_SUCCESS_REBOOT_REQUIRED  = 3010
@@ -90,17 +110,17 @@ Puppet::Type.type(:package).provide(:windows, :parent => Puppet::Provider::Packa
     when self.class::ERROR_SUCCESS
       # yeah
     when self.class::ERROR_SUCCESS_REBOOT_INITIATED
-      warning("The package #{operation}ed successfully and the system is rebooting now.")
+      warning(_("The package %{operation}ed successfully and the system is rebooting now.") % { operation: operation })
     when self.class::ERROR_SUCCESS_REBOOT_REQUIRED
-      warning("The package #{operation}ed successfully, but the system must be rebooted.")
+      warning(_("The package %{operation}ed successfully, but the system must be rebooted.") % { operation: operation })
     else
-      raise Puppet::Util::Windows::Error.new("Failed to #{operation}", hr)
+      raise Puppet::Util::Windows::Error.new(_("Failed to %{operation}") % { operation: operation }, hr)
     end
   end
 
   # This only gets called if there is a value to validate, but not if it's absent
   def validate_source(value)
-    fail("The source parameter cannot be empty when using the Windows provider.") if value.empty?
+    fail(_("The source parameter cannot be empty when using the Windows provider.")) if value.empty?
   end
 
   def install_options

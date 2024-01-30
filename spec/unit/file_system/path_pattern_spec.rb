@@ -1,6 +1,7 @@
 require 'spec_helper'
 require 'puppet_spec/files'
 require 'puppet/file_system'
+require 'puppet/util'
 
 describe Puppet::FileSystem::PathPattern do
   include PuppetSpec::Files
@@ -91,7 +92,7 @@ describe Puppet::FileSystem::PathPattern do
       expect(Puppet::FileSystem::PathPattern.absolute("c:/absolute/windows/path").to_s).to eq("c:/absolute/windows/path")
     end
 
-    it "can be created with a '..' embedded in a filename on windows", :if => Puppet.features.microsoft_windows? do
+    it "can be created with a '..' embedded in a filename on windows", :if => Puppet::Util::Platform.windows? do
       expect(Puppet::FileSystem::PathPattern.absolute(%q{c:\..my\ot..her\one..}).to_s).to eq(%q{c:\..my\ot..her\one..})
     end
 
@@ -130,6 +131,20 @@ describe Puppet::FileSystem::PathPattern do
 
     expect(pattern.glob).to match_array([File.join(dir, "found_one"),
                                          File.join(dir, "found_two")])
+  end
+
+  it 'globs wildcard patterns properly' do
+    # See PUP-11788 and https://github.com/jruby/jruby/issues/7836.
+    pending 'JRuby does not properly handle Dir.glob' if Puppet::Util::Platform.jruby?
+
+    dir = tmpdir('globtest')
+    create_file_in(dir, 'foo.pp')
+    create_file_in(dir, 'foo.pp.pp')
+
+    pattern = Puppet::FileSystem::PathPattern.absolute(File.join(dir, '**/*.pp'))
+
+    expect(pattern.glob).to match_array([File.join(dir, 'foo.pp'),
+                                         File.join(dir, 'foo.pp.pp')])
   end
 
   def create_file_in(dir, name)

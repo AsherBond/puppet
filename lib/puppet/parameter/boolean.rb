@@ -1,7 +1,9 @@
-require 'puppet/coercion'
+# frozen_string_literal: true
 
-# This specialized {Puppet::Parameter} handles boolean options, accepting lots
-# of strings and symbols for both truthiness and falsehood.
+require_relative '../../puppet/coercion'
+
+# This specialized {Puppet::Parameter} handles Boolean options, accepting lots
+# of strings and symbols for both truth and falsehood.
 #
 class Puppet::Parameter::Boolean < Puppet::Parameter
   def unsafe_munge(value)

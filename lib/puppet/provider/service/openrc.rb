@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Gentoo OpenRC
 Puppet::Type.type(:service).provide :openrc, :parent => :base do
   desc <<-EOT
@@ -7,8 +9,8 @@ Puppet::Type.type(:service).provide :openrc, :parent => :base do
 
   EOT
 
-  defaultfor :operatingsystem => :gentoo
-  defaultfor :operatingsystem => :funtoo
+  defaultfor 'os.name' => :gentoo
+  defaultfor 'os.name' => :funtoo
 
   has_command(:rcstatus, '/bin/rc-status') do
     environment :RC_SVCNAME => nil
@@ -57,7 +59,7 @@ Puppet::Type.type(:service).provide :openrc, :parent => :base do
   end
 
   def startcmd
-    [command(:rcservice), @resource[:name], :start ]
+    [command(:rcservice), @resource[:name], :start]
   end
 
   def stopcmd
@@ -67,5 +69,4 @@ Puppet::Type.type(:service).provide :openrc, :parent => :base do
   def statuscmd
     ((@resource.provider.get(:hasstatus) == true) || (@resource[:hasstatus] == :true)) && [command(:rcservice), @resource[:name], :status]
   end
-
 end

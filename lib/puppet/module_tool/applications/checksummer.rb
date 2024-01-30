@@ -1,10 +1,11 @@
-require 'json'
-require 'puppet/module_tool/checksums'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/json'
+require_relative '../../../puppet/module_tool/checksums'
 
 module Puppet::ModuleTool
   module Applications
     class Checksummer < Application
-
       def initialize(path, options = {})
         @path = Pathname.new(path)
         super(options)
@@ -14,7 +15,6 @@ module Puppet::ModuleTool
         changes = []
         sums = Puppet::ModuleTool::Checksums.new(@path)
         checksums.each do |child_path, canonical_checksum|
-
           # Avoid checksumming the checksums.json file
           next if File.basename(child_path) == "checksums.json"
 
@@ -40,13 +40,13 @@ module Puppet::ModuleTool
 
       def checksums
         if checksums_file.exist?
-          JSON.parse(checksums_file.read)
+          Puppet::Util::Json.load(checksums_file.read)
         elsif metadata_file.exist?
           # Check metadata.json too; legacy modules store their checksums there.
-          JSON.parse(metadata_file.read)['checksums'] or
-          raise ArgumentError, "No file containing checksums found."
+          Puppet::Util::Json.load(metadata_file.read)['checksums'] or
+            raise ArgumentError, _("No file containing checksums found.")
         else
-          raise ArgumentError, "No file containing checksums found."
+          raise ArgumentError, _("No file containing checksums found.")
         end
       end
 

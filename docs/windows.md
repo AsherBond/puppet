@@ -1,37 +1,36 @@
-# Windows #
+# Windows
 
-If you'd like to run Puppet from source on Windows platforms, the
-include `ext/envpuppet.bat` will help.
+If you'd like to run Puppet from source on Windows platforms, follow the [Quickstart](./quickstart.md) to using bundler and installing the necessary gems on Windows.
 
-To quickly run Puppet from source, assuming you already have Ruby installed
-from [rubyinstaller.org](http://rubyinstaller.org).
+You will need to install Ruby on Windows from [rubyinstaller.org](http://rubyinstaller.org)
+or from [Choclately](https://chocolatey.org/packages/ruby).
 
     C:\> cd C:\work\puppet
-    C:\work\puppet> set PATH=%PATH%;C:\work\puppet\ext
-    C:\work\puppet> envpuppet bundle install
-    C:\work\puppet> envpuppet puppet --version
-    2.7.9
+    C:\work\puppet> gem install bundler
+    C:\work\puppet> bundle install --path .bundle
+    C:\work\puppet> bundle exec puppet --version
+    4.7.1
 
 When writing a test that cannot possibly run on Windows, e.g. there is
 no mount type on windows, do the following:
 
-    describe Puppet::MyClass, :unless => Puppet.features.microsoft_windows? do
+    describe Puppet::MyClass, :unless => Puppet::Util::Platform.windows? do
       ..
     end
 
 If the test doesn't currently pass on Windows, e.g. due to on going porting, then use an rspec conditional pending block:
 
-    pending("porting to Windows", :if => Puppet.features.microsoft_windows?) do
+    pending("porting to Windows", :if => Puppet::Util::Platform.windows?) do
       <example1>
     end
 
-    pending("porting to Windows", :if => Puppet.features.microsoft_windows?) do
+    pending("porting to Windows", :if => Puppet::Util::Platform.windows?) do
       <example2>
     end
 
 Then run the test as:
 
-    C:\work\puppet> envpuppet bundle exec rspec spec
+    C:\work\puppet> bundle exec rspec spec/path/to/test.rb
 
 ## Common Issues ##
 
@@ -65,9 +64,8 @@ Then run the test as:
 
  * Don't use waitpid/waitpid2 if you need the child process' exit code,
    as the child process may exit before it has a chance to open the
-   child's HANDLE and retrieve its exit code.  Use Puppet::Util.execute.
+   child's HANDLE and retrieve its exit code.  Use Puppet::Util::Execution.execute.
 
  * Don't assume 'C' drive.  Use environment variables to look these up:
 
     "#{ENV['windir']}/system32/netsh.exe"
-

@@ -1,6 +1,12 @@
+# frozen_string_literal: true
+
 class Puppet::FileSystem::MemoryImpl
   def initialize(*files)
     @files = files + all_children_of(files)
+  end
+
+  def expand_path(path, dir_string = nil)
+    File.expand_path(path, dir_string)
   end
 
   def exist?(path)
@@ -17,6 +23,21 @@ class Puppet::FileSystem::MemoryImpl
 
   def executable?(path)
     path.executable?
+  end
+
+  def symlink?(path)
+    path.symlink?
+  end
+
+  def readlink(path)
+    path = path.path
+    link = find(path)
+    return Puppet::FileSystem::MemoryFile.a_missing_file(path) unless link
+
+    source = link.source_path
+    return Puppet::FileSystem::MemoryFile.a_missing_file(link) unless source
+
+    find(source) || Puppet::FileSystem::MemoryFile.a_missing_file(source)
   end
 
   def children(path)
@@ -39,9 +60,13 @@ class Puppet::FileSystem::MemoryImpl
     object.path
   end
 
-  def read(path)
+  def read(path, opts = {})
     handle = assert_path(path).handle
     handle.read
+  end
+
+  def read_preserve_line_endings(path)
+    read(path)
   end
 
   def open(path, *args, &block)
@@ -57,7 +82,7 @@ class Puppet::FileSystem::MemoryImpl
     if path.is_a?(Puppet::FileSystem::MemoryFile)
       path
     else
-      find(path) or raise ArgumentError, "Unable to find registered object for #{path.inspect}"
+      find(path) or raise ArgumentError, _("Unable to find registered object for %{path}") % { path: path.inspect }
     end
   end
 

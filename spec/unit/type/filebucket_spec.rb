@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 describe Puppet::Type.type(:filebucket) do
@@ -7,34 +6,34 @@ describe Puppet::Type.type(:filebucket) do
   describe "when validating attributes" do
     %w{name server port path}.each do |attr|
       it "should have a '#{attr}' parameter" do
-        Puppet::Type.type(:filebucket).attrtype(attr.intern).should == :param
+        expect(Puppet::Type.type(:filebucket).attrtype(attr.intern)).to eq(:param)
       end
     end
 
     it "should have its 'name' attribute set as its namevar" do
-      Puppet::Type.type(:filebucket).key_attributes.should == [:name]
+      expect(Puppet::Type.type(:filebucket).key_attributes).to eq([:name])
     end
   end
 
   it "should use the clientbucketdir as the path by default path" do
     Puppet.settings[:clientbucketdir] = "/my/bucket"
-    Puppet::Type.type(:filebucket).new(:name => "main")[:path].should == Puppet[:clientbucketdir]
+    expect(Puppet::Type.type(:filebucket).new(:name => "main")[:path]).to eq(Puppet[:clientbucketdir])
   end
 
-  it "should use the masterport as the path by default port" do
-    Puppet.settings[:masterport] = 50
-    Puppet::Type.type(:filebucket).new(:name => "main")[:port].should == Puppet[:masterport]
+  it "should not have a default port" do
+    Puppet.settings[:serverport] = 50
+    expect(Puppet::Type.type(:filebucket).new(:name => "main")[:port]).to eq(nil)
   end
 
-  it "should use the server as the path by default server" do
+  it "should not have a default server" do
     Puppet.settings[:server] = "myserver"
-    Puppet::Type.type(:filebucket).new(:name => "main")[:server].should == Puppet[:server]
+    expect(Puppet::Type.type(:filebucket).new(:name => "main")[:server]).to eq(nil)
   end
 
   it "be local by default" do
     bucket = Puppet::Type.type(:filebucket).new :name => "main"
 
-    bucket.bucket.should be_local
+    expect(bucket.bucket).to be_local
   end
 
   describe "path" do
@@ -67,36 +66,38 @@ describe Puppet::Type.type(:filebucket) do
     end
 
     it "not be local if path is false" do
-      bucket(:path => false).bucket.should_not be_local
+      expect(bucket(:path => false).bucket).not_to be_local
     end
 
     it "be local if both a path and a server are specified" do
-      bucket(:server => "puppet", :path => make_absolute("/my/path")).bucket.should be_local
+      expect(bucket(:server => "puppet", :path => make_absolute("/my/path")).bucket).to be_local
     end
   end
 
   describe "when creating the filebucket" do
     before do
-      @bucket = stub 'bucket', :name= => nil
+      @bucket = double('bucket', :name= => nil)
     end
 
     it "should use any provided path" do
       path = make_absolute("/foo/bar")
       bucket = Puppet::Type.type(:filebucket).new :name => "main", :path => path
-      Puppet::FileBucket::Dipper.expects(:new).with(:Path => path).returns @bucket
+      expect(Puppet::FileBucket::Dipper).to receive(:new).with({:Path => path}).and_return(@bucket)
       bucket.bucket
     end
 
     it "should use any provided server and port" do
       bucket = Puppet::Type.type(:filebucket).new :name => "main", :server => "myserv", :port => "myport", :path => false
-      Puppet::FileBucket::Dipper.expects(:new).with(:Server => "myserv", :Port => "myport").returns @bucket
+      expect(Puppet::FileBucket::Dipper).to receive(:new).with({:Server => "myserv", :Port => "myport"}).and_return(@bucket)
       bucket.bucket
     end
 
-    it "should use the default server if the path is unset and no server is provided" do
+    it "should not try to guess server or port if the path is unset and no server is provided" do
       Puppet.settings[:server] = "myserv"
+      Puppet.settings[:server_list] = ['server_list_0', 'server_list_1']
+      expect(Puppet::FileBucket::Dipper).to receive(:new).with({:Server => nil, :Port => nil}).and_return(@bucket)
+
       bucket = Puppet::Type.type(:filebucket).new :name => "main", :path => false
-      Puppet::FileBucket::Dipper.expects(:new).with { |args| args[:Server] == "myserv" }.returns @bucket
       bucket.bucket
     end
   end

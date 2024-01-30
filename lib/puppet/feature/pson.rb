@@ -1,4 +1,6 @@
-Puppet.features.add(:pson) do
-  Puppet.deprecation_warning "There is no need to check for pson support. It is always available."
-  true
-end
+# frozen_string_literal: true
+
+require_relative '../../puppet/util/feature'
+
+# PSON is deprecated, use JSON instead
+Puppet.features.add(:pson, :libs => ['puppet/external/pson'])

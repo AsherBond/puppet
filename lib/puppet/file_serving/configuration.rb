@@ -1,13 +1,18 @@
-require 'puppet'
-require 'puppet/file_serving'
-require 'puppet/file_serving/mount'
-require 'puppet/file_serving/mount/file'
-require 'puppet/file_serving/mount/modules'
-require 'puppet/file_serving/mount/plugins'
-require 'puppet/file_serving/mount/pluginfacts'
+# frozen_string_literal: true
+
+require_relative '../../puppet'
+require_relative '../../puppet/file_serving'
+require_relative '../../puppet/file_serving/mount'
+require_relative '../../puppet/file_serving/mount/file'
+require_relative '../../puppet/file_serving/mount/modules'
+require_relative '../../puppet/file_serving/mount/plugins'
+require_relative '../../puppet/file_serving/mount/locales'
+require_relative '../../puppet/file_serving/mount/pluginfacts'
+require_relative '../../puppet/file_serving/mount/scripts'
+require_relative '../../puppet/file_serving/mount/tasks'
 
 class Puppet::FileServing::Configuration
-  require 'puppet/file_serving/configuration/parser'
+  require_relative 'configuration/parser'
 
   def self.configuration
     @configuration ||= new
@@ -15,10 +20,11 @@ class Puppet::FileServing::Configuration
 
   Mount = Puppet::FileServing::Mount
 
-  private_class_method  :new
+  private_class_method :new
 
   attr_reader :mounts
-  #private :mounts
+
+  # private :mounts
 
   # Find the right mount.  Does some shenanigans to support old-style module
   # mounts.
@@ -50,10 +56,12 @@ class Puppet::FileServing::Configuration
 
     mount_name, path = request.key.split(File::Separator, 2)
 
-    raise(ArgumentError, "Cannot find file: Invalid mount '#{mount_name}'") unless mount_name =~ %r{^[-\w]+$}
-    raise(ArgumentError, "Cannot find file: Invalid relative path '#{path}'") if path and path.split('/').include?('..')
+    raise(ArgumentError, _("Cannot find file: Invalid mount '%{mount_name}'") % { mount_name: mount_name }) unless mount_name =~ %r{^[-\w]+$}
+    raise(ArgumentError, _("Cannot find file: Invalid relative path '%{path}'") % { path: path }) if path and path.split('/').include?('..')
 
-    return nil unless mount = find_mount(mount_name, request.environment)
+    mount = find_mount(mount_name, request.environment)
+    return nil unless mount
+
     if mount.name == "modules" and mount_name != "modules"
       # yay backward-compatibility
       path = "#{mount_name}/#{path}"
@@ -77,11 +85,11 @@ class Puppet::FileServing::Configuration
 
   def mk_default_mounts
     @mounts["modules"] ||= Mount::Modules.new("modules")
-    @mounts["modules"].allow('*') if @mounts["modules"].empty?
     @mounts["plugins"] ||= Mount::Plugins.new("plugins")
-    @mounts["plugins"].allow('*') if @mounts["plugins"].empty?
+    @mounts["locales"] ||= Mount::Locales.new("locales")
     @mounts["pluginfacts"] ||= Mount::PluginFacts.new("pluginfacts")
-    @mounts["pluginfacts"].allow('*') if @mounts["pluginfacts"].empty?
+    @mounts["scripts"] ||= Mount::Scripts.new("scripts")
+    @mounts["tasks"] ||= Mount::Tasks.new("tasks")
   end
 
   # Read the configuration file.
@@ -92,16 +100,15 @@ class Puppet::FileServing::Configuration
 
     @parser ||= Puppet::FileServing::Configuration::Parser.new(config)
 
-    return if check and ! @parser.changed?
+    return if check and !@parser.changed?
 
     # Don't assign the mounts hash until we're sure the parsing succeeded.
     begin
       newmounts = @parser.parse
       @mounts = newmounts
     rescue => detail
-      Puppet.log_exception(detail, "Error parsing fileserver configuration: #{detail}; using old configuration")
+      Puppet.log_exception(detail, _("Error parsing fileserver configuration: %{detail}; using old configuration") % { detail: detail })
     end
-
   ensure
     # Make sure we've got our plugins and modules.
     mk_default_mounts

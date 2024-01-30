@@ -1,74 +1,108 @@
-V1 API Services
+A Puppet server provides several services via HTTP API, and the Puppet
+agent application uses those services to resolve a node's credentials, retrieve
+a configuration catalog, retrieve file data, and submit reports.
+
+In general, these APIs aren't designed for use by tools other than Puppet agent.
+This is gradually changing, although we expect external use of these APIs to
+remain low for the foreseeable future. The server ignores any parameters it isn't expecting.
+
+V1/V2 HTTP APIs (Removed)
 ---------------
 
-Puppet Agents use various network services which the Puppet Master provides in
-order to manage systems. Other systems can access these services in order to
-put the information that the Puppet Master has to use.
+The V1 and V2 APIs were removed in Puppet 4.0.0. The routes that were previously
+under `/` or `/v2.0` can now be found under the [`/puppet/v3`](#puppet-v3-http-api)
+API or [`/puppet-ca/v1`](#ca-v1-http-api) API.
 
-The V1 API is all based off of dispatching to puppet's internal "indirector"
-framework. Every HTTP endpoint in V1 follows the form
-`/:environment/:indirection/:key`, where
-  * `:environment` is the name of the environment that should be in effect for
-    the request. Not all endpoints need an environment, but the path component
-    must always be specified.
-  * `:indirection` is the indirection to dispatch the request to.
-  * `:key` is the "key" portion of the indirection call.
+Starting with version 2.1, the Puppet Server 2.x series provides both the
+current and previous API endpoints, and can serve nodes running Puppet agent 3.x
+and 4.x. However, Rack masters, WEBrick masters, and Puppet Server 2.0 cannot
+serve nodes running Puppet 3.x.
 
-Using this API requires a significant amount of understanding of how puppet's
-internal services are structured. The following documents provide some
-specification for what is available and the ways in which they can be
-interacted with.
+Puppet and Puppet CA APIs
+------------------
+
+Beginning with Puppet 4, Puppet's HTTP API has been split into two APIs, which
+are versioned separately. There is now an API for configuration-related services
+and a separate one for the certificate authority (CA).
+
+All configuration endpoints are prefixed with `/puppet`, while all CA endpoints are
+prefixed with `/puppet-ca`. All endpoints are explicitly versioned: the prefix
+is always immediately followed by a string such as `/v3` (a directory separator,
+the letter `v`, and the version number of the API).
+
+### Authorization
+
+As of Puppet 7, support for legacy auth.conf is removed. Puppet Server 7
+enforces all authorization using its `auth.conf`. See
+https://puppet.com/docs/puppetserver/latest/config_file_auth.html for more
+details.
+
+Puppet V3 HTTP API
+------------------
+
+The Puppet agent application uses several network services to manage systems.
+These services are all grouped under the `/puppet` API. Other tools can access
+these services and use the Puppet server's data for other purposes.
+
+The V3 API contains endpoints of two types: those that are based on dispatching
+to Puppet's internal "indirector" framework, and those that are not (namely the
+[environment endpoints](#environment-endpoints)).
+
+Every HTTP endpoint that dispatches to the indirector follows the form:
+`/puppet/v3/:indirection/:key?environment=:environment` where:
+
+* `:environment` is the name of the environment that should be in effect for
+  the request. Not all endpoints need an environment, but the query
+  parameter must always be specified.
+* `:indirection` is the indirection to dispatch the request to.
+* `:key` is the "key" portion of the indirection call.
+
+Using this API requires significant understanding of how Puppet's internal
+services are structured, but the following documents attempt to specify what is
+available and how to interact with it.
 
 ### Configuration Management Services
 
-These services are all related to how the Puppet Agent is able to manage the
-configuration of a node.
+These services are all directly used by the Puppet agent application, in order
+to manage the configuration of a node.
 
-* {file:api/docs/http_catalog.md Catalog}
-* {file:api/docs/http_file_bucket_file.md File Bucket File}
-* {file:api/docs/http_file_content.md File Content}
-* {file:api/docs/http_file_metadata.md File Metadata}
-* {file:api/docs/http_report.md Report}
+These endpoints accept payload formats formatted as JSON (MIME type
+`application/json`) except for `File Content` and `File Bucket File` which
+always use `application/octet-stream`.
+
+* [Facts](./http_facts.md)
+* [Catalog](./http_catalog.md)
+* [Node](./http_node.md)
+* [File Bucket File](./http_file_bucket_file.md)
+* [File Content](./http_file_content.md)
+* [File Metadata](./http_file_metadata.md)
+* [Report](./http_report.md)
 
 ### Informational Services
 
-These services all provide extra information that can be used to understand how
-the Puppet Master will be providing configuration management information to
-Puppet Agents.
+These services are not directly used by Puppet agent, but may be used by other
+tools.
 
-* {file:api/docs/http_facts.md Facts}
-* {file:api/docs/http_node.md Node}
-* {file:api/docs/http_resource_type.md Resource Type}
-* {file:api/docs/http_status.md Status}
+* [Status](./http_status.md)
 
-### SSL Certificate Related Services
+### Environments Endpoint
 
-These services are all in support of Puppet's PKI system.
+The `/puppet/v3/environments` endpoint is different as it will only accept payloads
+formatted as JSON and respond with JSON (MIME type of `application/json`).
 
-* {file:api/docs/http_certificate.md Certificate}
-* {file:api/docs/http_certificate_request.md Certificate Signing Requests}
-* {file:api/docs/http_certificate_status.md Certificate Status}
-* {file:api/docs/http_certificate_revocation_list.md Certificate Revocation List}
+* [Environments](./http_environments.md)
 
-V2 HTTP API
------------
+### Puppet Server-specific endpoints
 
-The V2 HTTP API is accessed by prefixing requests with `/v2.0`. Authorization for
-these endpoints is still controlled with the `auth.conf` authorization system
-in puppet. When specifying the authorization of the V2 endpoints in `auth.conf`
-the `/v2.0` prefix on V2 API paths must be retained; the full request path is used.
+Puppet Server adds additional `/puppet/v3/` endpoints:
 
-The V2 API will only accept payloads formatted as JSON and respond with JSON
-(MIME application/json).
+* [Static File Content](https://puppet.com/docs/puppetserver/latest/puppet-api/v3/static_file_content.md)
+* [Environment Classes](https://puppet.com/docs/puppetserver/latest/puppet-api/v3/environment_classes.md)
 
-### Endpoints
+#### Error Responses
 
-* {file:api/docs/http_environments.md Environments}
-
-### Error Responses
-
-All V2 API endpoints will respond to error conditions in a uniform manner and
-use standard HTTP response code to signify those errors.
+The `environments` endpoint will respond to error conditions in a uniform manner
+and use standard HTTP response code to signify those errors.
 
 * When the client submits a malformed request, the API will return a 400 Bad
   Request response.
@@ -80,29 +114,29 @@ use standard HTTP response code to signify those errors.
   return a 406 Unacceptable response.
 * When the server encounters an unexpected error during the handling of a
   request, it will return a 500 Server Error response.
-* When the server is unable to find an endpoint handler for the request that
-  starts with `/v2.0`, it will return a 404 Not Found response
-
-The V2 API paths are prefixed with `/v2.0` instead of `/v2` so that it is able
-to respond with 404, but not interfere with any environments in the V1 API.
-`v2` is a valid environment name, but `v2.0` is not.
+* When the server is unable to find an endpoint handler for an http request,
+  it will return a 404 Not Found response
 
 All error responses will contain a body, except when it is a HEAD request. The
 error responses will uniformly be a JSON object with the following properties:
 
-  * `message`: [String] A human readable message explaining the error.
-  * `issue_kind`: [String] A unique label to identify the error class.
-  * `stacktrace` (only for 5xx errors): [Array<String>] A stacktrace to where the error occurred.
+* `message`: (`String`) A human readable message explaining the error.
+* `issue_kind`: (`String`) A unique label to identify the error class.
 
-A {file:api/schemas/error.json JSON schema for the error objects} is also available.
+A [JSON schema for the error objects](../schemas/error.json) is also available.
 
+CA V1 HTTP API
+--------------
+
+The certificate authority (CA) API contains all of the endpoints supporting Puppet's public key infrastructure (PKI) system. This endpoint is now handled entirely through Puppet Server. See Puppet Server's [HTTP API](https://puppet.com/docs/puppetserver/latest/http_api_index.md) docs for detailed information.
 
 Serialization Formats
 ---------------------
 
-Puppet sends messages using several different serialization formats. Not all
+Puppet sends messages using `JSON` or as binary data. Not all
 REST services support all of the formats.
 
-* {file:api/docs/pson.md PSON}
-* {http://www.yaml.org/spec/1.2/spec.html YAML}
+* [JSON](https://tools.ietf.org/html/rfc7159)
+* [PSON](./pson.md) was supported in earlier versions of Puppet, but is no longer for performance reasons.
 
+`YAML` was supported in earlier versions of Puppet, but is no longer for security reasons.

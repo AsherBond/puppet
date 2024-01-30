@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # An in-memory file abstraction. Commonly used with Puppet::FileSystem::File#overlay
 # @api private
 class Puppet::FileSystem::MemoryFile
@@ -5,6 +7,13 @@ class Puppet::FileSystem::MemoryFile
 
   def self.a_missing_file(path)
     new(path, :exist? => false, :executable? => false)
+  end
+
+  def self.a_missing_directory(path)
+    new(path,
+        :exist? => false,
+        :executable? => false,
+        :directory? => true)
   end
 
   def self.a_regular_file_containing(path, content)
@@ -18,9 +27,13 @@ class Puppet::FileSystem::MemoryFile
   def self.a_directory(path, children = [])
     new(path,
         :exist? => true,
-        :excutable? => true,
+        :executable? => true,
         :directory? => true,
         :children => children)
+  end
+
+  def self.a_symlink(target_path, source_path)
+    new(target_path, :exist? => true, :symlink? => true, :source_path => source_path)
   end
 
   def initialize(path, properties)
@@ -34,6 +47,8 @@ class Puppet::FileSystem::MemoryFile
   def directory?; @properties[:directory?]; end
   def exist?; @properties[:exist?]; end
   def executable?; @properties[:executable?]; end
+  def symlink?; @properties[:symlink?]; end
+  def source_path; @properties[:source_path]; end
 
   def each_line(&block)
     handle.each_line(&block)
@@ -41,6 +56,7 @@ class Puppet::FileSystem::MemoryFile
 
   def handle
     raise Errno::ENOENT unless exist?
+
     StringIO.new(@properties[:content] || '')
   end
 
@@ -60,12 +76,7 @@ class Puppet::FileSystem::MemoryFile
     to_path
   end
 
-  # Used by Ruby 1.8.7 file system abstractions when operating on Pathname like things.
-  def to_str
-    to_path
-  end
-
   def inspect
-    "<Puppet::FileSystem::MemoryFile:#{to_s}>"
+    "<Puppet::FileSystem::MemoryFile:#{self}>"
   end
 end

@@ -1,16 +1,10 @@
-
 require 'spec_helper'
+
+require 'puppet_spec/compiler'
 
 describe "the inline_epp function" do
   include PuppetSpec::Files
-
-  before :all do
-    Puppet::Parser::Functions.autoloader.loadall
-  end
-
-  before :each do
-    Puppet[:parser] = 'future'
-  end
+  include PuppetSpec::Compiler
 
   let :node     do Puppet::Node.new('localhost') end
   let :compiler do Puppet::Parser::Compiler.new(node) end
@@ -19,40 +13,46 @@ describe "the inline_epp function" do
   context "when accessing scope variables as $ variables" do
     it "looks up the value from the scope" do
       scope["what"] = "are belong"
-      eval_template("all your base <%= $what %> to us").should == "all your base are belong to us"
+      expect(eval_template("all your base <%= $what %> to us")).to eq("all your base are belong to us")
     end
 
-    it "get nil accessing a variable that does not exist" do
-      eval_template("<%= $kryptonite == undef %>").should == "true"
+    it "gets error accessing a variable that does not exist" do
+      expect { eval_template("<%= $kryptonite == undef %>")}.to raise_error(/Evaluation Error: Unknown variable: 'kryptonite'./)
+    end
+
+    it "get nil accessing a variable that does not exist when strict mode is off" do
+      Puppet[:strict_variables] = false
+      Puppet[:strict] = :warning
+      expect(eval_template("<%= $kryptonite == undef %>")).to eq("true")
     end
 
     it "get nil accessing a variable that is undef" do
       scope['undef_var'] = :undef
-      eval_template("<%= $undef_var == undef %>").should == "true"
+      expect(eval_template("<%= $undef_var == undef %>")).to eq("true")
     end
 
     it "gets shadowed variable if args are given" do
       scope['phantom'] = 'of the opera'
-      eval_template_with_args("<%= $phantom == dragos %>", 'phantom' => 'dragos').should == "true"
+      expect(eval_template_with_args("<%= $phantom == dragos %>", 'phantom' => 'dragos')).to eq("true")
     end
 
     it "gets shadowed variable if args are given and parameters are specified" do
       scope['x'] = 'wrong one'
-      eval_template_with_args("<%-| $x |-%><%= $x == correct %>", 'x' => 'correct').should == "true"
+      expect(eval_template_with_args("<%-| $x |-%><%= $x == correct %>", 'x' => 'correct')).to eq("true")
     end
 
     it "raises an error if required variable is not given" do
       scope['x'] = 'wrong one'
       expect {
-        eval_template_with_args("<%-| $x |-%><%= $x == correct %>", 'y' => 'correct')
-      }.to raise_error(/no value given for required parameters x/)
+        eval_template_with_args("<%-| $x |-%><%= $x == correct %>", {})
+      }.to raise_error(/expects a value for parameter 'x'/)
     end
 
-    it "raises an error if too many arguments are given" do
+    it 'raises an error if unexpected arguments are given' do
       scope['x'] = 'wrong one'
       expect {
         eval_template_with_args("<%-| $x |-%><%= $x == correct %>", 'x' => 'correct', 'y' => 'surplus')
-      }.to raise_error(/Too many arguments: 2 for 1/)
+      }.to raise_error(/has no parameter named 'y'/)
     end
   end
 
@@ -67,20 +67,43 @@ describe "the inline_epp function" do
   end
 
   it "renders a block expression" do
-    eval_template_with_args("<%= { $y = $x $x + 1} %>", 'x' => 2).should == "3"
+    expect(eval_template_with_args("<%= { $y = $x $x + 1} %>", 'x' => 2)).to eq("3")
   end
 
   # although never a problem with epp
   it "is not interfered with by having a variable named 'string' (#14093)" do
     scope['string'] = "this output should not be seen"
-    eval_template("some text that is static").should == "some text that is static"
+    expect(eval_template("some text that is static")).to eq("some text that is static")
   end
 
   it "has access to a variable named 'string' (#14093)" do
     scope['string'] = "the string value"
-    eval_template("string was: <%= $string %>").should == "string was: the string value"
+    expect(eval_template("string was: <%= $string %>")).to eq("string was: the string value")
   end
 
+  context "when using Sensitive" do
+    it "returns an unwrapped sensitive value as a String" do
+      expect(eval_and_collect_notices(<<~END)).to eq(["opensesame"])
+        notice(inline_epp("<%= Sensitive('opensesame').unwrap %>"))
+      END
+    end
+
+    it "rewraps a sensitive value" do
+      # note entire result is redacted, not just sensitive part
+      expect(eval_and_collect_notices(<<~END)).to eq(["Sensitive [value redacted]"])
+        notice(inline_epp("This is sensitive <%= Sensitive('opensesame') %>"))
+      END
+    end
+
+    it "can be double wrapped" do
+      catalog = compile_to_catalog(<<~END)
+        notify { 'title':
+          message => Sensitive(inline_epp("<%= Sensitive('opensesame') %>"))
+        }
+      END
+      expect(catalog.resource(:notify, 'title')['message']).to eq('opensesame')
+    end
+  end
 
   def eval_template_with_args(content, args_hash)
     epp_function.call(scope, content, args_hash)
@@ -91,7 +114,7 @@ describe "the inline_epp function" do
   end
 
   def epp_function()
-    epp_func = scope.compiler.loaders.public_environment_loader.load(:function, 'inline_epp')
+    scope.compiler.loaders.public_environment_loader.load(:function, 'inline_epp')
   end
 
 end

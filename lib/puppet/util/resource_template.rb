@@ -1,5 +1,7 @@
-require 'puppet/util'
-require 'puppet/util/logging'
+# frozen_string_literal: true
+
+require_relative '../../puppet/util'
+require_relative '../../puppet/util/logging'
 require 'erb'
 
 # A template wrapper that evaluates a template in the
@@ -40,11 +42,12 @@ class Puppet::Util::ResourceTemplate
 
   def evaluate
     set_resource_variables
-    ERB.new(File.read(@file), 0, "-").result(binding)
+    Puppet::Util.create_erb(Puppet::FileSystem.read(@file, :encoding => 'utf-8')).result(binding)
   end
 
   def initialize(file, resource)
-    raise ArgumentError, "Template #{file} does not exist" unless Puppet::FileSystem.exist?(file)
+    raise ArgumentError, _("Template %{file} does not exist") % { file: file } unless Puppet::FileSystem.exist?(file)
+
     @file = file
     @resource = resource
   end
@@ -53,9 +56,8 @@ class Puppet::Util::ResourceTemplate
 
   def set_resource_variables
     @resource.to_hash.each do |param, value|
-      var = "@#{param.to_s}"
+      var = "@#{param}"
       instance_variable_set(var, value)
     end
   end
 end
-

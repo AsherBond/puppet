@@ -1,7 +1,7 @@
+# frozen_string_literal: true
 
 # This is the base class of all prefetched network device provider
 class Puppet::Provider::NetworkDevice < Puppet::Provider
-
   def self.device(url)
     raise "This provider doesn't implement the necessary device method"
   end
@@ -13,13 +13,18 @@ class Puppet::Provider::NetworkDevice < Puppet::Provider
   def self.prefetch(resources)
     resources.each do |name, resource|
       device = Puppet::Util::NetworkDevice.current || device(resource[:device_url])
-      if result = lookup(device, name)
+      result = lookup(device, name)
+      if result
         result[:ensure] = :present
         resource.provider = new(device, result)
       else
         resource.provider = new(device, :ensure => :absent)
       end
     end
+  rescue => detail
+    # Preserving behavior introduced in #6907
+    # TRANSLATORS "prefetch" is a program name and should not be translated
+    Puppet.log_exception(detail, _("Could not perform network device prefetch: %{detail}") % { detail: detail })
   end
 
   def exists?
@@ -41,7 +46,8 @@ class Puppet::Provider::NetworkDevice < Puppet::Provider
   def create
     @property_hash[:ensure] = :present
     self.class.resource_type.validproperties.each do |property|
-      if val = resource.should(property)
+      val = resource.should(property)
+      if val
         @property_hash[property] = val
       end
     end

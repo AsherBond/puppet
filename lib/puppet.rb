@@ -1,40 +1,52 @@
-require 'puppet/version'
+# frozen_string_literal: true
+
+require_relative 'puppet/version'
+require_relative 'puppet/concurrent/synchronized'
+
+Puppet::OLDEST_RECOMMENDED_RUBY_VERSION = '3.1.0'
+if Gem::Version.new(RUBY_VERSION.dup) < Gem::Version.new(Puppet::OLDEST_RECOMMENDED_RUBY_VERSION)
+  raise LoadError, "Puppet #{Puppet.version} requires Ruby #{Puppet::OLDEST_RECOMMENDED_RUBY_VERSION} or greater, found Ruby #{RUBY_VERSION.dup}."
+end
+
+$LOAD_PATH.extend(Puppet::Concurrent::Synchronized)
 
 # see the bottom of the file for further inclusions
 # Also see the new Vendor support - towards the end
 #
-require 'facter'
-require 'puppet/error'
-require 'puppet/util'
-require 'puppet/util/autoload'
-require 'puppet/settings'
-require 'puppet/util/feature'
-require 'puppet/util/suidmanager'
-require 'puppet/util/run_mode'
-require 'puppet/external/pson/common'
-require 'puppet/external/pson/version'
-require 'puppet/external/pson/pure'
+require_relative 'puppet/error'
+require_relative 'puppet/util'
+require_relative 'puppet/util/autoload'
+require_relative 'puppet/settings'
+require_relative 'puppet/util/feature'
+require_relative 'puppet/util/suidmanager'
+require_relative 'puppet/util/run_mode'
+require_relative 'puppet/gettext/config'
+require_relative 'puppet/defaults'
 
-#------------------------------------------------------------
-# the top-level module
+# Defines the `Puppet` module. There are different entry points into Puppet
+# depending on your use case.
 #
-# all this really does is dictate how the whole system behaves, through
-# preferences for things like debugging
+# To use puppet as a library, see {Puppet::Pal}.
 #
-# it's also a place to find top-level commands like 'debug'
-
-# The main Puppet class. Everything is contained here.
+# To create a new application, see {Puppet::Application}.
+#
+# To create a new function, see {Puppet::Functions}.
+#
+# To access puppet's REST APIs, see https://puppet.com/docs/puppet/latest/http_api/http_api_index.html.
 #
 # @api public
 module Puppet
-  require 'puppet/file_system'
-  require 'puppet/context'
-  require 'puppet/environments'
+  require_relative 'puppet/file_system'
+  require_relative 'puppet/etc'
+  require_relative 'puppet/context'
+  require_relative 'puppet/environments'
 
   class << self
+    Puppet::GettextConfig.setup_locale
+    Puppet::GettextConfig.create_default_text_domain
+
     include Puppet::Util
     attr_reader :features
-    attr_writer :name
   end
 
   # the hash that determines how our system behaves
@@ -46,6 +58,14 @@ module Puppet
   # settings.
   def self.settings
     @@settings
+  end
+
+  # The puppetserver project has its own settings class that is thread-aware; this
+  # method is here to allow the puppetserver to define its own custom settings class
+  # for multithreaded puppet. It is not intended for use outside of the puppetserver
+  # implmentation.
+  def self.replace_settings_object(new_settings)
+    @@settings = new_settings
   end
 
   # Get the value for a setting
@@ -61,26 +81,17 @@ module Puppet
     end
   end
 
-  # The services running in this process.
-  @services ||= []
-
-  require 'puppet/util/logging'
-
+  require_relative 'puppet/util/logging'
   extend Puppet::Util::Logging
 
   # The feature collection
   @features = Puppet::Util::Feature.new('puppet/feature')
 
   # Load the base features.
-  require 'puppet/feature/base'
-
-  # Store a new default value.
-  def self.define_settings(section, hash)
-    @@settings.define_settings(section, hash)
-  end
+  require_relative 'puppet/feature/base'
 
   # setting access and stuff
-  def self.[]=(param,value)
+  def self.[]=(param, value)
     @@settings[param] = value
   end
 
@@ -90,9 +101,9 @@ module Puppet
 
   def self.debug=(value)
     if value
-      Puppet::Util::Log.level=(:debug)
+      Puppet::Util::Log.level = (:debug)
     else
-      Puppet::Util::Log.level=(:notice)
+      Puppet::Util::Log.level = (:notice)
     end
   end
 
@@ -110,21 +121,15 @@ module Puppet
     Puppet::Util::RunMode[@@settings.preferred_run_mode]
   end
 
-  # Load all of the settings.
-  require 'puppet/defaults'
+  # Modify the settings with defaults defined in `initialize_default_settings` method in puppet/defaults.rb. This can
+  # be used in the initialization of new Puppet::Settings objects in the puppetserver project.
+  Puppet.initialize_default_settings!(settings)
 
-  def self.genmanifest
-    if Puppet[:genmanifest]
-      puts Puppet.settings.to_manifest
-      exit(0)
-    end
-  end
-
-  # Parse the config file for this process.
-  # @deprecated Use {initialize_settings}
-  def self.parse_config()
-    Puppet.deprecation_warning("Puppet.parse_config is deprecated; please use Faces API (which will handle settings and state management for you), or (less desirable) call Puppet.initialize_settings")
-    Puppet.initialize_settings
+  # Now that settings are loaded we have the code loaded to be able to issue
+  # deprecation warnings. Warn if we're on a deprecated ruby version.
+  # Update JRuby version constraints in PUP-11716
+  if Gem::Version.new(RUBY_VERSION.dup) < Gem::Version.new(Puppet::OLDEST_RECOMMENDED_RUBY_VERSION)
+    Puppet.deprecation_warning(_("Support for ruby version %{version} is deprecated and will be removed in a future release. See https://puppet.com/docs/puppet/latest/system_requirements.html for a list of supported ruby versions.") % { version: RUBY_VERSION })
   end
 
   # Initialize puppet's settings. This is intended only for use by external tools that are not
@@ -134,74 +139,105 @@ module Puppet
   #
   # @api public
   # @param args [Array<String>] the command line arguments to use for initialization
+  # @param require_config [Boolean] controls loading of Puppet configuration files
+  # @param global_settings [Boolean] controls push to global context after settings object initialization
+  # @param runtime_implementations [Hash<Symbol, Object>] runtime implementations to register
   # @return [void]
-  def self.initialize_settings(args = [])
-    do_initialize_settings_for_run_mode(:user, args)
+  def self.initialize_settings(args = [], require_config = true, push_settings_globally = true, runtime_implementations = {})
+    do_initialize_settings_for_run_mode(:user, args, require_config, push_settings_globally, runtime_implementations)
   end
 
-  # Initialize puppet's settings for a specified run_mode.
-  #
-  # @deprecated Use {initialize_settings}
-  def self.initialize_settings_for_run_mode(run_mode)
-    Puppet.deprecation_warning("initialize_settings_for_run_mode may be removed in a future release, as may run_mode itself")
-    do_initialize_settings_for_run_mode(run_mode, [])
+  def self.vendored_modules
+    dir = Puppet[:vendormoduledir]
+    if dir && File.directory?(dir)
+      Dir.entries(dir)
+         .reject { |f| f =~ /^\./ }
+         .map { |f| File.join(dir, f, "lib") }
+         .select { |d| FileTest.directory?(d) }
+    else
+      []
+    end
   end
+  private_class_method :vendored_modules
+
+  def self.initialize_load_path
+    $LOAD_PATH.unshift(Puppet[:libdir])
+    $LOAD_PATH.concat(vendored_modules)
+  end
+  private_class_method :initialize_load_path
 
   # private helper method to provide the implementation details of initializing for a run mode,
   #  but allowing us to control where the deprecation warning is issued
-  def self.do_initialize_settings_for_run_mode(run_mode, args)
-    Puppet.settings.initialize_global_settings(args)
+  def self.do_initialize_settings_for_run_mode(run_mode, args, require_config, push_settings_globally, runtime_implementations)
+    Puppet.settings.initialize_global_settings(args, require_config)
     run_mode = Puppet::Util::RunMode[run_mode]
     Puppet.settings.initialize_app_defaults(Puppet::Settings.app_defaults_for_run_mode(run_mode))
-    Puppet.push_context(Puppet.base_context(Puppet.settings), "Initial context after settings initialization")
-    Puppet::Parser::Functions.reset
-    Puppet::Util::Log.level = Puppet[:log_level]
+    if push_settings_globally
+      initialize_load_path
+      push_context_global(Puppet.base_context(Puppet.settings), "Initial context after settings initialization")
+      Puppet::Parser::Functions.reset
+    end
+    runtime_implementations.each_pair do |name, impl|
+      Puppet.runtime[name] = impl
+    end
   end
   private_class_method :do_initialize_settings_for_run_mode
 
-  # Create a new type.  Just proxy to the Type class.  The mirroring query
-  # code was deprecated in 2008, but this is still in heavy use.  I suppose
-  # this can count as a soft deprecation for the next dev. --daniel 2011-04-12
-  def self.newtype(name, options = {}, &block)
-    Puppet::Type.newtype(name, options, &block)
+  # Initialize puppet's core facts. It should not be called before initialize_settings.
+  def self.initialize_facts
+    # Add the puppetversion fact; this is done before generating the hash so it is
+    # accessible to custom facts.
+    Puppet.runtime[:facter].add(:puppetversion) do
+      setcode { Puppet.version.to_s }
+    end
+
+    Puppet.runtime[:facter].add(:agent_specified_environment) do
+      setcode do
+        Puppet.settings.set_by_cli(:environment) ||
+          Puppet.settings.set_in_section(:environment, :agent) ||
+          Puppet.settings.set_in_section(:environment, :main)
+      end
+    end
   end
 
   # Load vendored (setup paths, and load what is needed upfront).
   # See the Vendor class for how to add additional vendored gems/code
-  require "puppet/vendor"
+  require_relative 'puppet/vendor'
   Puppet::Vendor.load_vendored
 
-  # Set default for YAML.load to unsafe so we don't affect programs
-  # requiring puppet -- in puppet we will call safe explicitly
-  SafeYAML::OPTIONS[:default_mode] = :unsafe
-
   # The bindings used for initialization of puppet
+  #
+  # @param settings [Puppet::Settings,Hash<Symbol,String>] either a Puppet::Settings instance
+  #   or a Hash of settings key/value pairs.
   # @api private
   def self.base_context(settings)
-    environments = settings[:environmentpath]
-    modulepath = Puppet::Node::Environment.split_path(settings[:basemodulepath])
+    environmentpath = settings[:environmentpath]
+    basemodulepath = Puppet::Node::Environment.split_path(settings[:basemodulepath])
 
-    if environments.empty?
-      loaders = [Puppet::Environments::Legacy.new]
+    if environmentpath.nil? || environmentpath.empty?
+      raise(Puppet::Error, _("The environmentpath setting cannot be empty or nil."))
     else
-      loaders = Puppet::Environments::Directories.from_path(environments, modulepath)
+      loaders = Puppet::Environments::Directories.from_path(environmentpath, basemodulepath)
       # in case the configured environment (used for the default sometimes)
       # doesn't exist
       default_environment = Puppet[:environment].to_sym
       if default_environment == :production
+        modulepath = settings[:modulepath]
+        modulepath = (modulepath.nil? || '' == modulepath) ? basemodulepath : Puppet::Node::Environment.split_path(modulepath)
         loaders << Puppet::Environments::StaticPrivate.new(
-          Puppet::Node::Environment.create(Puppet[:environment].to_sym,
-                                           [],
-                                           Puppet::Node::Environment::NO_MANIFEST))
+          Puppet::Node::Environment.create(default_environment,
+                                           modulepath,
+                                           Puppet::Node::Environment::NO_MANIFEST)
+        )
       end
     end
 
     {
-      :environments => Puppet::Environments::Cached.new(*loaders),
-      :http_pool => proc {
-        require 'puppet/network/http'
-        Puppet::Network::HTTP::NoCachePool.new
-      }
+      :environments => Puppet::Environments::Cached.new(Puppet::Environments::Combined.new(*loaders)),
+      :ssl_context => proc { Puppet.runtime[:http].default_ssl_context },
+      :http_session => proc { Puppet.runtime[:http].create_session },
+      :plugins => proc { Puppet::Plugins::Configuration.load_plugins },
+      :rich_data => false
     }
   end
 
@@ -221,6 +257,14 @@ module Puppet
   # @api private
   def self.push_context(overrides, description = "")
     @context.push(overrides, description)
+  end
+
+  # Push something onto the the context and make it global across threads. This
+  # has the potential to convert threadlocal overrides earlier on the stack into
+  # global overrides.
+  # @api private
+  def self.push_context_global(overrides, description = '')
+    @context.unsafe_push_global(overrides, description)
   end
 
   # Return to the previous context.
@@ -244,6 +288,18 @@ module Puppet
     @context.override(bindings, description, &block)
   end
 
+  # @param name The name of a context key to ignore; intended for test usage.
+  # @api private
+  def self.ignore(name)
+    @context.ignore(name)
+  end
+
+  # @param name The name of a previously ignored context key to restore; intended for test usage.
+  # @api private
+  def self.restore(name)
+    @context.restore(name)
+  end
+
   # @api private
   def self.mark_context(name)
     @context.mark(name)
@@ -254,24 +310,35 @@ module Puppet
     @context.rollback(name)
   end
 
-  require 'puppet/node'
+  def self.runtime
+    @runtime
+  end
+
+  require_relative 'puppet/node'
 
   # The single instance used for normal operation
   @context = Puppet::Context.new(bootstrap_context)
+
+  require_relative 'puppet/runtime'
+  @runtime = Puppet::Runtime.instance
 end
 
 # This feels weird to me; I would really like for us to get to a state where there is never a "require" statement
 #  anywhere besides the very top of a file.  That would not be possible at the moment without a great deal of
 #  effort, but I think we should strive for it and revisit this at some point.  --cprice 2012-03-16
 
-require 'puppet/indirector'
-require 'puppet/type'
-require 'puppet/resource'
-require 'puppet/parser'
-require 'puppet/network'
-require 'puppet/ssl'
-require 'puppet/module'
-require 'puppet/data_binding'
-require 'puppet/util/storage'
-require 'puppet/status'
-require 'puppet/file_bucket/file'
+require_relative 'puppet/indirector'
+require_relative 'puppet/compilable_resource_type'
+require_relative 'puppet/type'
+require_relative 'puppet/resource'
+require_relative 'puppet/parser'
+require_relative 'puppet/network'
+require_relative 'puppet/x509'
+require_relative 'puppet/ssl'
+require_relative 'puppet/module'
+require_relative 'puppet/data_binding'
+require_relative 'puppet/util/storage'
+require_relative 'puppet/file_bucket/file'
+require_relative 'puppet/plugins/configuration'
+require_relative 'puppet/pal/pal_api'
+require_relative 'puppet/node/facts'

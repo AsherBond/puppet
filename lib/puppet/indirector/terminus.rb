@@ -1,11 +1,13 @@
-require 'puppet/indirector'
-require 'puppet/indirector/errors'
-require 'puppet/indirector/indirection'
-require 'puppet/util/instance_loader'
+# frozen_string_literal: true
+
+require_relative '../../puppet/indirector'
+require_relative '../../puppet/indirector/errors'
+require_relative '../../puppet/indirector/indirection'
+require_relative '../../puppet/util/instance_loader'
 
 # A simple class that can function as the base class for indirected types.
 class Puppet::Indirector::Terminus
-  require 'puppet/util/docs'
+  require_relative '../../puppet/util/docs'
   extend Puppet::Util::Docs
 
   class << self
@@ -29,10 +31,13 @@ class Puppet::Indirector::Terminus
     def indirection=(name)
       if name.is_a?(Puppet::Indirector::Indirection)
         @indirection = name
-      elsif ind = Puppet::Indirector::Indirection.instance(name)
-        @indirection = ind
       else
-        raise ArgumentError, "Could not find indirection instance #{name} for #{self.name}"
+        ind = Puppet::Indirector::Indirection.instance(name)
+        if ind
+          @indirection = ind
+        else
+          raise ArgumentError, _("Could not find indirection instance %{name} for %{terminus}") % { name: name, terminus: self.name }
+        end
       end
     end
 
@@ -46,8 +51,9 @@ class Puppet::Indirector::Terminus
     def inherited(subclass)
       longname = subclass.to_s
       if longname =~ /#<Class/
-        raise Puppet::DevError, "Terminus subclasses must have associated constants"
+        raise Puppet::DevError, _("Terminus subclasses must have associated constants")
       end
+
       names = longname.split("::")
 
       # Convert everything to a lower-case symbol, converting camelcase to underscore word separation.
@@ -66,18 +72,19 @@ class Puppet::Indirector::Terminus
       # Yay, class/instance confusion.
       subclass.terminus_type = self.name
 
-      # Our subclass is specifically associated with an indirection.
+      # This subclass is specifically associated with an indirection.
       raise("Invalid name #{longname}") unless names.length > 0
-      indirection_name = names.pop.sub(/^[A-Z]/) { |i| i.downcase }.gsub(/[A-Z]/) { |i| "_#{i.downcase}" }.intern
 
-      if indirection_name == "" or indirection_name.nil?
-        raise Puppet::DevError, "Could not discern indirection model from class constant"
+      processed_name = names.pop.sub(/^[A-Z]/) { |i| i.downcase }.gsub(/[A-Z]/) { |i| "_#{i.downcase}" }
+
+      if processed_name.empty?
+        raise Puppet::DevError, _("Could not discern indirection model from class constant")
       end
 
       # This will throw an exception if the indirection instance cannot be found.
       # Do this last, because it also registers the terminus type with the indirection,
       # which needs the above information.
-      subclass.indirection = indirection_name
+      subclass.indirection = processed_name.intern
 
       # And add this instance to the instance hash.
       Puppet::Indirector::Terminus.register_terminus_class(subclass)
@@ -94,7 +101,7 @@ class Puppet::Indirector::Terminus
 
     # Convert a short name to a constant.
     def name2const(name)
-      name.to_s.capitalize.sub(/_(.)/) { |i| $1.upcase }
+      name.to_s.capitalize.sub(/_(.)/) { |_i| $1.upcase }
     end
 
     # Register a class, probably autoloaded.
@@ -112,7 +119,7 @@ class Puppet::Indirector::Terminus
     # Return all terminus classes for a given indirection.
     def terminus_classes(indirection_name)
       setup_instance_loading indirection_name
-      instance_loader(indirection_name).files_to_load.map do |file|
+      instance_loader(indirection_name).files_to_load(Puppet.lookup(:current_environment)).map do |file|
         File.basename(file).chomp(".rb").intern
       end
     end
@@ -129,7 +136,7 @@ class Puppet::Indirector::Terminus
   end
 
   def initialize
-    raise Puppet::DevError, "Cannot create instances of abstract terminus types" if self.class.abstract_terminus?
+    raise Puppet::DevError, _("Cannot create instances of abstract terminus types") if self.class.abstract_terminus?
   end
 
   def model
@@ -138,6 +145,10 @@ class Puppet::Indirector::Terminus
 
   def name
     self.class.name
+  end
+
+  def require_environment?
+    true
   end
 
   def allow_remote_requests?
@@ -157,13 +168,13 @@ class Puppet::Indirector::Terminus
 
   def validate_key(request)
     unless request.key == request.instance.name
-      raise Puppet::Indirector::ValidationError, "Instance name #{request.instance.name.inspect} does not match requested key #{request.key.inspect}"
+      raise Puppet::Indirector::ValidationError, _("Instance name %{name} does not match requested key %{key}") % { name: request.instance.name.inspect, key: request.key.inspect }
     end
   end
 
   def validate_model(request)
     unless model === request.instance
-      raise Puppet::Indirector::ValidationError, "Invalid instance type #{request.instance.class.inspect}, expected #{model.inspect}"
+      raise Puppet::Indirector::ValidationError, _("Invalid instance type %{klass}, expected %{model_type}") % { klass: request.instance.class.inspect, model_type: model.inspect }
     end
   end
 end

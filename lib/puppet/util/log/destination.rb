@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # A type of log destination.
 class Puppet::Util::Log::Destination
   class << self
@@ -46,4 +48,3 @@ class Puppet::Util::Log::Destination
     define_method(:initialize, &block)
   end
 end
-

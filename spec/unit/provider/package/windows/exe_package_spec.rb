@@ -1,10 +1,8 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/provider/package/windows/exe_package'
+require 'puppet/provider/package/windows'
 
 describe Puppet::Provider::Package::Windows::ExePackage do
-  subject { described_class }
-
   let (:name)        { 'Git version 1.7.11' }
   let (:version)     { '1.7.11' }
   let (:source)      { 'E:\Git-1.7.11.exe' }
@@ -12,18 +10,18 @@ describe Puppet::Provider::Package::Windows::ExePackage do
 
   context '::from_registry' do
     it 'should return an instance of ExePackage' do
-      subject.expects(:valid?).returns(true)
+      expect(described_class).to receive(:valid?).and_return(true)
 
-      pkg = subject.from_registry('', {'DisplayName' => name, 'DisplayVersion' => version, 'UninstallString' => uninstall})
-      pkg.name.should == name
-      pkg.version.should == version
-      pkg.uninstall_string.should == uninstall
+      pkg = described_class.from_registry('', {'DisplayName' => name, 'DisplayVersion' => version, 'UninstallString' => uninstall})
+      expect(pkg.name).to eq(name)
+      expect(pkg.version).to eq(version)
+      expect(pkg.uninstall_string).to eq(uninstall)
     end
 
     it 'should return nil if it is not a valid executable' do
-      subject.expects(:valid?).returns(false)
+      expect(described_class).to receive(:valid?).and_return(false)
 
-      subject.from_registry('', {}).should be_nil
+      expect(described_class.from_registry('', {})).to be_nil
     end
   end
 
@@ -34,7 +32,6 @@ describe Puppet::Provider::Package::Windows::ExePackage do
     {
       'DisplayName'      => ['My App', ''],
       'UninstallString'  => ['E:\uninstall.exe', ''],
-      'SystemComponent'  => [nil, 1],
       'WindowsInstaller' => [nil, 1],
       'ParentKeyName'    => [nil, 'Uber Product'],
       'Security Update'  => [nil, 'KB890830'],
@@ -43,56 +40,74 @@ describe Puppet::Provider::Package::Windows::ExePackage do
     }.each_pair do |k, arr|
       it "should accept '#{k}' with value '#{arr[0]}'" do
         values[k] = arr[0]
-        subject.valid?(name, values).should be_true
+        expect(described_class.valid?(name, values)).to be_truthy
       end
 
       it "should reject '#{k}' with value '#{arr[1]}'" do
         values[k] = arr[1]
-        subject.valid?(name, values).should be_false
+        expect(described_class.valid?(name, values)).to be_falsey
       end
     end
 
     it 'should reject packages whose name starts with "KBXXXXXX"' do
-      subject.valid?('KB890830', values).should be_false
+      expect(described_class.valid?('KB890830', values)).to be_falsey
     end
 
     it 'should accept packages whose name does not start with "KBXXXXXX"' do
-      subject.valid?('My Update (KB890830)', values).should be_true
+      expect(described_class.valid?('My Update (KB890830)', values)).to be_truthy
     end
   end
 
   context '#match?' do
-    let(:pkg) { subject.new(name, version, uninstall) }
+    let(:pkg) { described_class.new(name, version, uninstall) }
 
     it 'should match product name' do
-      pkg.match?({:name => name}).should be_true
+      expect(pkg.match?({:name => name})).to be_truthy
     end
 
     it 'should return false otherwise' do
-      pkg.match?({:name => 'not going to find it'}).should be_false
+      expect(pkg.match?({:name => 'not going to find it'})).to be_falsey
     end
   end
 
   context '#install_command' do
     it 'should install using the source' do
-      cmd = subject.install_command({:source => source})
+      allow(Puppet::FileSystem).to receive(:exist?).with(source).and_return(true)
+      cmd = described_class.install_command({:source => source})
 
-      cmd.should == ['cmd.exe', '/c', 'start', '"puppet-install"', '/w', source]
+      expect(cmd).to eq(source)
+    end
+
+    it 'should raise error when URI is invalid' do
+      web_source = 'https://www.t e s t.test/test.exe'
+
+      expect do
+        described_class.install_command({:source => web_source, :name => name})
+      end.to raise_error(Puppet::Error, /Error when installing #{name}:/)
+    end
+
+    it 'should download package from source file before installing', if: Puppet::Util::Platform.windows? do
+      web_source = 'https://www.test.test/test.exe'
+      stub_request(:get, web_source).to_return(status: 200, body: 'package binaries')
+      cmd = described_class.install_command({:source => web_source})
+      expect(File.read(cmd)).to eq('package binaries')
     end
   end
 
   context '#uninstall_command' do
     ['C:\uninstall.exe', 'C:\Program Files\uninstall.exe'].each do |exe|
       it "should quote #{exe}" do
-        subject.new(name, version, exe).uninstall_command.should ==
-          ['cmd.exe', '/c', 'start', '"puppet-uninstall"', '/w', "\"#{exe}\""]
+        expect(described_class.new(name, version, exe).uninstall_command).to eq(
+          "\"#{exe}\""
+        )
       end
     end
 
     ['"C:\Program Files\uninstall.exe"', '"C:\Program Files (x86)\Git\unins000.exe" /SILENT"'].each do |exe|
       it "should not quote #{exe}" do
-        subject.new(name, version, exe).uninstall_command.should ==
-          ['cmd.exe', '/c', 'start', '"puppet-uninstall"', '/w', exe]
+        expect(described_class.new(name, version, exe).uninstall_command).to eq(
+          exe
+        )
       end
     end
   end

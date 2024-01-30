@@ -1,30 +1,50 @@
-# Returns the match result of matching a String or Array[String] with one of:
+# frozen_string_literal: true
+
+# Matches a regular expression against a string and returns an array containing the match
+# and any matched capturing groups.
 #
-# * Regexp
-# * String - transformed to a Regexp
-# * Pattern type
-# * Regexp type
+# The first argument is a string or array of strings. The second argument is either a
+# regular expression, regular expression represented as a string, or Regex or Pattern
+# data type that the function matches against the first argument.
 #
-# Returns An Array with the entire match at index 0, and each subsequent submatch at index 1-n.
-# If there was no match, nil (ie. undef) is returned. If the value to match is an Array, a array
-# with mapped match results is returned.
+# The returned array contains the entire match at index 0, and each captured group at
+# subsequent index values. If the value or expression being matched is an array, the
+# function returns an array with mapped match results.
 #
-# @example matching
-#   "abc123".match(/([a-z]+)[1-9]+/)  # => ["abc"]
-#   "abc123".match(/([a-z]+)([1-9]+)/)  # => ["abc", "123"]
+# If the function doesn't find a match, it returns 'undef'.
 #
-# See the documentation for "The Puppet Type System" for more information about types.
-# @since 3.7.0
+# @example Matching a regular expression in a string
+#
+# ```puppet
+# $matches = "abc123".match(/[a-z]+[1-9]+/)
+# # $matches contains [abc123]
+# ```
+#
+# @example Matching a regular expressions with grouping captures in a string
+#
+# ```puppet
+# $matches = "abc123".match(/([a-z]+)([1-9]+)/)
+# # $matches contains [abc123, abc, 123]
+# ```
+#
+# @example Matching a regular expression with grouping captures in an array of strings
+#
+# ```puppet
+# $matches = ["abc123","def456"].match(/([a-z]+)([1-9]+)/)
+# # $matches contains [[abc123, abc, 123], [def456, def, 456]]
+# ```
+#
+# @since 4.0.0
 #
 Puppet::Functions.create_function(:match) do
   dispatch :match do
-    param 'String', 'string'
-    param 'Variant[Any, Type]', 'pattern'
+    param 'String', :string
+    param 'Variant[Any, Type]', :pattern
   end
 
   dispatch :enumerable_match do
-    param 'Array[String]', 'string'
-    param 'Variant[Any, Type]', 'pattern'
+    param 'Array[String]', :string
+    param 'Variant[Any, Type]', :pattern
   end
 
   def initialize(closure_scope, loader)
@@ -35,7 +55,7 @@ Puppet::Functions.create_function(:match) do
     # a puppet runtime (where this function is) without a reboot. If you model a function in a module after
     # this class, use a regular instance variable instead to enable reloading of the module without reboot
     #
-    @@match_visitor   ||= Puppet::Pops::Visitor.new(self, "match", 1, 1)
+    @@match_visitor ||= Puppet::Pops::Visitor.new(self, "match", 1, 1)
   end
 
   # Matches given string against given pattern and returns an Array with matches.
@@ -54,13 +74,13 @@ Puppet::Functions.create_function(:match) do
   # @return [Array<Array<String, nil>>] Array with matches (see {#match}), non matching entries produce a nil entry
   #
   def enumerable_match(array, pattern)
-    array.map {|s| match(s, pattern) }
+    array.map { |s| match(s, pattern) }
   end
 
   protected
 
   def match_Object(obj, s)
-    msg = "match() expects pattern of T, where T is String, Regexp, Regexp[r], Pattern[p], or Array[T]. Got #{obj.class}"
+    msg = _("match() expects pattern of T, where T is String, Regexp, Regexp[r], Pattern[p], or Array[T]. Got %{klass}") % { klass: obj.class }
     raise ArgumentError, msg
   end
 
@@ -72,8 +92,20 @@ Puppet::Functions.create_function(:match) do
     do_match(s, regexp)
   end
 
+  def match_PTypeAliasType(alias_t, s)
+    match(s, alias_t.resolved_type)
+  end
+
+  def match_PVariantType(var_t, s)
+    # Find first matching type (or error out if one of the variants is not acceptable)
+    result = nil
+    var_t.types.find { |t| result = match(s, t) }
+    result
+  end
+
   def match_PRegexpType(regexp_t, s)
-    raise ArgumentError, "Given Regexp Type has no regular expression" unless regexp_t.pattern
+    raise ArgumentError, _("Given Regexp Type has no regular expression") unless regexp_t.pattern
+
     do_match(s, regexp_t.regexp)
   end
 
@@ -81,22 +113,21 @@ Puppet::Functions.create_function(:match) do
     # Since we want the actual match result (not just a boolean), an iteration over
     # Pattern's regular expressions is needed. (They are of PRegexpType)
     result = nil
-    pattern_t.patterns.find {|pattern| result = match(s, pattern) }
+    pattern_t.patterns.find { |pattern| result = match(s, pattern) }
     result
   end
 
   # Returns the first matching entry
   def match_Array(array, s)
     result = nil
-    array.flatten.find {|entry| result = match(s, entry) }
+    array.flatten.find { |entry| result = match(s, entry) }
     result
   end
 
   private
 
   def do_match(s, regexp)
-    if result = regexp.match(s)
-      result.to_a
-    end
+    result = regexp.match(s)
+    result.to_a if result
   end
 end

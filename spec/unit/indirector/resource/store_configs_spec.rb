@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/resource'
 require 'puppet/indirector/memory'
@@ -15,9 +14,7 @@ describe Puppet::Resource::StoreConfigs do
     Puppet[:storeconfigs_backend] = "store_configs_testing"
   end
 
-  it "is deprecated on the network, but still allows requests" do
-    Puppet.expects(:deprecation_warning)
-
-    expect(Puppet::Resource::StoreConfigs.new.allow_remote_requests?).to eq(true)
+  it "disallows remote requests" do
+    expect(Puppet::Resource::StoreConfigs.new.allow_remote_requests?).to eq(false)
   end
 end

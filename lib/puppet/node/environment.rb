@@ -1,7 +1,9 @@
-require 'puppet/util'
-require 'puppet/util/cacher'
+# frozen_string_literal: true
+
+require_relative '../../puppet/util'
 require 'monitor'
-require 'puppet/parser/parser_factory'
+require_relative '../../puppet/parser/parser_factory'
+require_relative '../../puppet/concurrent/lock'
 
 # Just define it, so this class has fewer load dependencies.
 class Puppet::Node
@@ -22,74 +24,29 @@ end
 # logging functions. Logging functions are attached to the 'root' environment
 # when {Puppet::Parser::Functions.reset} is called.
 class Puppet::Node::Environment
-  include Puppet::Util::Cacher
-
   NO_MANIFEST = :no_manifest
 
-  # @api private
-  def self.seen
-    @seen ||= {}
-  end
-
-  # Create a new environment with the given name, or return an existing one
-  #
-  # The environment class memoizes instances so that attempts to instantiate an
-  # environment with the same name with an existing environment will return the
-  # existing environment.
-  #
-  # @overload self.new(environment)
-  #   @param environment [Puppet::Node::Environment]
-  #   @return [Puppet::Node::Environment] the environment passed as the param,
-  #     this is implemented so that a calling class can use strings or
-  #     environments interchangeably.
-  #
-  # @overload self.new(string)
-  #   @param string [String, Symbol]
-  #   @return [Puppet::Node::Environment] An existing environment if it exists,
-  #     else a new environment with that name
-  #
-  # @overload self.new()
-  #   @return [Puppet::Node::Environment] The environment as set by
-  #     Puppet.settings[:environment]
-  #
-  # @api public
-  def self.new(name = nil)
-    return name if name.is_a?(self)
-    name ||= Puppet.settings.value(:environment)
-
-    raise ArgumentError, "Environment name must be specified" unless name
-
-    symbol = name.to_sym
-
-    return seen[symbol] if seen[symbol]
-
-    obj = self.create(symbol,
-             split_path(Puppet.settings.value(:modulepath, symbol)),
-             Puppet.settings.value(:manifest, symbol),
-             Puppet.settings.value(:config_version, symbol))
-    seen[symbol] = obj
-  end
+  # The create() factory method should be used instead.
+  private_class_method :new
 
   # Create a new environment with the given name
   #
-  # @param name [Symbol] the name of the
+  # @param name [Symbol] the name of the environment
   # @param modulepath [Array<String>] the list of paths from which to load modules
   # @param manifest [String] the path to the manifest for the environment or
-  # the constant Puppet::Node::Environment::NO_MANIFEST if there is none.
+  #   the constant Puppet::Node::Environment::NO_MANIFEST if there is none.
   # @param config_version [String] path to a script whose output will be added
   #   to report logs (optional)
   # @return [Puppet::Node::Environment]
   #
   # @api public
   def self.create(name, modulepath, manifest = NO_MANIFEST, config_version = nil)
-    obj = self.allocate
-    obj.send(:initialize,
-             name,
-             expand_dirs(extralibs() + modulepath),
-             manifest == NO_MANIFEST ? manifest : File.expand_path(manifest),
-             config_version)
-    obj
+    new(name, modulepath, manifest, config_version)
   end
+
+  # A remote subclass to make it easier to trace instances when debugging.
+  # @api private
+  class Remote < Puppet::Node::Environment; end
 
   # A "reference" to a remote environment. The created environment instance
   # isn't expected to exist on the local system, but is instead a reference to
@@ -103,38 +60,24 @@ class Puppet::Node::Environment
   # @param name [Symbol] The name of the remote environment
   #
   def self.remote(name)
-    create(name, [], NO_MANIFEST)
+    Remote.create(name, [], NO_MANIFEST)
   end
 
   # Instantiate a new environment
   #
-  # @note {Puppet::Node::Environment.new} is overridden to return memoized
-  #   objects, so this will not be invoked with the normal Ruby initialization
-  #   semantics.
+  # @note {Puppet::Node::Environment.new} is private for historical reasons, as
+  #   previously it had been overridden to return memoized objects and was
+  #   replaced with {Puppet::Node::Environment.create}, so this will not be
+  #   invoked with the normal Ruby initialization semantics.
   #
   # @param name [Symbol] The environment name
   def initialize(name, modulepath, manifest, config_version)
-    @name = name
-    @modulepath = modulepath
-    @manifest = manifest
+    @lock = Puppet::Concurrent::Lock.new
+    @name = name.intern
+    @modulepath = self.class.expand_dirs(self.class.extralibs() + modulepath)
+    @manifest = manifest == NO_MANIFEST ? manifest : Puppet::FileSystem.expand_path(manifest)
+
     @config_version = config_version
-    # set watching to true for legacy environments - the directory based environment loaders will set this to
-    # false for directory based environments after the environment has been created.
-    @watching = true
-  end
-
-  # Returns if files are being watched or not.
-  # @api private
-  #
-  def watching?
-    @watching
-  end
-
-  # Turns watching of files on or off
-  # @param flag [TrueClass, FalseClass] if files should be watched or not
-  # @ api private
-  def watching=(flag)
-    @watching = flag
   end
 
   # Creates a new Puppet::Node::Environment instance, overriding any of the passed
@@ -145,13 +88,13 @@ class Puppet::Node::Environment
   # @return [Puppet::Node::Environment]
   def override_with(env_params)
     return self.class.create(name,
-                      env_params[:modulepath] || modulepath,
-                      env_params[:manifest] || manifest,
-                      env_params[:config_version] || config_version)
+                             env_params[:modulepath] || modulepath,
+                             env_params[:manifest] || manifest,
+                             env_params[:config_version] || config_version)
   end
 
-  # Creates a new Puppet::Node::Environment instance, overriding manfiest
-  # modulepath, or :config_version from the passed settings if they were
+  # Creates a new Puppet::Node::Environment instance, overriding :manifest,
+  # :modulepath, or :config_version from the passed settings if they were
   # originally set from the commandline, or returns self if there is nothing to
   # override.
   #
@@ -169,8 +112,7 @@ class Puppet::Node::Environment
       overrides[:config_version] = settings.value(:config_version)
     end
 
-    if settings.set_by_cli?(:manifest) ||
-      (settings.set_by_cli?(:manifestdir) && settings.value(:manifest).start_with?(settings.value(:manifestdir)))
+    if settings.set_by_cli?(:manifest)
       overrides[:manifest] = settings.value(:manifest)
     end
 
@@ -179,31 +121,11 @@ class Puppet::Node::Environment
       self.override_with(overrides)
   end
 
-  # Retrieve the environment for the current process.
-  #
-  # @note This should only used when a catalog is being compiled.
-  #
-  # @api private
-  #
-  # @return [Puppet::Node::Environment] the currently set environment if one
-  #   has been explicitly set, else it will return the '*root*' environment
-  def self.current
-    Puppet.deprecation_warning("Puppet::Node::Environment.current has been replaced by Puppet.lookup(:current_environment), see http://links.puppetlabs.com/current-env-deprecation")
-    Puppet.lookup(:current_environment)
-  end
-
   # @param [String] name Environment name to check for valid syntax.
   # @return [Boolean] true if name is valid
   # @api public
   def self.valid_name?(name)
     !!name.match(/\A\w+\Z/)
-  end
-
-  # Clear all memoized environments and the 'current' environment
-  #
-  # @api private
-  def self.clear
-    seen.clear
   end
 
   # @!attribute [r] name
@@ -237,6 +159,119 @@ class Puppet::Node::Environment
   #     (optional)
   attr_reader :config_version
 
+  # Cached loaders - management of value handled by Puppet::Pops::Loaders
+  # @api private
+  attr_accessor :loaders
+
+  # Lock for compilation that needs exclusive access to the environment
+  # @api private
+  attr_reader :lock
+
+  # For use with versioned dirs
+  # our environment path may contain symlinks, while we want to resolve the
+  # path while reading the manifests we may want to report the resources as
+  # coming from the configured path.
+  attr_accessor :configured_path
+
+  # See :configured_path above
+  attr_accessor :resolved_path
+
+  # Ensure the path given is of the format we want in the catalog/report.
+  #
+  # Intended for use with versioned symlinked environments. If this
+  # environment is configured with "/etc/puppetlabs/code/environments/production"
+  # but the resolved path is
+  #
+  # "/opt/puppetlabs/server/puppetserver/filesync/client/puppet-code/production_abcdef1234"
+  #
+  # this changes the filepath
+  #
+  # "/opt/puppetlabs/server/puppetserver/filesync/client/puppet-code/production_abcdef1234/modules/foo/manifests/init.pp"
+  #
+  # to
+  #
+  # "/etc/puppetlabs/code/environments/production/modules/foo/manifests/init.pp"
+  def externalize_path(filepath)
+    paths_set        = configured_path && resolved_path
+    munging_possible = paths_set && configured_path != resolved_path
+    munging_desired  = munging_possible &&
+                       Puppet[:report_configured_environmentpath] &&
+                       filepath.to_s.start_with?(resolved_path)
+
+    if munging_desired
+      File.join(configured_path, filepath.delete_prefix(resolved_path))
+    else
+      filepath
+    end
+  end
+
+  # Checks to make sure that this environment did not have a manifest set in
+  # its original environment.conf if Puppet is configured with
+  # +disable_per_environment_manifest+ set true.  If it did, the environment's
+  # modules may not function as intended by the original authors, and we may
+  # seek to halt a puppet compilation for a node in this environment.
+  #
+  # The only exception to this would be if the environment.conf manifest is an exact,
+  # uninterpolated match for the current +default_manifest+ setting.
+  #
+  # @return [Boolean] true if using directory environments, and
+  #   Puppet[:disable_per_environment_manifest] is true, and this environment's
+  #   original environment.conf had a manifest setting that is not the
+  #   Puppet[:default_manifest].
+  # @api private
+  def conflicting_manifest_settings?
+    return false if !Puppet[:disable_per_environment_manifest]
+
+    original_manifest = configuration.raw_setting(:manifest)
+    !original_manifest.nil? && !original_manifest.empty? && original_manifest != Puppet[:default_manifest]
+  end
+
+  # @api private
+  def static_catalogs?
+    if @static_catalogs.nil?
+      environment_conf = Puppet.lookup(:environments).get_conf(name)
+      @static_catalogs = (environment_conf.nil? ? Puppet[:static_catalogs] : environment_conf.static_catalogs)
+    end
+    @static_catalogs
+  end
+
+  # Return the environment configuration
+  # @return [Puppet::Settings::EnvironmentConf] The configuration
+  #
+  # @api private
+  def configuration
+    Puppet.lookup(:environments).get_conf(name)
+  end
+
+  # Checks the environment and settings for any conflicts
+  # @return [Array<String>] an array of validation errors
+  # @api public
+  def validation_errors
+    errors = []
+    if conflicting_manifest_settings?
+      errors << _("The 'disable_per_environment_manifest' setting is true, and the '%{env_name}' environment has an environment.conf manifest that conflicts with the 'default_manifest' setting.") % { env_name: name }
+    end
+    errors
+  end
+
+  def rich_data_from_env_conf
+    unless @checked_conf_for_rich_data
+      environment_conf = Puppet.lookup(:environments).get_conf(name)
+      @rich_data_from_conf = environment_conf&.rich_data
+      @checked_conf_for_rich_data = true
+    end
+    @rich_data_from_conf
+  end
+
+  # Checks if this environment permits use of rich data types in the catalog
+  # Checks the environment conf for an override on first query, then going forward
+  # either uses that, or if unset, uses the current value of the `rich_data` setting.
+  # @return [Boolean] `true` if rich data is permitted.
+  # @api private
+  def rich_data?
+    @rich_data = rich_data_from_env_conf.nil? ? Puppet[:rich_data] : rich_data_from_env_conf
+  end
+
   # Return an environment-specific Puppet setting.
   #
   # @api public
@@ -250,11 +285,13 @@ class Puppet::Node::Environment
   # @api public
   # @return [Puppet::Resource::TypeCollection] The current global TypeCollection
   def known_resource_types
-    if @known_resource_types.nil?
-      @known_resource_types = Puppet::Resource::TypeCollection.new(self)
-      @known_resource_types.import_ast(perform_initial_import(), '')
+    @lock.synchronize do
+      if @known_resource_types.nil?
+        @known_resource_types = Puppet::Resource::TypeCollection.new(self)
+        @known_resource_types.import_ast(perform_initial_import(), '')
+      end
+      @known_resource_types
     end
-    @known_resource_types
   end
 
   # Yields each modules' plugin directory if the plugin directory (modulename/lib)
@@ -276,7 +313,7 @@ class Puppet::Node::Environment
   # @param name [String] The module name
   # @return [Puppet::Module, nil] The module if found, else nil
   def module(name)
-    modules.find {|mod| mod.name == name}
+    modules_by_name[name]
   end
 
   # Locate a module instance by the full forge name (EG authorname/module)
@@ -286,48 +323,65 @@ class Puppet::Node::Environment
   # @param forge_name [String] The module name
   # @return [Puppet::Module, nil] The module if found, else nil
   def module_by_forge_name(forge_name)
-    author, modname = forge_name.split('/')
+    _, modname = forge_name.split('/')
     found_mod = self.module(modname)
     found_mod and found_mod.forge_name == forge_name ?
       found_mod :
       nil
   end
 
-  # @!attribute [r] modules
-  #   Return all modules for this environment in the order they appear in the
-  #   modulepath.
-  #   @note If multiple modules with the same name are present they will
-  #     both be added, but methods like {#module} and {#module_by_forge_name}
-  #     will return the first matching entry in this list.
-  #   @note This value is cached so that the filesystem doesn't have to be
-  #     re-enumerated every time this method is invoked, since that
-  #     enumeration could be a costly operation and this method is called
-  #     frequently. The cache expiry is determined by `Puppet[:filetimeout]`.
-  #   @see Puppet::Util::Cacher.cached_attr
-  #   @api public
-  #   @return [Array<Puppet::Module>] All modules for this environment
-  cached_attr(:modules, Puppet[:filetimeout]) do
-    module_references = []
-    seen_modules = {}
-    modulepath.each do |path|
-      Dir.entries(path).each do |name|
-        warn_about_mistaken_path(path, name)
-        next if module_references.include?(name)
-        if not seen_modules[name]
-          module_references << {:name => name, :path => File.join(path, name)}
-          seen_modules[name] = true
+  # Return all modules for this environment in the order they appear in the
+  # modulepath.
+  # @note If multiple modules with the same name are present they will
+  #   both be added, but methods like {#module} and {#module_by_forge_name}
+  #   will return the first matching entry in this list.
+  # @note This value is cached so that the filesystem doesn't have to be
+  #   re-enumerated every time this method is invoked, since that
+  #   enumeration could be a costly operation and this method is called
+  #   frequently. The cache expiry is determined by `Puppet[:filetimeout]`.
+  # @api public
+  # @return [Array<Puppet::Module>] All modules for this environment
+  def modules
+    if @modules.nil?
+      module_references = []
+      project = Puppet.lookup(:bolt_project) { nil }
+      seen_modules = if project && project.load_as_module?
+                       module_references << project.to_h
+                       { project.name => true }
+                     else
+                       {}
+                     end
+      modulepath.each do |path|
+        Puppet::FileSystem.children(path).map do |p|
+          Puppet::FileSystem.basename_string(p)
+        end.each do |name|
+          next unless Puppet::Module.is_module_directory?(name, path)
+
+          warn_about_mistaken_path(path, name)
+          if not seen_modules[name]
+            module_references << { :name => name, :path => File.join(path, name) }
+            seen_modules[name] = true
+          end
+        end
+      end
+
+      @modules = module_references.filter_map do |reference|
+        begin
+          Puppet::Module.new(reference[:name], reference[:path], self)
+        rescue Puppet::Module::Error => e
+          Puppet.log_exception(e)
+          nil
         end
       end
     end
-
-    module_references.collect do |reference|
-      begin
-        Puppet::Module.new(reference[:name], reference[:path], self)
-      rescue Puppet::Module::Error
-        nil
-      end
-    end.compact
+    @modules
   end
+
+  # @api private
+  def modules_by_name
+    @modules_by_name ||= Hash[modules.map { |mod| [mod.name, mod] }]
+  end
+  private :modules_by_name
 
   # Generate a warning if the given directory in a module path entry is named `lib`.
   #
@@ -337,16 +391,14 @@ class Puppet::Node::Environment
   # @param name [String] The directory name
   def warn_about_mistaken_path(path, name)
     if name == "lib"
-      Puppet.debug("Warning: Found directory named 'lib' in module path ('#{path}/lib'); unless " +
-          "you are expecting to load a module named 'lib', your module path may be set " +
-          "incorrectly.")
+      Puppet.debug {
+        "Warning: Found directory named 'lib' in module path ('#{path}/lib'); unless you \
+        are expecting to load a module named 'lib', your module path may be set incorrectly."
+      }
     end
   end
 
   # Modules broken out by directory in the modulepath
-  #
-  # @note This method _changes_ the current working directory while enumerating
-  #   the modules. This seems rather dangerous.
   #
   # @api public
   #
@@ -355,13 +407,17 @@ class Puppet::Node::Environment
   def modules_by_path
     modules_by_path = {}
     modulepath.each do |path|
-      Dir.chdir(path) do
-        module_names = Dir.glob('*').select do |d|
-          FileTest.directory?(d) && (File.basename(d) =~ /\A\w+(-\w+)*\Z/)
+      if Puppet::FileSystem.exist?(path)
+        module_names = Puppet::FileSystem.children(path).map do |p|
+          Puppet::FileSystem.basename_string(p)
+        end.select do |name|
+          Puppet::Module.is_module_directory?(name, path)
         end
         modules_by_path[path] = module_names.sort.map do |name|
           Puppet::Module.new(name, File.join(path, name), self)
         end
+      else
+        modules_by_path[path] = []
       end
     end
     modules_by_path
@@ -399,13 +455,14 @@ class Puppet::Node::Environment
 
     modules.each do |mod|
       next unless mod.forge_name
+
       deps[mod.forge_name] ||= []
 
       mod.dependencies and mod.dependencies.each do |mod_dep|
         dep_name = mod_dep['name'].tr('-', '/')
         (deps[dep_name] ||= []) << {
-          'name'                => mod.forge_name,
-          'version'             => mod.version,
+          'name' => mod.forge_name,
+          'version' => mod.version,
           'version_requirement' => mod_dep['version_requirement']
         }
       end
@@ -418,30 +475,52 @@ class Puppet::Node::Environment
     deps
   end
 
-  # Set a periodic watcher on the file, so we can tell if it has changed.
-  # If watching has been turned off, this call has no effect.
-  # @param file[File,String] File instance or filename
-  # @api private
-  def watch_file(file)
-    if watching?
-      known_resource_types.watch_file(file.to_s)
+  # Loads module translations for the current environment once for
+  # the lifetime of the environment. Execute a block in the context
+  # of that translation domain.
+  def with_text_domain
+    return yield if Puppet[:disable_i18n]
+
+    if @text_domain.nil?
+      @text_domain = @name
+      Puppet::GettextConfig.reset_text_domain(@text_domain)
+      Puppet::ModuleTranslations.load_from_modulepath(modules)
+    else
+      Puppet::GettextConfig.use_text_domain(@text_domain)
     end
+
+    yield
+  ensure
+    # Is a noop if disable_i18n is true
+    Puppet::GettextConfig.clear_text_domain
   end
 
   # Checks if a reparse is required (cache of files is stale).
-  # This call does nothing unless files are being watched.
   #
   def check_for_reparse
-    if (Puppet[:code] != @parsed_code) || (watching? && @known_resource_types && @known_resource_types.require_reparse?)
-      @parsed_code = nil
-      @known_resource_types = nil
+    @lock.synchronize do
+      if (Puppet[:code] != @parsed_code || @known_resource_types.parse_failed?)
+        @parsed_code = nil
+        @known_resource_types = nil
+      end
     end
+  end
+
+  # @return [String] The YAML interpretation of the object
+  # Return the name of the environment as a string interpretation of the object
+  def to_yaml
+    to_s.to_yaml
   end
 
   # @return [String] The stringified value of the `name` instance variable
   # @api public
   def to_s
     name.to_s
+  end
+
+  # @api public
+  def inspect
+    %Q{<#{self.class}:#{self.object_id} @name="#{name}" @manifest="#{manifest}" @modulepath="#{full_modulepath.join(":")}" >}
   end
 
   # @return [Symbol] The `name` value, cast to a string, then cast to a symbol.
@@ -455,26 +534,15 @@ class Puppet::Node::Environment
     to_s.to_sym
   end
 
-  # Return only the environment name when serializing.
-  #
-  # The only thing we care about when serializing an environment is its
-  # identity; everything else is ephemeral and should not be stored or
-  # transmitted.
-  #
-  # @api public
-  def to_zaml(z)
-    self.to_s.to_zaml(z)
-  end
-
   def self.split_path(path_string)
     path_string.split(File::PATH_SEPARATOR)
   end
 
   def ==(other)
     return true if other.kind_of?(Puppet::Node::Environment) &&
-      self.name == other.name &&
-      self.full_modulepath == other.full_modulepath &&
-      self.manifest == other.manifest
+                   self.name == other.name &&
+                   self.full_modulepath == other.full_modulepath &&
+                   self.manifest == other.manifest
   end
 
   alias eql? ==
@@ -483,62 +551,55 @@ class Puppet::Node::Environment
     [self.class, name, full_modulepath, manifest].hash
   end
 
-  private
-
-  def self.extralibs()
-    if ENV["PUPPETLIB"]
-      split_path(ENV["PUPPETLIB"])
+  # not private so it can be called in tests
+  def self.extralibs
+    if ENV['PUPPETLIB']
+      split_path(ENV['PUPPETLIB'])
     else
       []
     end
   end
 
+  # not private so it can be called in initialize
   def self.expand_dirs(dirs)
     dirs.collect do |dir|
-      File.expand_path(dir)
+      Puppet::FileSystem.expand_path(dir)
     end
   end
+
+  private
 
   # Reparse the manifests for the given environment
   #
   # There are two sources that can be used for the initial parse:
   #
-  #   1. The value of `Puppet.settings[:code]`: Puppet can take a string from
+  #   1. The value of `Puppet[:code]`: Puppet can take a string from
   #     its settings and parse that as a manifest. This is used by various
   #     Puppet applications to read in a manifest and pass it to the
   #     environment as a side effect. This is attempted first.
-  #   2. The contents of `Puppet.settings[:manifest]`: Puppet will try to load
-  #     the environment manifest. By default this is `$manifestdir/site.pp`
-  #
-  # @note This method will return an empty hostclass if
-  #   `Puppet.settings[:ignoreimport]` is set to true.
+  #   2. The contents of this environment's +manifest+ attribute: Puppet will
+  #     try to load the environment manifest.
   #
   # @return [Puppet::Parser::AST::Hostclass] The AST hostclass object
   #   representing the 'main' hostclass
   def perform_initial_import
-    return empty_parse_result if Puppet[:ignoreimport]
-    parser = Puppet::Parser::ParserFactory.parser(self)
+    parser = Puppet::Parser::ParserFactory.parser
     @parsed_code = Puppet[:code]
     if @parsed_code != ""
       parser.string = @parsed_code
       parser.parse
     else
       file = self.manifest
-      # if the manifest file is a reference to a directory, parse and combine all .pp files in that
-      # directory
+      # if the manifest file is a reference to a directory, parse and combine
+      # all .pp files in that directory
       if file == NO_MANIFEST
-        Puppet::Parser::AST::Hostclass.new('')
+        empty_parse_result
       elsif File.directory?(file)
-        if Puppet[:parser] == 'future'
-          parse_results = Puppet::FileSystem::PathPattern.absolute(File.join(file, '**/*.pp')).glob.sort.map do | file_to_parse |
-            parser.file = file_to_parse
-            parser.parse
-          end
-        else
-          parse_results = Dir.entries(file).find_all { |f| f =~ /\.pp$/ }.sort.map do |file_to_parse|
-            parser.file = File.join(file, file_to_parse)
-            parser.parse
-          end
+        # JRuby does not properly perform Dir.glob operations with wildcards, (see PUP-11788 and https://github.com/jruby/jruby/issues/7836).
+        # We sort the results because Dir.glob order is inconsistent in Ruby < 3 (see PUP-10115).
+        parse_results = Puppet::FileSystem::PathPattern.absolute(File.join(file, '**/*')).glob.select { |globbed_file| globbed_file.end_with?('.pp') }.sort.map do |file_to_parse|
+          parser.file = file_to_parse
+          parser.parse
         end
         # Use a parser type specific merger to concatenate the results
         Puppet::Parser::AST::Hostclass.new('', :code => Puppet::Parser::ParserFactory.code_merger.concatenate(parse_results))
@@ -547,28 +608,33 @@ class Puppet::Node::Environment
         parser.parse
       end
     end
+  rescue Puppet::ParseErrorWithIssue => detail
+    @known_resource_types.parse_failed = true
+    detail.environment = self.name
+    raise
   rescue => detail
     @known_resource_types.parse_failed = true
 
-    msg = "Could not parse for environment #{self}: #{detail}"
+    msg = _("Could not parse for environment %{env}: %{detail}") % { env: self, detail: detail }
     error = Puppet::Error.new(msg)
     error.set_backtrace(detail.backtrace)
     raise error
   end
 
-  # Return an empty toplevel hostclass to indicate that no file was loaded
-  #
-  # This is used as the return value of {#perform_initial_import} when
-  # `Puppet.settings[:ignoreimport]` is true.
+  # Return an empty top-level hostclass to indicate that no file was loaded
   #
   # @return [Puppet::Parser::AST::Hostclass]
   def empty_parse_result
     return Puppet::Parser::AST::Hostclass.new('')
   end
 
+  # A None subclass to make it easier to trace the NONE environment when debugging.
+  # @api private
+  class None < Puppet::Node::Environment; end
+
   # A special "null" environment
   #
   # This environment should be used when there is no specific environment in
   # effect.
-  NONE = create(:none, [])
+  NONE = None.create(:none, [])
 end

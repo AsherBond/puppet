@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 Puppet::Type.type(:service).provide :base, :parent => :service do
   desc "The simplest form of Unix service support.
 
@@ -11,26 +13,54 @@ Puppet::Type.type(:service).provide :base, :parent => :service do
 
   commands :kill => "kill"
 
+  # get the proper 'ps' invocation for the platform
+  # ported from the facter 2.x implementation, since facter 3.x
+  # is dropping the fact (for which this was the only use)
+  def getps
+    case Puppet.runtime[:facter].value('os.name')
+    when 'OpenWrt'
+      'ps www'
+    when 'FreeBSD', 'NetBSD', 'OpenBSD', 'Darwin', 'DragonFly'
+      'ps auxwww'
+    else
+      'ps -ef'
+    end
+  end
+  private :getps
+
   # Get the process ID for a running process. Requires the 'pattern'
   # parameter.
   def getpid
     @resource.fail "Either stop/status commands or a pattern must be specified" unless @resource[:pattern]
-    ps = Facter["ps"].value
-    @resource.fail "You must upgrade Facter to a version that includes 'ps'" unless ps and ps != ""
     regex = Regexp.new(@resource[:pattern])
+    ps = getps
+
     self.debug "Executing '#{ps}'"
-    IO.popen(ps) { |table|
-      table.each_line { |line|
-        if regex.match(line)
-          self.debug "Process matched: #{line}"
-          ary = line.sub(/^\s+/, '').split(/\s+/)
-          return ary[1]
-        end
-      }
+    table = Puppet::Util::Execution.execute(ps)
+
+    # The output of the PS command can be a mashup of several different
+    # encodings depending on which processes are running and what
+    # arbitrary data has been used to set their name in the process table.
+    #
+    # First, try a polite conversion to in order to match the UTF-8 encoding
+    # of our regular expression.
+    table = Puppet::Util::CharacterEncoding.convert_to_utf_8(table)
+    # If that fails, force to UTF-8 and then scrub as most uses are scanning
+    # for ACII-compatible program names.
+    table.force_encoding(Encoding::UTF_8) unless table.encoding == Encoding::UTF_8
+    table = table.scrub unless table.valid_encoding?
+
+    table.each_line { |line|
+      if regex.match(line)
+        self.debug "Process matched: #{line}"
+        ary = line.sub(/^[[:space:]]+/u, '').split(/[[:space:]]+/u)
+        return ary[1]
+      end
     }
 
     nil
   end
+  private :getpid
 
   # Check if the process is running.  Prefer the 'status' parameter,
   # then 'statuscmd' method, then look in the process table.  We give
@@ -40,19 +70,22 @@ Puppet::Type.type(:service).provide :base, :parent => :service do
   def status
     if @resource[:status] or statuscmd
       # Don't fail when the exit status is not 0.
-      ucommand(:status, false)
+      status = service_command(:status, false)
 
-      # Expicitly calling exitstatus to facilitate testing
-      if $CHILD_STATUS.exitstatus == 0
+      # Explicitly calling exitstatus to facilitate testing
+      if status.exitstatus == 0
         return :running
       else
         return :stopped
       end
-    elsif pid = self.getpid
-      self.debug "PID is #{pid}"
-      return :running
     else
-      return :stopped
+      pid = getpid
+      if pid
+        self.debug "PID is #{pid}"
+        return :running
+      else
+        return :stopped
+      end
     end
   end
 
@@ -62,7 +95,8 @@ Puppet::Type.type(:service).provide :base, :parent => :service do
 
   # Run the 'start' parameter command, or the specified 'startcmd'.
   def start
-    ucommand(:start)
+    service_command(:start)
+    nil
   end
 
   # The command used to start.  Generated if the 'binary' argument
@@ -72,7 +106,7 @@ Puppet::Type.type(:service).provide :base, :parent => :service do
       return @resource[:binary]
     else
       raise Puppet::Error,
-        "Services must specify a start command or a binary"
+            "Services must specify a start command or a binary"
     end
   end
 
@@ -83,11 +117,12 @@ Puppet::Type.type(:service).provide :base, :parent => :service do
   # This method will generally not be overridden by submodules.
   def stop
     if @resource[:stop] or stopcmd
-      ucommand(:stop)
+      service_command(:stop)
+      nil
     else
       pid = getpid
       unless pid
-        self.info "#{self.name} is not running"
+        self.info _("%{name} is not running") % { name: self.name }
         return false
       end
       begin
@@ -103,4 +138,3 @@ Puppet::Type.type(:service).provide :base, :parent => :service do
   def stopcmd
   end
 end
-

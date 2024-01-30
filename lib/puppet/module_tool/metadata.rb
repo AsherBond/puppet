@@ -1,12 +1,12 @@
-require 'puppet/util/methodhelper'
-require 'puppet/module_tool'
-require 'puppet/network/format_support'
+# frozen_string_literal: true
+
+require_relative '../../puppet/module_tool'
+require_relative '../../puppet/network/format_support'
 require 'uri'
-require 'json'
+require_relative '../../puppet/util/json'
 require 'set'
 
 module Puppet::ModuleTool
-
   # This class provides a data structure representing a module's metadata.
   # @api private
   class Metadata
@@ -15,15 +15,16 @@ module Puppet::ModuleTool
     attr_accessor :module_name
 
     DEFAULTS = {
-      'name'         => nil,
-      'version'      => nil,
-      'author'       => nil,
-      'summary'      => nil,
-      'license'      => 'Apache 2.0',
-      'source'       => '',
+      'name' => nil,
+      'version' => nil,
+      'author' => nil,
+      'summary' => nil,
+      'license' => 'Apache-2.0',
+      'source' => '',
       'project_page' => nil,
-      'issues_url'   => nil,
+      'issues_url' => nil,
       'dependencies' => Set.new.freeze,
+      'data_provider' => nil,
     }
 
     def initialize
@@ -39,7 +40,8 @@ module Puppet::ModuleTool
     # Returns a string that uniquely represents this version of this module.
     def release_name
       return nil unless @data['name'] && @data['version']
-      [ dashed_name, @data['version'] ].join('-')
+
+      [dashed_name, @data['version']].join('-')
     end
 
     alias :name :module_name
@@ -52,6 +54,7 @@ module Puppet::ModuleTool
       process_name(data) if data['name']
       process_version(data) if data['version']
       process_source(data) if data['source']
+      process_data_provider(data) if data['data_provider']
       merge_dependencies(data) if data['dependencies']
 
       @data.merge!(data)
@@ -61,13 +64,12 @@ module Puppet::ModuleTool
     # Validates the name and version_requirement for a dependency, then creates
     # the Dependency and adds it.
     # Returns the Dependency that was added.
-    def add_dependency(name, version_requirement=nil, repository=nil)
+    def add_dependency(name, version_requirement = nil, repository = nil)
       validate_name(name)
       validate_version_range(version_requirement) if version_requirement
 
-      if dup = @data['dependencies'].find { |d| d.full_module_name == name && d.version_requirement != version_requirement }
-        raise ArgumentError, "Dependency conflict for #{full_module_name}: Dependency #{name} was given conflicting version requirements #{version_requirement} and #{dup.version_requirement}. Verify that there are no duplicates in the metadata.json or the Modulefile."
-      end
+      dup = @data['dependencies'].find { |d| d.full_module_name == name && d.version_requirement != version_requirement }
+      raise ArgumentError, _("Dependency conflict for %{module_name}: Dependency %{name} was given conflicting version requirements %{version_requirement} and %{dup_version}. Verify that there are no duplicates in the metadata.json.") % { module_name: full_module_name, name: name, version_requirement: version_requirement, dup_version: dup.version_requirement } if dup
 
       dep = Dependency.new(name, version_requirement, repository)
       @data['dependencies'].add(dep)
@@ -77,7 +79,7 @@ module Puppet::ModuleTool
 
     # Provides an accessor for the now defunct 'description' property.  This
     # addresses a regression in Puppet 3.6.x where previously valid templates
-    # refering to the 'description' property were broken.
+    # referring to the 'description' property were broken.
     # @deprecated
     def description
       @data['description']
@@ -99,20 +101,9 @@ module Puppet::ModuleTool
     def to_json
       data = @data.dup.merge('dependencies' => dependencies)
 
-      # This is used to simulate an ordered hash.  In particular, some keys
-      # are promoted to the top of the serialized hash (while others are
-      # demoted) for human-friendliness.
-      #
-      # This particularly works around the lack of ordered hashes in 1.8.7.
-      promoted_keys = %w[ name version author summary license source ]
-      demoted_keys = %w[ dependencies ]
-      keys = data.keys
-      keys -= promoted_keys
-      keys -= demoted_keys
-
-      contents = (promoted_keys + keys + demoted_keys).map do |k|
-        value = (JSON.pretty_generate(data[k]) rescue data[k].to_json)
-        "#{k.to_json}: #{value}"
+      contents = data.keys.map do |k|
+        value = (Puppet::Util::Json.dump(data[k], :pretty => true) rescue data[k].to_json)
+        %Q("#{k}": #{value})
       end
 
       "{\n" + contents.join(",\n").gsub(/^/, '  ') + "\n}\n"
@@ -121,6 +112,7 @@ module Puppet::ModuleTool
     # Expose any metadata keys as callable reader methods.
     def method_missing(name, *args)
       return @data[name.to_s] if @data.key? name.to_s
+
       super
     end
 
@@ -139,6 +131,10 @@ module Puppet::ModuleTool
       validate_version(data['version'])
     end
 
+    def process_data_provider(data)
+      validate_data_provider(data['data_provider'])
+    end
+
     # Do basic parsing of the source parameter.  If the source is hosted on
     # GitHub, we can predict sensible defaults for both project_page and
     # issues_url.
@@ -155,7 +151,6 @@ module Puppet::ModuleTool
         data['project_page'] ||= @data['project_page'] || source_uri.to_s
         data['issues_url'] ||= @data['issues_url'] || source_uri.to_s.sub(/\/*$/, '') + '/issues'
       end
-
     rescue URI::Error
       return
     end
@@ -178,32 +173,51 @@ module Puppet::ModuleTool
       modname = :namespace_missing if namespace == ''
 
       err = case modname
-      when nil, '', :namespace_missing
-        "the field must be a namespaced module name"
-      when /[^a-z0-9_]/i
-        "the module name contains non-alphanumeric (or underscore) characters"
-      when /^[^a-z]/i
-        "the module name must begin with a letter"
-      else
-        "the namespace contains non-alphanumeric characters"
-      end
+            when nil, '', :namespace_missing
+              _("the field must be a namespaced module name")
+            when /[^a-z0-9_]/i
+              _("the module name contains non-alphanumeric (or underscore) characters")
+            when /^[^a-z]/i
+              _("the module name must begin with a letter")
+            else
+              _("the namespace contains non-alphanumeric characters")
+            end
 
-      raise ArgumentError, "Invalid 'name' field in metadata.json: #{err}"
+      raise ArgumentError, _("Invalid 'name' field in metadata.json: %{err}") % { err: err }
     end
 
     # Validates that the version string can be parsed as per SemVer.
     def validate_version(version)
-      return if SemVer.valid?(version)
+      return if SemanticPuppet::Version.valid?(version)
 
-      err = "version string cannot be parsed as a valid Semantic Version"
-      raise ArgumentError, "Invalid 'version' field in metadata.json: #{err}"
+      err = _("version string cannot be parsed as a valid Semantic Version")
+      raise ArgumentError, _("Invalid 'version' field in metadata.json: %{err}") % { err: err }
+    end
+
+    # Validates that the given _value_ is a symbolic name that starts with a letter
+    # and then contains only letters, digits, or underscore. Will raise an ArgumentError
+    # if that's not the case.
+    #
+    # @param value [Object] The value to be tested
+    def validate_data_provider(value)
+      if value.is_a?(String)
+        unless value =~ /^[a-zA-Z][a-zA-Z0-9_]*$/
+          if value =~ /^[a-zA-Z]/
+            raise ArgumentError, _("field 'data_provider' contains non-alphanumeric characters")
+          else
+            raise ArgumentError, _("field 'data_provider' must begin with a letter")
+          end
+        end
+      else
+        raise ArgumentError, _("field 'data_provider' must be a string")
+      end
     end
 
     # Validates that the version range can be parsed by Semantic.
     def validate_version_range(version_range)
-      Semantic::VersionRange.parse(version_range)
+      SemanticPuppet::VersionRange.parse(version_range)
     rescue ArgumentError => e
-      raise ArgumentError, "Invalid 'version_range' field in metadata.json: #{e}"
+      raise ArgumentError, _("Invalid 'version_range' field in metadata.json: %{err}") % { err: e }
     end
   end
 end

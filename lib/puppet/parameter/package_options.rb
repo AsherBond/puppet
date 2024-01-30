@@ -1,4 +1,6 @@
-require 'puppet/parameter'
+# frozen_string_literal: true
+
+require_relative '../../puppet/parameter'
 
 # This specialized {Puppet::Parameter} handles munging of package options.
 # Package options are passed as an array of key value pairs. Special munging is
@@ -19,7 +21,7 @@ class Puppet::Parameter::PackageOptions < Puppet::Parameter
       when String
         quote(val)
       else
-        fail("Expected either a string or hash of options")
+        fail(_("Expected either a string or hash of options"))
       end
     end
   end

@@ -8,11 +8,15 @@ Find
 
 Get a file.
 
-    GET /:environment/file_content/:mount_point/:name
+    GET /puppet/v3/file_content/:mount_point/:name
 
-`:mount_point` is one of mounts configured in the `fileserver.conf`.
-See [the puppet file server guide](http://docs.puppetlabs.com/guides/file_serving.html)
-for more information about how mount points work.
+The endpoint path includes a `:mount_point` which can be one of the following types:
+
+* Custom file serving mounts as specified in fileserver.conf --- see [the docs on configuring mount points](https://puppet.com/docs/puppet/latest/file_serving.html).
+* `modules/<MODULE>` --- a semi-magical mount point which allows access to the `files` subdirectory of `<MODULE>` --- see [the docs on file serving](https://puppet.com/docs/puppet/latest/file_serving.html).
+* `plugins` --- a highly magical mount point which merges the `lib`  directory of every module together. Used for syncing plugins; not intended for general consumption. Per-module sub-paths can not be specified.
+* `pluginfacts` --- a highly magical mount point which merges the `facts.d` directory of every module together. Used for syncing external facts; not intended for general consumption. Per-module sub-paths can not be specified.
+* `tasks/<MODULE>` --- a semi-magical mount point which allows access to files in the `tasks` subdirectory of `<MODULE>` --- see the [the docs on file serving](https://puppet.com/docs/puppet/latest/file_serving.html).
 
 `:name` is the path to the file within the `:mount_point` that is requested.
 
@@ -22,7 +26,7 @@ GET
 
 ### Supported Response Formats
 
-raw (the raw binary content)
+`application/octet-stream`
 
 ### Parameters
 
@@ -34,11 +38,11 @@ None
 
 #### File found
 
-    GET /env/file_content/modules/example/my_file
-    Accept: raw
+    GET /puppet/v3/file_content/modules/example/my_file?environment=env
+    Accept: application/octet-stream
 
     HTTP/1.1 200 OK
-    Content-Type: application/x-raw
+    Content-Type: application/octet-stream
     Content-Length: 16
 
     this is my file
@@ -46,8 +50,8 @@ None
 
 #### File not found
 
-    GET /env/file_content/modules/example/not_found
-    Accept: raw
+    GET /puppet/v3/file_content/modules/example/not_found?environment=env
+    Accept: application/octet-stream
 
     HTTP/1.1 404 Not Found
     Content-Type: text/plain
@@ -56,12 +60,12 @@ None
 
 #### No file name given
 
-    GET /env/file_content/
+    GET /puppet/v3/file_content?environment=env
 
     HTTP/1.1 400 Bad Request
     Content-Type: text/plain
 
-    No request key specified in /env/file_content/
+    No request key specified in /puppet/v3/file_content/
 
 Schema
 ------

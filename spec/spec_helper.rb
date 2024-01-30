@@ -5,7 +5,7 @@
 dir = File.expand_path(File.dirname(__FILE__))
 $LOAD_PATH.unshift File.join(dir, 'lib')
 
-# Don't want puppet getting the command line arguments for rake or autotest
+# Don't want puppet getting the command line arguments for rake
 ARGV.clear
 
 begin
@@ -14,12 +14,18 @@ rescue LoadError
 end
 
 require 'puppet'
-gem 'rspec', '>=2.0.0'
-require 'rspec/expectations'
+
+# Stub out gettext's `_` and `n_()` methods, which attempt to load translations.
+# Several of our mocks (mostly around file system interaction) are broken by
+# FastGettext's implementation of these methods.
+require 'puppet/gettext/stubs'
+
+require 'rspec'
+require 'rspec/its'
 
 # So everyone else doesn't have to include this base constant.
 module PuppetSpec
-  FIXTURE_DIR = File.join(dir = File.expand_path(File.dirname(__FILE__)), "fixtures") unless defined?(FIXTURE_DIR)
+  FIXTURE_DIR = File.join(File.expand_path(File.dirname(__FILE__)), "fixtures") unless defined?(FIXTURE_DIR)
 end
 
 require 'pathname'
@@ -31,8 +37,7 @@ require 'puppet_spec/files'
 require 'puppet_spec/settings'
 require 'puppet_spec/fixtures'
 require 'puppet_spec/matchers'
-require 'puppet_spec/database'
-require 'monkey_patches/alias_should_to_must'
+require 'puppet_spec/unindent'
 require 'puppet/test/test_helper'
 
 Pathname.glob("#{dir}/shared_contexts/*.rb") do |file|
@@ -43,38 +48,39 @@ Pathname.glob("#{dir}/shared_behaviours/**/*.rb") do |behaviour|
   require behaviour.relative_path_from(Pathname.new(dir))
 end
 
+Pathname.glob("#{dir}/shared_examples/**/*.rb") do |behaviour|
+  require behaviour.relative_path_from(Pathname.new(dir))
+end
+
+require 'webmock/rspec'
+require 'vcr'
+VCR.configure do |vcr|
+  vcr.cassette_library_dir = File.expand_path('vcr/cassettes', PuppetSpec::FIXTURE_DIR)
+  vcr.hook_into :webmock
+  vcr.configure_rspec_metadata!
+  # Uncomment next line to debug vcr
+  # vcr.debug_logger = $stderr
+end
+
+# Disable VCR by default
+VCR.turn_off!
+
 RSpec.configure do |config|
   include PuppetSpec::Fixtures
 
-  # Examples or groups can selectively tag themselves as broken.
-  # For example;
-  #
-  # rbv = "#{RUBY_VERSION}-p#{RbConfig::CONFIG['PATCHLEVEL']}"
-  # describe "mostly working", :broken => false unless rbv == "1.9.3-p327" do
-  #  it "parses a valid IP" do
-  #    IPAddr.new("::2:3:4:5:6:7:8")
-  #  end
-  # end
-  exclude_filters = {:broken => true}
+  exclude_filters = {}
   exclude_filters[:benchmark] = true unless ENV['BENCHMARK']
   config.filter_run_excluding exclude_filters
 
-  config.mock_with :mocha
+  config.filter_run_when_matching :focus
 
-  tmpdir = Dir.mktmpdir("rspecrun")
-  oldtmpdir = Dir.tmpdir()
-  ENV['TMPDIR'] = tmpdir
-
-  if Puppet::Util::Platform.windows?
-    config.output_stream = $stdout
-    config.error_stream = $stderr
-
-    config.formatters.each do |f|
-      if not f.instance_variable_get(:@output).kind_of?(::File)
-        f.instance_variable_set(:@output, $stdout)
-      end
-    end
+  config.mock_with :rspec do |mocks|
+    mocks.verify_partial_doubles = true
   end
+
+  tmpdir = Puppet::FileSystem.expand_path(Dir.mktmpdir("rspecrun"))
+  oldtmpdir = Puppet::FileSystem.expand_path(Dir.tmpdir())
+  ENV['TMPDIR'] = tmpdir
 
   Puppet::Test::TestHelper.initialize
 
@@ -99,17 +105,11 @@ RSpec.configure do |config|
     Puppet::Test::TestHelper.after_all_tests()
   end
 
-  config.before :each do
+  config.before :each do |test|
     # Disabling garbage collection inside each test, and only running it at
     # the end of each block, gives us an ~ 15 percent speedup, and more on
     # some platforms *cough* windows *cough* that are a little slower.
     GC.disable
-
-    # REVISIT: I think this conceals other bad tests, but I don't have time to
-    # fully diagnose those right now.  When you read this, please come tell me
-    # I suck for letting this float. --daniel 2011-04-21
-    Signal.stubs(:trap)
-
 
     # TODO: in a more sane world, we'd move this logging redirection into our TestHelper class.
     #  Without doing so, external projects will all have to roll their own solution for
@@ -121,24 +121,71 @@ RSpec.configure do |config|
     # redirecting logging away from console, because otherwise the test output will be
     #  obscured by all of the log output
     @logs = []
+    Puppet::Util::Log.close_all
+    if ENV["PUPPET_TEST_LOG_LEVEL"]
+      Puppet::Util::Log.level = ENV["PUPPET_TEST_LOG_LEVEL"].intern
+    end
+    if ENV["PUPPET_TEST_LOG"]
+      Puppet::Util::Log.newdestination(ENV["PUPPET_TEST_LOG"])
+      m = test.metadata
+      Puppet.notice("*** BEGIN TEST #{m[:file_path]}:#{m[:line_number]}")
+    end
     Puppet::Util::Log.newdestination(Puppet::Test::LogCollector.new(@logs))
 
     @log_level = Puppet::Util::Log.level
 
     base = PuppetSpec::Files.tmpdir('tmp_settings')
     Puppet[:vardir] = File.join(base, 'var')
+    Puppet[:publicdir] = File.join(base, 'public')
     Puppet[:confdir] = File.join(base, 'etc')
+    Puppet[:codedir] = File.join(base, 'code')
     Puppet[:logdir] = "$vardir/log"
     Puppet[:rundir] = "$vardir/run"
     Puppet[:hiera_config] = File.join(base, 'hiera')
 
+    FileUtils.mkdir_p Puppet[:statedir]
+    FileUtils.mkdir_p Puppet[:publicdir]
+
     Puppet::Test::TestHelper.before_each_test()
+  end
+
+  # Facter 2 uses two versions of the GCE API, so match using regex
+  PUPPET_FACTER_2_GCE_URL = %r{^http://metadata/computeMetadata/v1(beta1)?}.freeze
+  PUPPET_FACTER_3_GCE_URL = "http://metadata.google.internal/computeMetadata/v1/?recursive=true&alt=json".freeze
+
+  # Facter azure metadata endpoint
+  PUPPET_FACTER_AZ_URL = "http://169.254.169.254/metadata/instance?api-version=2020-09-01"
+
+  # Facter EC2 endpoint
+  PUPPET_FACTER_EC2_METADATA = 'http://169.254.169.254/latest/meta-data/'
+  PUPPET_FACTER_EC2_USERDATA = 'http://169.254.169.254/latest/user-data/'
+
+  config.around :each do |example|
+    # Ignore requests from Facter to external services
+    stub_request(:get, PUPPET_FACTER_2_GCE_URL)
+    stub_request(:get, PUPPET_FACTER_3_GCE_URL)
+    stub_request(:get, PUPPET_FACTER_AZ_URL)
+    stub_request(:get, PUPPET_FACTER_EC2_METADATA)
+    stub_request(:get, PUPPET_FACTER_EC2_USERDATA)
+
+    # Enable VCR if the example is tagged with `:vcr` metadata.
+    if example.metadata[:vcr]
+      VCR.turn_on!
+      begin
+        example.run
+      ensure
+        VCR.turn_off!
+      end
+    else
+      example.run
+    end
   end
 
   config.after :each do
     Puppet::Test::TestHelper.after_each_test()
 
     # TODO: would like to move this into puppetlabs_spec_helper, but there are namespace issues at the moment.
+    allow(Dir).to receive(:entries).and_call_original
     PuppetSpec::Files.cleanup
 
     # TODO: this should be abstracted in the future--see comments above the '@logs' block in the
@@ -175,7 +222,7 @@ RSpec.configure do |config|
 
     def profile
       result = RubyProf.profile { yield }
-      name = example.metadata[:full_description].downcase.gsub(/[^a-z0-9_-]/, "-").gsub(/-+/, "-")
+      name = RSpec.current_example.metadata[:full_description].downcase.gsub(/[^a-z0-9_-]/, "-").gsub(/-+/, "-")
       printer = RubyProf::CallTreePrinter.new(result)
       open(File.join(ENV['PROFILEOUT'],"callgrind.#{name}.#{Time.now.to_i}.trace"), "w") do |f|
         printer.print(f)

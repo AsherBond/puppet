@@ -1,6 +1,7 @@
 require 'benchmark'
 require 'tmpdir'
 require 'csv'
+require 'objspace'
 
 namespace :benchmark do
   def generate_scenario_tasks(location, name)
@@ -36,14 +37,9 @@ namespace :benchmark do
 
       desc "Run the #{name} scenario."
       task :run, [*run_args] =>  :generate do |_, args|
-        format = if RUBY_VERSION =~ /^1\.8/
-                   Benchmark::FMTSTR
-                 else
-                   Benchmark::FORMAT
-                 end
         report = []
         details = []
-        Benchmark.benchmark(Benchmark::CAPTION, 10, format, "> total:", "> avg:") do |b|
+        Benchmark.benchmark(Benchmark::CAPTION, 10, Benchmark::FORMAT, "> total:", "> avg:") do |b|
           times = []
           ENV['ITERATIONS'].to_i.times do |i|
             start_time = Time.now.to_i
@@ -99,9 +95,49 @@ namespace :benchmark do
         end
 
         printer = RubyProf::CallTreePrinter.new(result)
-        File.open(File.join("callgrind.#{name}.#{Time.now.to_i}.trace"), "w") do |f|
-          printer.print(f)
+        printer.print(:profile => name, :path => ENV['TARGET'])
+        path = File.join(ENV['TARGET'], "#{name}.callgrind.out.#{$$}")
+        puts "Generated callgrind file: #{path}"
+      end
+
+      desc "Print a memory profile of the #{name} scenario."
+      task :memory_profile, [*run_args] => :generate do |_, args|
+        begin
+          require 'memory_profiler'
+        rescue LoadError
+          abort("Run `bundle install --with development` to install the 'memory_profiler' gem.")
         end
+
+        report = MemoryProfiler.report do
+          @benchmark.run(args)
+        end
+
+        path = "mem_profile_#{$PID}"
+        report.pretty_print(to_file: path)
+
+        puts "Generated memory profile: #{File.absolute_path(path)}"
+      end
+
+      desc "Generate a heap dump with object allocation tracing of the #{name} scenario."
+      task :heap_dump, [*run_args] => :generate do |_, args|
+        ObjectSpace.trace_object_allocations_start
+
+        if ENV['DISABLE_GC']
+          GC.disable
+        end
+
+        @benchmark.run(args)
+
+        unless ENV['DISABLE_GC']
+          GC.start
+        end
+
+        path = "heap_#{$PID}.json"
+        File.open(path, 'w') do |file|
+          ObjectSpace.dump_all(output: file)
+        end
+
+        puts "Generated heap dump: #{File.absolute_path(path)}"
       end
 
       def to_millis(seconds)

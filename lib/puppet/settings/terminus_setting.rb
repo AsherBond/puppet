@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 class Puppet::Settings::TerminusSetting < Puppet::Settings::BaseSetting
   def munge(value)
     case value
@@ -8,7 +10,7 @@ class Puppet::Settings::TerminusSetting < Puppet::Settings::BaseSetting
     when Symbol
       value
     else
-      raise Puppet::Settings::ValidationError, "Invalid terminus setting: #{value}"
+      raise Puppet::Settings::ValidationError, _("Invalid terminus setting: %{value}") % { value: value }
     end
   end
 end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 Puppet::Type.type(:package).provide :rug, :parent => :rpm do
   desc "Support for suse `rug` package manager."
 
@@ -5,8 +7,7 @@ Puppet::Type.type(:package).provide :rug, :parent => :rpm do
 
   commands :rug => "/usr/bin/rug"
   commands :rpm => "rpm"
-  defaultfor :operatingsystem => [:suse, :sles]
-  confine    :operatingsystem => [:suse, :sles]
+  confine  'os.name' => [:suse, :sles]
 
   # Install a package using 'rug'.
   def install
@@ -26,14 +27,14 @@ Puppet::Type.type(:package).provide :rug, :parent => :rpm do
 
     unless self.query
       raise Puppet::ExecutionFailure.new(
-        "Could not find package #{self.name}"
+        _("Could not find package %{name}") % { name: self.name }
       )
     end
   end
 
   # What's the latest package version available?
   def latest
-    #rug can only get a list of *all* available packages?
+    # rug can only get a list of *all* available packages?
     output = rug "list-updates"
 
     if output =~ /#{Regexp.escape @resource[:name]}\s*\|\s*([^\s\|]+)/

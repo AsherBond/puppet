@@ -1,40 +1,17 @@
-require 'puppet/parser/ast/branch'
+# frozen_string_literal: true
 
-class Puppet::Parser::AST
-  class BlockExpression < Branch
-    include Enumerable
+# Evaluates contained expressions, produce result of the last
+#
+class Puppet::Parser::AST::BlockExpression < Puppet::Parser::AST::Branch
+  def evaluate(scope)
+    @children.reduce(nil) { |_, child| child.safeevaluate(scope) }
+  end
 
-    # Evaluate contained expressions, produce result of the last
-    def evaluate(scope)
-      result = nil
-      @children.each do |child|
-        result = child.safeevaluate(scope)
-      end
-      result
-    end
+  def sequence_with(other)
+    Puppet::Parser::AST::BlockExpression.new(:children => self.children + other.children)
+  end
 
-    # Return a child by index.
-    def [](index)
-      @children[index]
-    end
-
-    def push(*ary)
-      ary.each { |child|
-        #Puppet.debug "adding %s(%s) of type %s to %s" %
-        #    [child, child.object_id, child.class.to_s.sub(/.+::/,''),
-        #    self.object_id]
-        @children.push(child)
-      }
-
-      self
-    end
-
-    def sequence_with(other)
-      Puppet::Parser::AST::BlockExpression.new(:children => self.children + other.children)
-    end
-
-    def to_s
-      "[" + @children.collect { |c| c.to_s }.join(', ') + "]"
-    end
+  def to_s
+    "[" + @children.collect { |c| c.to_s }.join(', ') + "]"
   end
 end

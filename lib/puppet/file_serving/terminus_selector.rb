@@ -1,4 +1,6 @@
-require 'puppet/file_serving'
+# frozen_string_literal: true
+
+require_relative '../../puppet/file_serving'
 
 # This module is used to pick the appropriate terminus
 # in file-serving indirections.  This is necessary because
@@ -6,11 +8,6 @@ require 'puppet/file_serving'
 module Puppet::FileServing::TerminusSelector
   def select(request)
     # We rely on the request's parsing of the URI.
-
-    # Short-circuit to :file if it's a fully-qualified path or specifies a 'file' protocol.
-    if Puppet::Util.absolute_path?(request.key)
-      return :file
-    end
 
     case request.protocol
     when "file"
@@ -21,10 +18,16 @@ module Puppet::FileServing::TerminusSelector
       else
         Puppet[:default_file_terminus]
       end
+    when "http", "https"
+      :http
     when nil
-      :file_server
+      if Puppet::Util.absolute_path?(request.key)
+        :file
+      else
+        :file_server
+      end
     else
-      raise ArgumentError, "URI protocol '#{request.protocol}' is not currently supported for file serving"
+      raise ArgumentError, _("URI protocol '%{protocol}' is not currently supported for file serving") % { protocol: request.protocol }
     end
   end
 end

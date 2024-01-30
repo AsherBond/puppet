@@ -1,7 +1,9 @@
+# frozen_string_literal: true
+
 require 'pathname'
 require 'tmpdir'
-require 'json'
-require 'puppet/file_system'
+require_relative '../../../puppet/util/json'
+require_relative '../../../puppet/file_system'
 
 module Puppet::ModuleTool
   module Applications
@@ -14,7 +16,7 @@ module Puppet::ModuleTool
       end
 
       def self.harmonize_ownership(source, target)
-        unless Puppet.features.microsoft_windows?
+        unless Puppet::Util::Platform.windows?
           source = Pathname.new(source) unless source.respond_to?(:stat)
           target = Pathname.new(target) unless target.respond_to?(:stat)
 
@@ -42,11 +44,11 @@ module Puppet::ModuleTool
       # @api private
       # Error on symlinks and other junk
       def sanity_check
-        symlinks = Dir.glob("#{tmpdir}/**/*", File::FNM_DOTMATCH).map { |f| Pathname.new(f) }.select {|p| Puppet::FileSystem.symlink? p}
+        symlinks = Dir.glob("#{tmpdir}/**/*", File::FNM_DOTMATCH).map { |f| Pathname.new(f) }.select { |p| Puppet::FileSystem.symlink? p }
         tmpdirpath = Pathname.new tmpdir
 
         symlinks.each do |s|
-          Puppet.warning "Symlinks in modules are unsupported. Please investigate symlink #{s.relative_path_from tmpdirpath}->#{s.realpath.relative_path_from tmpdirpath}."
+          Puppet.warning _("Symlinks in modules are unsupported. Please investigate symlink %{from}->%{to}.") % { from: s.relative_path_from(tmpdirpath), to: Puppet::FileSystem.readlink(s) }
         end
       end
 
@@ -55,7 +57,7 @@ module Puppet::ModuleTool
         begin
           Puppet::ModuleTool::Tar.instance.unpack(@filename.to_s, tmpdir, [@module_path.stat.uid, @module_path.stat.gid].join(':'))
         rescue Puppet::ExecutionFailure => e
-          raise RuntimeError, "Could not extract contents of module archive: #{e.message}"
+          raise RuntimeError, _("Could not extract contents of module archive: %{message}") % { message: e.message }
         end
       end
 
@@ -69,14 +71,14 @@ module Puppet::ModuleTool
         if metadata_file
           @root_dir = Pathname.new(metadata_file).dirname
         else
-          raise "No valid metadata.json found!"
+          raise _("No valid metadata.json found!")
         end
       end
 
       # @api private
       def module_name
-        metadata = JSON.parse((root_dir + 'metadata.json').read)
-        name = metadata['name'][/-(.*)/, 1]
+        metadata = Puppet::Util::Json.load((root_dir + 'metadata.json').read)
+        metadata['name'][/-(.*)/, 1]
       end
 
       # @api private
@@ -92,9 +94,11 @@ module Puppet::ModuleTool
       #
       # @api private
       # @return [String] path to temporary unpacking location
+      # rubocop:disable Naming/MemoizedInstanceVariableName
       def tmpdir
-        @dir ||= Dir.mktmpdir('tmp-unpacker', Puppet::Forge::Cache.base_path)
+        @dir ||= Dir.mktmpdir('tmp', Puppet::Forge::Cache.base_path)
       end
+      # rubocop:enable Naming/MemoizedInstanceVariableName
     end
   end
 end

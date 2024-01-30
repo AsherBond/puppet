@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # At this point, it's an exact copy of the Blastwave stuff.
 Puppet::Type.type(:package).provide :sunfreeware, :parent => :blastwave, :source => :sun do
   desc "Package management using sunfreeware.com's `pkg-get` command on Solaris.
@@ -5,5 +7,5 @@ Puppet::Type.type(:package).provide :sunfreeware, :parent => :blastwave, :source
     has not actually been tested."
   commands :pkgget => "pkg-get"
 
-  confine :osfamily => :solaris
+  confine 'os.family' => :solaris
 end

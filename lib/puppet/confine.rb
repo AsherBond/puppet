@@ -1,6 +1,8 @@
+# frozen_string_literal: true
+
 # The class that handles testing whether our providers
 # actually work or not.
-require 'puppet/util'
+require_relative '../puppet/util'
 
 class Puppet::Confine
   include Puppet::Util
@@ -21,14 +23,17 @@ class Puppet::Confine
   end
 
   def self.test(name)
-    unless @tests[name]
+    unless @tests.include?(name)
       begin
         require "puppet/confine/#{name}"
       rescue LoadError => detail
         unless detail.to_s =~ /No such file|cannot load such file/i
-          warn "Could not load confine test '#{name}': #{detail}"
+          Puppet.warning("Could not load confine test '#{name}': #{detail}")
         end
         # Could not find file
+        if !Puppet[:always_retry_plugins]
+          @tests[name] = nil
+        end
       end
     end
     @tests[name]
@@ -38,6 +43,7 @@ class Puppet::Confine
 
   # Mark that this confine is used for testing binary existence.
   attr_accessor :for_binary
+
   def for_binary?
     for_binary
   end
@@ -64,7 +70,7 @@ class Puppet::Confine
   def valid?
     values.each do |value|
       unless pass?(value)
-        Puppet.debug(label + ": " + message(value))
+        Puppet.debug { label + ": " + message(value) }
         return false
       end
     end

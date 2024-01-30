@@ -1,4 +1,6 @@
-require 'puppet/provider/nameservice/pw'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/provider/nameservice/pw'
 
 Puppet::Type.type(:group).provide :pw, :parent => Puppet::Provider::NameService::PW do
   desc "Group management via `pw` on FreeBSD and DragonFly BSD."
@@ -6,24 +8,27 @@ Puppet::Type.type(:group).provide :pw, :parent => Puppet::Provider::NameService:
   commands :pw => "pw"
   has_features :manages_members
 
-  defaultfor :operatingsystem => [:freebsd, :dragonfly]
+  defaultfor 'os.name' => [:freebsd, :dragonfly]
+  confine    'os.name' => [:freebsd, :dragonfly]
 
   options :members, :flag => "-M", :method => :mem
 
-  verify :gid, "GID must be an integer" do |value|
+  verify :gid, _("GID must be an integer") do |value|
     value.is_a? Integer
   end
 
   def addcmd
     cmd = [command(:pw), "groupadd", @resource[:name]]
 
-    if gid = @resource.should(:gid)
+    gid = @resource.should(:gid)
+    if gid
       unless gid == :absent
         cmd << flag(:gid) << gid
       end
     end
 
-    if members = @resource.should(:members)
+    members = @resource.should(:members)
+    if members
       unless members == :absent
         if members.is_a?(Array)
           members = members.join(",")
@@ -45,4 +50,3 @@ Puppet::Type.type(:group).provide :pw, :parent => Puppet::Provider::NameService:
     super(param, value)
   end
 end
-

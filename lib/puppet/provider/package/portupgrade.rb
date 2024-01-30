@@ -1,5 +1,7 @@
+# frozen_string_literal: true
+
 # Whole new package, so include pack stuff
-require 'puppet/provider/package'
+require_relative '../../../puppet/provider/package'
 
 Puppet::Type.type(:package).provide :portupgrade, :parent => Puppet::Provider::Package do
   include Puppet::Util::Execution
@@ -11,14 +13,14 @@ Puppet::Type.type(:package).provide :portupgrade, :parent => Puppet::Provider::P
   ## has_features is usually autodetected based on defs below.
   # has_features :installable, :uninstallable, :upgradeable
 
-  commands :portupgrade   => "/usr/local/sbin/portupgrade",
-  :portinstall   => "/usr/local/sbin/portinstall",
-  :portversion   => "/usr/local/sbin/portversion",
-  :portuninstall => "/usr/local/sbin/pkg_deinstall",
-  :portinfo      => "/usr/sbin/pkg_info"
+  commands :portupgrade => "/usr/local/sbin/portupgrade",
+           :portinstall => "/usr/local/sbin/portinstall",
+           :portversion => "/usr/local/sbin/portversion",
+           :portuninstall => "/usr/local/sbin/pkg_deinstall",
+           :portinfo => "/usr/sbin/pkg_info"
 
   ## Activate this only once approved by someone important.
-  # defaultfor :operatingsystem => :freebsd
+  # defaultfor 'os.name' => :freebsd
 
   # Remove unwanted environment variables.
   %w{INTERACTIVE UNAME}.each do |var|
@@ -46,14 +48,14 @@ Puppet::Type.type(:package).provide :portupgrade, :parent => Puppet::Provider::P
       output = portinfo(*cmdline)
     rescue Puppet::ExecutionFailure
       raise Puppet::Error.new(output, $!)
-      return nil
     end
 
     # split output and match it and populate temp hash
     output.split("\n").each { |data|
       # reset hash to nil for each line
       hash.clear
-      if match = regex.match(data)
+      match = regex.match(data)
+      if match
         # Output matched regex
         fields.zip(match.captures) { |field, value|
           hash[field] = value
@@ -91,7 +93,7 @@ Puppet::Type.type(:package).provide :portupgrade, :parent => Puppet::Provider::P
     end
 
     if output =~ /\*\* No such /
-      raise Puppet::ExecutionFailure, "Could not find package #{@resource[:name]}"
+      raise Puppet::ExecutionFailure, _("Could not find package %{name}") % { name: @resource[:name] }
     end
 
     # No return code required, so do nil to be clean
@@ -149,20 +151,12 @@ Puppet::Type.type(:package).provide :portupgrade, :parent => Puppet::Provider::P
       # Seriously - this section should never be called in a perfect world.
       # as verification that the port is installed has already happened in query.
       if output =~ /^\*\* No matching package /
-        raise Puppet::ExecutionFailure, "Could not find package #{@resource[:name]}"
+        raise Puppet::ExecutionFailure, _("Could not find package %{name}") % { name: @resource[:name] }
       else
         # Any other error (dump output to log)
-        raise Puppet::ExecutionFailure, "Unexpected output from portversion: #{output}"
+        raise Puppet::ExecutionFailure, _("Unexpected output from portversion: %{output}") % { output: output }
       end
-
-      # Just in case we still are running, return nil
-      return nil
     end
-
-    # At this point normal operation has finished and we shouldn't have been called.
-    # Error out and let the admin deal with it.
-    raise Puppet::Error, "portversion.latest() - fatal error with portversion: #{output}"
-    return nil
   end
 
   ###### Query subcommand - return a hash of details if exists, or nil if it doesn't.

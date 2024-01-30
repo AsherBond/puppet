@@ -1,18 +1,43 @@
+# frozen_string_literal: true
+
 # A module to make logging a bit easier.
-require 'puppet/util/log'
-require 'puppet/error'
+require_relative '../../puppet/util/log'
+require_relative '../../puppet/error'
 
-module Puppet::Util::Logging
-
+module Puppet::Util
+module Logging
   def send_log(level, message)
-    Puppet::Util::Log.create({:level => level, :source => log_source, :message => message}.merge(log_metadata))
+    Puppet::Util::Log.create({ :level => level, :source => log_source, :message => message }.merge(log_metadata))
   end
 
   # Create a method for each log level.
   Puppet::Util::Log.eachlevel do |level|
+    # handle debug a special way for performance reasons
+    next if level == :debug
+
     define_method(level) do |args|
       args = args.join(" ") if args.is_a?(Array)
       send_log(level, args)
+    end
+  end
+
+  # Output a debug log message if debugging is on (but only then)
+  # If the output is anything except a static string, give the debug
+  # a block - it will be called with all other arguments, and is expected
+  # to return the single string result.
+  #
+  # Use a block at all times for increased performance.
+  #
+  # @example This takes 40% of the time compared to not using a block
+  #  Puppet.debug { "This is a string that interpolated #{x} and #{y} }"
+  #
+  def debug(*args)
+    return nil unless Puppet::Util::Log.level == :debug
+
+    if block_given?
+      send_log(:debug, yield(*args))
+    else
+      send_log(:debug, args.join(" "))
     end
   end
 
@@ -24,10 +49,47 @@ module Puppet::Util::Logging
   #    wish to log a message at all; in this case it is likely that you are only calling this method in order
   #    to take advantage of the backtrace logging.
   def log_exception(exception, message = :default, options = {})
-    err(format_exception(exception, message, Puppet[:trace] || options[:trace]))
+    level = options[:level] || :err
+    combined_trace = Puppet[:trace] || options[:trace]
+    puppet_trace = Puppet[:puppet_trace] || options[:puppet_trace]
+
+    if message == :default && exception.is_a?(Puppet::ParseErrorWithIssue)
+      # Retain all detailed info and keep plain message and stacktrace separate
+      backtrace = build_exception_trace(exception, combined_trace, puppet_trace)
+      Puppet::Util::Log.create({
+        :level => level,
+        :source => log_source,
+        :message => exception.basic_message,
+        :issue_code => exception.issue_code,
+        :backtrace => backtrace.empty? ? nil : backtrace,
+        :file => exception.file,
+        :line => exception.line,
+        :pos => exception.pos,
+        :environment => exception.environment,
+        :node => exception.node
+      }.merge(log_metadata))
+    else
+      send_log(level, format_exception(exception, message, combined_trace, puppet_trace))
+    end
   end
 
-  def format_exception(exception, message = :default, trace = true)
+  def build_exception_trace(exception, combined_trace = true, puppet_trace = false)
+    built_trace = format_backtrace(exception, combined_trace, puppet_trace)
+
+    if exception.respond_to?(:original)
+      original = exception.original
+      unless original.nil?
+        built_trace << _('Wrapped exception:')
+        built_trace << original.message
+        built_trace += build_exception_trace(original, combined_trace, puppet_trace)
+      end
+    end
+
+    built_trace
+  end
+  private :build_exception_trace
+
+  def format_exception(exception, message = :default, combined_trace = true, puppet_trace = false)
     arr = []
     case message
     when :default
@@ -38,14 +100,26 @@ module Puppet::Util::Logging
       arr << message
     end
 
-    if trace and exception.backtrace
-      arr << Puppet::Util.pretty_backtrace(exception.backtrace)
-    end
+    arr += format_backtrace(exception, combined_trace, puppet_trace)
+
     if exception.respond_to?(:original) and exception.original
-      arr << "Wrapped exception:"
-      arr << format_exception(exception.original, :default, trace)
+      arr << _("Wrapped exception:")
+      arr << format_exception(exception.original, :default, combined_trace, puppet_trace)
     end
+
     arr.flatten.join("\n")
+  end
+
+  def format_backtrace(exception, combined_trace, puppet_trace)
+    puppetstack = exception.respond_to?(:puppetstack) ? exception.puppetstack : []
+
+    if combined_trace and exception.backtrace
+      Puppet::Util.format_backtrace_array(exception.backtrace, puppetstack)
+    elsif puppet_trace && !puppetstack.empty?
+      Puppet::Util.format_backtrace_array(puppetstack)
+    else
+      []
+    end
   end
 
   def log_and_raise(exception, message)
@@ -53,7 +127,7 @@ module Puppet::Util::Logging
     raise exception, message + "\n" + exception.to_s, exception.backtrace
   end
 
-  class DeprecationWarning < Exception; end
+  class DeprecationWarning < Exception; end # rubocop:disable Lint/InheritException
 
   # Logs a warning indicating that the Ruby code path is deprecated.  Note that
   # this method keeps track of the offending lines of code that triggered the
@@ -85,26 +159,63 @@ module Puppet::Util::Logging
     key = options[:key]
     file = options[:file]
     line = options[:line]
-    raise(Puppet::DevError, "Need either :file and :line, or :key") if (key.nil?) && (file.nil? || line.nil?)
+    # TRANSLATORS the literals ":file", ":line", and ":key" should not be translated
+    raise Puppet::DevError, _("Need either :file and :line, or :key") if (key.nil?) && (file.nil? || line.nil?)
 
     key ||= "#{file}:#{line}"
     issue_deprecation_warning(message, key, file, line, false)
   end
 
-  def get_deprecation_offender()
+  # Logs a (non deprecation) warning once for a given key.
+  #
+  # @param kind [String] The kind of warning. The
+  #   kind must be one of the defined kinds for the Puppet[:disable_warnings] setting.
+  # @param message [String] The message to log (logs via warning)
+  # @param key [String] Key used to make this warning unique
+  # @param file [String,:default,nil] the File related to the warning
+  # @param line [Integer,:default,nil] the Line number related to the warning
+  #   warning as unique
+  # @param level [Symbol] log level to use, defaults to :warning
+  #
+  # Either :file and :line and/or :key must be passed.
+  def warn_once(kind, key, message, file = nil, line = nil, level = :warning)
+    return if Puppet[:disable_warnings].include?(kind)
+
+    $unique_warnings ||= {}
+    if $unique_warnings.length < 100 then
+      if (!$unique_warnings.has_key?(key)) then
+        $unique_warnings[key] = message
+        call_trace = if file == :default and line == :default
+                       # Suppress the file and line number output
+                       ''
+                     else
+                       error_location_str = Puppet::Util::Errors.error_location(file, line)
+                       if error_location_str.empty?
+                         "\n   " + _('(file & line not available)')
+                       else
+                         "\n   %{error_location}" % { error_location: error_location_str }
+                       end
+                     end
+        send_log(level, "#{message}#{call_trace}")
+      end
+    end
+  end
+
+  def get_deprecation_offender
     # we have to put this in its own method to simplify testing; we need to be able to mock the offender results in
     # order to test this class, and our framework does not appear to enjoy it if you try to mock Kernel.caller
     #
     # let's find the offending line;  we need to jump back up the stack a few steps to find the method that called
     #  the deprecated method
     if Puppet[:trace]
-      caller()[2..-1]
+      caller(3)
     else
-      [caller()[2]]
+      [caller(3, 1).first]
     end
   end
 
   def clear_deprecation_warnings
+    $unique_warnings.clear if $unique_warnings
     $deprecation_warnings.clear if $deprecation_warnings
   end
 
@@ -125,10 +236,11 @@ module Puppet::Util::Logging
     # find the same offender, and we'd end up logging it again.
     $logged_deprecation_warnings ||= {}
 
-    File.open(deprecations_file, "a") do |f|
+    # Deprecation messages are UTF-8 as they are produced by Ruby
+    Puppet::FileSystem.open(deprecations_file, nil, "a:UTF-8") do |f|
       if ($deprecation_warnings) then
         $deprecation_warnings.each do |offender, message|
-          if (! $logged_deprecation_warnings.has_key?(offender)) then
+          if (!$logged_deprecation_warnings.has_key?(offender)) then
             $logged_deprecation_warnings[offender] = true
             if ((pattern.nil?) || (message =~ pattern)) then
               f.puts(message)
@@ -141,19 +253,30 @@ module Puppet::Util::Logging
     end
   end
 
+  # Sets up Facter logging.
+  # This method causes Facter output to be forwarded to Puppet.
+  def self.setup_facter_logging!
+    Puppet.runtime[:facter]
+    true
+  end
+
   private
 
   def issue_deprecation_warning(message, key, file, line, use_caller)
     return if Puppet[:disable_warnings].include?('deprecations')
+
     $deprecation_warnings ||= {}
-    if $deprecation_warnings.length < 100 then
+    if $deprecation_warnings.length < 100
       key ||= (offender = get_deprecation_offender)
-      if (! $deprecation_warnings.has_key?(key)) then
+      unless $deprecation_warnings.has_key?(key)
         $deprecation_warnings[key] = message
-        call_trace = use_caller ?
-          (offender || get_deprecation_offender).join('; ') :
-          "#{file || 'unknown'}:#{line || 'unknown'}"
-        warning("#{message}\n   (at #{call_trace})")
+        # split out to allow translation
+        call_trace = if use_caller
+                       _("(location: %{location})") % { location: (offender || get_deprecation_offender).join('; ') }
+                     else
+                       Puppet::Util::Errors.error_location_with_unknowns(file, line)
+                     end
+        warning("%{message}\n   %{call_trace}" % { message: message, call_trace: call_trace })
       end
     end
   end
@@ -178,4 +301,5 @@ module Puppet::Util::Logging
     (is_resource? or is_resource_parameter?) and respond_to?(:path) and return path.to_s
     to_s
   end
+end
 end

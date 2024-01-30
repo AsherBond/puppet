@@ -1,16 +1,14 @@
+# frozen_string_literal: true
+
 module Puppet::Network::HTTP
 end
 
-require 'puppet/network/http'
-require 'puppet/network/http/api/v1'
-require 'puppet/network/authentication'
-require 'puppet/network/rights'
-require 'puppet/util/profiler'
-require 'puppet/util/profiler/aggregate'
+require_relative '../../../puppet/network/http'
+require_relative '../../../puppet/util/profiler'
+require_relative '../../../puppet/util/profiler/aggregate'
 require 'resolv'
 
 module Puppet::Network::HTTP::Handler
-  include Puppet::Network::Authentication
   include Puppet::Network::HTTP::Issues
 
   # These shouldn't be allowed to be set by clients
@@ -21,9 +19,9 @@ module Puppet::Network::HTTP::Handler
     # There's got to be a simpler way to do this, right?
     dupes = {}
     routes.each { |r| dupes[r.path_matcher] = (dupes[r.path_matcher] || 0) + 1 }
-    dupes = dupes.collect { |pm, count| pm if count > 1 }.compact
+    dupes = dupes.filter_map { |pm, count| pm if count > 1 }
     if dupes.count > 0
-      raise ArgumentError, "Given multiple routes with identical path regexes: #{dupes.map{ |rgx| rgx.inspect }.join(', ')}"
+      raise ArgumentError, _("Given multiple routes with identical path regexes: %{regexes}") % { regexes: dupes.map { |rgx| rgx.inspect }.join(', ') }
     end
 
     @routes = routes
@@ -39,45 +37,88 @@ module Puppet::Network::HTTP::Handler
     raise NotImplementedError
   end
 
+  # The mime type is always passed to the `set_content_type` method, so
+  # it is no longer necessary to retrieve the Format's mime type.
+  #
+  # @deprecated
   def format_to_mime(format)
     format.is_a?(Puppet::Network::Format) ? format.mime : format
   end
 
-  # handle an HTTP request
-  def process(request, response)
-    new_response = Puppet::Network::HTTP::Response.new(self, response)
-
-    request_headers = headers(request)
-    request_params = params(request)
-    request_method = http_method(request)
+  # Create a generic puppet request from the implementation-specific request
+  # created by the web server
+  def make_generic_request(request)
     request_path = path(request)
 
-    new_request = Puppet::Network::HTTP::Request.new(request_headers, request_params, request_method, request_path, request_path, client_cert(request), body(request))
+    Puppet::Network::HTTP::Request.new(
+      headers(request),
+      params(request),
+      http_method(request),
+      request_path, # path
+      request_path, # routing_path
+      client_cert(request),
+      body(request)
+    )
+  end
 
-    response[Puppet::Network::HTTP::HEADER_PUPPET_VERSION] = Puppet.version
+  def with_request_profiling(request)
+    profiler = configure_profiler(request.headers, request.params)
 
-    profiler = configure_profiler(request_headers, request_params)
+    Puppet::Util::Profiler.profile(
+      _("Processed request %{request_method} %{request_path}") % { request_method: request.method, request_path: request.path },
+      [:http, request.method, request.path]
+    ) do
+      yield
+    end
+  ensure
+    remove_profiler(profiler) if profiler
+  end
 
-    Puppet::Util::Profiler.profile("Processed request #{request_method} #{request_path}", [:http, request_method, request_path]) do
-      if route = @routes.find { |route| route.matches?(new_request) }
-        route.process(new_request, new_response)
-      else
-        raise Puppet::Network::HTTP::Error::HTTPNotFoundError.new("No route for #{new_request.method} #{new_request.path}", HANDLER_NOT_FOUND)
+  # handle an HTTP request
+  def process(external_request, response)
+    # The response_wrapper stores the response and modifies it as a side effect.
+    # The caller will use the original response
+    response_wrapper = Puppet::Network::HTTP::Response.new(self, response)
+    request = make_generic_request(external_request)
+
+    set_puppet_version_header(response)
+
+    respond_to_errors(response_wrapper) do
+      with_request_profiling(request) do
+        find_route_or_raise(request).process(request, response_wrapper)
       end
     end
+  end
 
+  def respond_to_errors(response)
+    yield
   rescue Puppet::Network::HTTP::Error::HTTPError => e
     Puppet.info(e.message)
-    new_response.respond_with(e.status, "application/json", e.to_json)
-  rescue Exception => e
+    respond_with_http_error(response, e)
+  rescue StandardError => e
     http_e = Puppet::Network::HTTP::Error::HTTPServerError.new(e)
-    Puppet.err(http_e.message)
-    new_response.respond_with(http_e.status, "application/json", http_e.to_json)
-  ensure
-    if profiler
-      remove_profiler(profiler)
+    Puppet.err([http_e.message, *e.backtrace].join("\n"))
+    respond_with_http_error(response, http_e)
+  end
+
+  def respond_with_http_error(response, exception)
+    response.respond_with(exception.status, "application/json", exception.to_json)
+  end
+
+  def find_route_or_raise(request)
+    route = @routes.find { |r| r.matches?(request) }
+    if route
+      return route
+    else
+      raise Puppet::Network::HTTP::Error::HTTPNotFoundError.new(
+        _("No route for %{request} %{path}") % { request: request.method, path: request.path },
+        HANDLER_NOT_FOUND
+      )
     end
-    cleanup(request)
+  end
+
+  def set_puppet_version_header(response)
+    response[Puppet::Network::HTTP::HEADER_PUPPET_VERSION] = Puppet.version
   end
 
   # Set the response up, with the body and status.
@@ -96,7 +137,7 @@ module Puppet::Network::HTTP::Handler
     begin
       return Resolv.getname(result[:ip])
     rescue => detail
-      Puppet.err "Could not resolve #{result[:ip]}: #{detail}"
+      Puppet.err _("Could not resolve %{ip}: %{detail}") % { ip: result[:ip], detail: detail }
     end
     result[:ip]
   end
@@ -129,10 +170,6 @@ module Puppet::Network::HTTP::Handler
     raise NotImplementedError
   end
 
-  def cleanup(request)
-    # By default, there is nothing to cleanup.
-  end
-
   def decode_params(params)
     params.select { |key, _| allowed_parameter?(key) }.inject({}) do |result, ary|
       param, value = ary
@@ -146,12 +183,7 @@ module Puppet::Network::HTTP::Handler
   end
 
   def parse_parameter_value(param, value)
-    case value
-    when /^---/
-      Puppet.debug("Found YAML while processing request parameter #{param} (value: <#{value}>)")
-      Puppet.deprecation_warning("YAML in network requests is deprecated and will be removed in a future version. See http://links.puppetlabs.com/deprecate_yaml_on_network")
-      YAML.load(value, :safe => true, :deserialize_symbols => true)
-    when Array
+    if value.is_a?(Array)
       value.collect { |v| parse_primitive_parameter_value(v) }
     else
       parse_primitive_parameter_value(value)
@@ -175,7 +207,7 @@ module Puppet::Network::HTTP::Handler
 
   def configure_profiler(request_headers, request_params)
     if (request_headers.has_key?(Puppet::Network::HTTP::HEADER_ENABLE_PROFILING.downcase) or Puppet[:profile])
-      Puppet::Util::Profiler.add_profiler(Puppet::Util::Profiler::Aggregate.new(Puppet.method(:debug), request_params.object_id))
+      Puppet::Util::Profiler.add_profiler(Puppet::Util::Profiler::Aggregate.new(Puppet.method(:info), request_params.object_id))
     end
   end
 

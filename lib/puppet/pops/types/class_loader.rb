@@ -1,15 +1,17 @@
-require 'rgen/metamodel_builder'
+# frozen_string_literal: true
 
+module Puppet::Pops
+module Types
 # The ClassLoader provides a Class instance given a class name or a meta-type.
 # If the class is not already loaded, it is loaded using the Puppet Autoloader.
 # This means it can load a class from a gem, or from puppet modules.
 #
-class Puppet::Pops::Types::ClassLoader
-  @autoloader = Puppet::Util::Autoload.new("ClassLoader", "", :wrap => false)
+class ClassLoader
+  @autoloader = Puppet::Util::Autoload.new("ClassLoader", "")
 
   # Returns a Class given a fully qualified class name.
   # Lookup of class is never relative to the calling namespace.
-  # @param name [String, Array<String>, Array<Symbol>, Puppet::Pops::Types::PAnyType] A fully qualified
+  # @param name [String, Array<String>, Array<Symbol>, PAnyType] A fully qualified
   #   class name String (e.g. '::Foo::Bar', 'Foo::Bar'), a PAnyType, or a fully qualified name in Array form where each part
   #   is either a String or a Symbol, e.g. `%w{Puppetx Puppetlabs SomeExtension}`.
   # @return [Class, nil] the looked up class or nil if no such class is loaded
@@ -24,7 +26,7 @@ class Puppet::Pops::Types::ClassLoader
     when Array
       provide_from_name_path(name.join('::'), name)
 
-    when Puppet::Pops::Types::PAnyType, Puppet::Pops::Types::PType
+    when PAnyType, PTypeType
       provide_from_type(name)
 
     else
@@ -32,53 +34,52 @@ class Puppet::Pops::Types::ClassLoader
     end
   end
 
-  private
-
   def self.provide_from_type(type)
     case type
-    when Puppet::Pops::Types::PRuntimeType
+    when PRuntimeType
       raise ArgumentError.new("Only Runtime type 'ruby' is supported, got #{type.runtime}") unless type.runtime == :ruby
+
       provide_from_string(type.runtime_type_name)
 
-    when Puppet::Pops::Types::PBooleanType
+    when PBooleanType
       # There is no other thing to load except this Enum meta type
       RGen::MetamodelBuilder::MMBase::Boolean
 
-    when Puppet::Pops::Types::PType
-      # TODO: PType should has a type argument (a PAnyType) so the Class' class could be returned
+    when PTypeType
+      # TODO: PTypeType should have a type argument (a PAnyType) so the Class' class could be returned
       #       (but this only matters in special circumstances when meta programming has been used).
       Class
 
-    when Puppet::Pops::Type::POptionalType
+    when POptionalType
       # cannot make a distinction between optional and its type
       provide_from_type(type.optional_type)
 
     # Although not expected to be the first choice for getting a concrete class for these
     # types, these are of value if the calling logic just has a reference to type.
-    #
-    when Puppet::Pops::Types::PArrayType    ; Array
-    when Puppet::Pops::Types::PTupleType    ; Array
-    when Puppet::Pops::Types::PHashType     ; Hash
-    when Puppet::Pops::Types::PStructType   ; Hash
-    when Puppet::Pops::Types::PRegexpType   ; Regexp
-    when Puppet::Pops::Types::PIntegerType  ; Integer
-    when Puppet::Pops::Types::PStringType   ; String
-    when Puppet::Pops::Types::PPatternType  ; String
-    when Puppet::Pops::Types::PEnumType     ; String
-    when Puppet::Pops::Types::PFloatType    ; Float
-    when Puppet::Pops::Types::PNilType      ; NilClass
-    when Puppet::Pops::Types::PCallableType ; Proc
+    # rubocop:disable Layout/SpaceBeforeSemicolon
+    when PArrayType    ; Array
+    when PTupleType    ; Array
+    when PHashType     ; Hash
+    when PStructType   ; Hash
+    when PRegexpType   ; Regexp
+    when PIntegerType  ; Integer
+    when PStringType   ; String
+    when PPatternType  ; String
+    when PEnumType     ; String
+    when PFloatType    ; Float
+    when PUndefType    ; NilClass
+    when PCallableType ; Proc
+    # rubocop:enable Layout/SpaceBeforeSemicolon
     else
       nil
     end
   end
+  private_class_method :provide_from_type
 
   def self.provide_from_string(name)
-    name_path = name.split('::')
+    name_path = name.split(TypeFormatter::NAME_SEGMENT_SEPARATOR)
     # always from the root, so remove an empty first segment
-    if name_path[0].empty?
-      name_path = name_path[1..-1]
-    end
+    name_path.shift if name_path[0].empty?
     provide_from_name_path(name, name_path)
   end
 
@@ -86,44 +87,50 @@ class Puppet::Pops::Types::ClassLoader
     # If class is already loaded, try this first
     result = find_class(name_path)
 
-    unless result.is_a?(Class)
+    unless result.is_a?(Module)
       # Attempt to load it using the auto loader
       loaded_path = nil
-      if paths_for_name(name).find {|path| loaded_path = path; @autoloader.load(path) }
+      if paths_for_name(name_path).find { |path| loaded_path = path; @autoloader.load(path, Puppet.lookup(:current_environment)) }
         result = find_class(name_path)
-        unless result.is_a?(Class)
+        unless result.is_a?(Module)
           raise RuntimeError, "Loading of #{name} using relative path: '#{loaded_path}' did not create expected class"
         end
       end
     end
-    return nil unless result.is_a?(Class)
+    return nil unless result.is_a?(Module)
+
     result
   end
+  private_class_method :provide_from_string
 
   def self.find_class(name_path)
     name_path.reduce(Object) do |ns, name|
       begin
-        ns.const_get(name)
+        ns.const_get(name, false) # don't search ancestors
       rescue NameError
         return nil
       end
     end
   end
+  private_class_method :find_class
 
-  def self.paths_for_name(fq_name)
-    [de_camel(fq_name), downcased_path(fq_name)]
+  def self.paths_for_name(fq_named_parts)
+    # search two entries, one where all parts are decamelized, and one with names just downcased
+    # TODO:this is not perfect - it will not produce the correct mix if a mix of styles are used
+    # The alternative is to test many additional paths.
+    #
+    [fq_named_parts.map { |part| de_camel(part) }.join('/'), fq_named_parts.join('/').downcase]
   end
-
-  def self.downcased_path(fq_name)
-    fq_name.to_s.gsub(/::/, '/').downcase
-  end
+  private_class_method :paths_for_name
 
   def self.de_camel(fq_name)
-    fq_name.to_s.gsub(/::/, '/').
-    gsub(/([A-Z]+)([A-Z][a-z])/,'\1_\2').
-    gsub(/([a-z\d])([A-Z])/,'\1_\2').
-    tr("-", "_").
-    downcase
+    fq_name.to_s.gsub(/::/, '/')
+           .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
+           .gsub(/([a-z\d])([A-Z])/, '\1_\2')
+           .tr("-", "_")
+           .downcase
   end
-
+  private_class_method :de_camel
+end
+end
 end

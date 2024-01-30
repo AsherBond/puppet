@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # The relationship graph is the final form of a puppet catalog in
 # which all dependency edges are explicitly in the graph. This form of the
 # catalog is used to traverse the graph in the order in which resources are
@@ -22,7 +24,7 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
   def populate_from(catalog)
     add_all_resources_as_vertices(catalog)
     build_manual_dependencies
-    build_autorequire_dependencies(catalog)
+    build_autorelation_dependencies(catalog)
 
     write_graph(:relationships) if catalog.host_config?
 
@@ -41,7 +43,7 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
     end
   end
 
-  def add_relationship(f, t, label=nil)
+  def add_relationship(f, t, label = nil)
     super(f, t, label)
     @ready.delete(@prioritizer.priority_of(t))
   end
@@ -70,7 +72,7 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
     if @blockers[resource] > 0
       @blockers[resource] -= 1
     else
-      resource.warning "appears to have a negative number of dependencies"
+      resource.warning _("appears to have a negative number of dependencies")
     end
     @blockers[resource] <= 0
   end
@@ -102,8 +104,12 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
     overly_deferred_resource_handler = options[:overly_deferred_resource_handler] || lambda { |resource| }
     canceled_resource_handler = options[:canceled_resource_handler] || lambda { |resource| }
     teardown = options[:teardown] || lambda {}
+    graph_cycle_handler = options[:graph_cycle_handler] || lambda { [] }
 
-    report_cycles_in_graph
+    cycles = report_cycles_in_graph
+    if cycles
+      graph_cycle_handler.call(cycles)
+    end
 
     enqueue_roots
 
@@ -126,9 +132,9 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
         if made_progress
           enqueue(*deferred_resources)
         else
-          deferred_resources.each do |resource|
-            overly_deferred_resource_handler.call(resource)
-            finish(resource)
+          deferred_resources.each do |res|
+            overly_deferred_resource_handler.call(res)
+            finish(res)
           end
         end
 
@@ -163,17 +169,45 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
     end
   end
 
-  def build_autorequire_dependencies(catalog)
+  def build_autorelation_dependencies(catalog)
     vertices.each do |vertex|
-      vertex.autorequire(catalog).each do |edge|
-        # don't let automatic relationships conflict with manual ones.
-        next if edge?(edge.source, edge.target)
+      [:require, :subscribe].each do |rel_type|
+        vertex.send("auto#{rel_type}".to_sym, catalog).each do |edge|
+          # don't let automatic relationships conflict with manual ones.
+          next if edge?(edge.source, edge.target)
 
-        if edge?(edge.target, edge.source)
-          vertex.debug "Skipping automatic relationship with #{edge.source}"
-        else
-          vertex.debug "Autorequiring #{edge.source}"
-          add_edge(edge)
+          if edge?(edge.target, edge.source)
+            vertex.debug "Skipping automatic relationship with #{edge.source}"
+          else
+            vertex.debug "Adding auto#{rel_type} relationship with #{edge.source}"
+            if rel_type == :require
+              edge.event = :NONE
+            else
+              edge.callback = :refresh
+              edge.event = :ALL_EVENTS
+            end
+            add_edge(edge)
+          end
+        end
+      end
+
+      [:before, :notify].each do |rel_type|
+        vertex.send("auto#{rel_type}".to_sym, catalog).each do |edge|
+          # don't let automatic relationships conflict with manual ones.
+          next if edge?(edge.target, edge.source)
+
+          if edge?(edge.source, edge.target)
+            vertex.debug "Skipping automatic relationship with #{edge.target}"
+          else
+            vertex.debug "Adding auto#{rel_type} relationship with #{edge.target}"
+            if rel_type == :before
+              edge.event = :NONE
+            else
+              edge.callback = :refresh
+              edge.event = :ALL_EVENTS
+            end
+            add_edge(edge)
+          end
         end
       end
     end
@@ -211,11 +245,17 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
     #   can "do the right thing" for references to other vertices that may or
     #   may not be containers.
     #
-    admissible = Hash.new { |h,k| k }
-    completed  = Hash.new { |h,k| k }
+    admissible = Hash.new { |_h, k| k }
+    completed  = Hash.new { |_h, k| k }
     containers.each { |x|
       admissible[x] = whit_class.new(:name => "admissible_#{x.ref}", :catalog => catalog)
       completed[x]  = whit_class.new(:name => "completed_#{x.ref}",  :catalog => catalog)
+
+      # This copies the original container's tags over to the two anchor whits.
+      # Without this, tags are not propagated to the container's resources.
+      admissible[x].set_tags(x)
+      completed[x].set_tags(x)
+
       priority = @prioritizer.priority_of(x)
       add_vertex(admissible[x], priority)
       add_vertex(completed[x], priority)
@@ -225,19 +265,19 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
     #
     containers.each { |x|
       contents = catalog.adjacent(x, :direction => :out)
-      add_edge(admissible[x],completed[x]) if contents.empty? # (0)
+      add_edge(admissible[x], completed[x]) if contents.empty? # (0)
       contents.each { |v|
-        add_edge(admissible[x],admissible[v],Default_label) # (1)
+        add_edge(admissible[x], admissible[v], Default_label) # (1)
         add_edge(completed[v], completed[x], Default_label) # (2)
       }
       # (3) & (5)
-      adjacent(x,:direction => :in,:type => :edges).each { |e|
-        add_edge(completed[e.source],admissible[x],e.label)
+      adjacent(x, :direction => :in, :type => :edges).each { |e|
+        add_edge(completed[e.source], admissible[x], e.label)
         remove_edge! e
       }
       # (4) & (5)
-      adjacent(x,:direction => :out,:type => :edges).each { |e|
-        add_edge(completed[x],admissible[e.target],e.label)
+      adjacent(x, :direction => :out, :type => :edges).each { |e|
+        add_edge(completed[x], admissible[e.target], e.label)
         remove_edge! e
       }
     }

@@ -1,44 +1,102 @@
+# frozen_string_literal: true
+
 require 'hiera_puppet'
 
 module Puppet::Parser::Functions
-  newfunction(:hiera_include, :arity => -2, :doc => "Assigns classes to a node
-  using an array merge lookup that retrieves the value for a user-specified key
-  from a Hiera data source.
+  newfunction(
+    :hiera_include,
+    :arity => -2,
+    :doc => <<~DOC
+      Assigns classes to a node using an
+      [array merge lookup](https://puppet.com/docs/hiera/latest/lookup_types.html#array-merge)
+      that retrieves the value for a user-specified key from Hiera's data.
 
-  To use `hiera_include`, the following configuration is required:
+      The `hiera_include` function requires:
 
-  - A key name to use for classes, e.g. `classes`.
-  - A line in the puppet `sites.pp` file (e.g. `/etc/puppet/manifests/sites.pp`)
-    reading `hiera_include('classes')`. Note that this line must be outside any node
-    definition and below any top-scope variables in use for Hiera lookups.
-  - Class keys in the appropriate data sources. In a data source keyed to a node's role,
-    one might have:
+      - A string key name to use for classes.
+      - A call to this function (i.e. `hiera_include('classes')`) in your environment's
+      `sites.pp` manifest, outside of any node definitions and below any top-scope variables
+      that Hiera uses in lookups.
+      - `classes` keys in the appropriate Hiera data sources, with an array for each
+      `classes` key and each value of the array containing the name of a class.
 
-            ---
-            classes:
-              - apache
-              - apache::passenger
+      The function takes up to three arguments, in this order:
 
-  In addition to the required `key` argument, `hiera_include` accepts two additional
-  arguments:
+      1. A string key that Hiera searches for in the hierarchy. **Required**.
+      2. An optional default value to return if Hiera doesn't find anything matching the key.
+          * If this argument isn't provided and this function results in a lookup failure, Puppet
+          fails with a compilation error.
+      3. The optional name of an arbitrary
+      [hierarchy level](https://puppet.com/docs/hiera/latest/hierarchy.html) to insert at the
+      top of the hierarchy. This lets you temporarily modify the hierarchy for a single lookup.
+          * If Hiera doesn't find a matching key in the overriding hierarchy level, it continues
+          searching the rest of the hierarchy.
 
-  - a `default` argument in the second position, providing an array to be returned
-    in the absence of matches to the `key` argument
-  - an `override` argument in the third position, providing a data source to consult
-    for matching values, even if it would not ordinarily be part of the matched hierarchy.
-    If Hiera doesn't find a matching key in the named override data source, it will continue
-    to search through the rest of the hierarchy.
+      The function uses an
+      [array merge lookup](https://puppet.com/docs/hiera/latest/lookup_types.html#array-merge)
+      to retrieve the `classes` array, so every node gets every class from the hierarchy.
 
-  More thorough examples of `hiera_include` are available at:
-  <http://docs.puppetlabs.com/hiera/1/puppet.html#hiera-lookup-functions>
-  ") do |*args|
-    key, default, override = HieraPuppet.parse_args(args)
-    if answer = HieraPuppet.lookup(key, default, self, override, :array)
-      method = Puppet::Parser::Functions.function(:include)
-      send(method, [answer])
-    else
-      raise Puppet::ParseError, "Could not find data item #{key}"
-    end
+      **Example**: Using `hiera_include`
+
+      ~~~ yaml
+      # Assuming hiera.yaml
+      # :hierarchy:
+      #   - web01.example.com
+      #   - common
+
+      # Assuming web01.example.com.yaml:
+      # classes:
+      #   - apache::mod::php
+
+      # Assuming common.yaml:
+      # classes:
+      #   - apache
+      ~~~
+
+      ~~~ puppet
+      # In site.pp, outside of any node definitions and below any top-scope variables:
+      hiera_include('classes', undef)
+
+      # Puppet assigns the apache and apache::mod::php classes to the web01.example.com node.
+      ~~~
+
+      You can optionally generate the default value with a
+      [lambda](https://puppet.com/docs/puppet/latest/lang_lambdas.html) that
+      takes one parameter.
+
+      **Example**: Using `hiera_include` with a lambda
+
+      ~~~ puppet
+      # Assuming the same Hiera data as the previous example:
+
+      # In site.pp, outside of any node definitions and below any top-scope variables:
+      hiera_include('classes') | $key | {"Key \'${key}\' not found" }
+
+      # Puppet assigns the apache and apache::mod::php classes to the web01.example.com node.
+      # If hiera_include couldn't match its key, it would return the lambda result,
+      # "Key 'classes' not found".
+      ~~~
+
+      `hiera_include` is deprecated in favor of using a combination of `include` and `lookup` and will be
+      removed in Puppet 6.0.0. Replace the calls as follows:
+
+      | from  | to |
+      | ----  | ---|
+      | hiera_include($key) | include(lookup($key, { 'merge' => 'unique' })) |
+      | hiera_include($key, $default) | include(lookup($key, { 'default_value' => $default, 'merge' => 'unique' })) |
+      | hiera_include($key, $default, $level) | override level not supported |
+
+      See
+      [the Upgrading to Hiera 5 migration guide](https://puppet.com/docs/puppet/5.5/hiera_migrate.html)
+      for more information.
+
+      Note that calls using the 'override level' option are not directly supported by 'lookup' and the produced
+      result must be post processed to get exactly the same result, for example using simple hash/array `+` or
+      with calls to stdlib's `deep_merge` function depending on kind of hiera call and setting of merge in hiera.yaml.
+
+      - Since 4.0.0
+    DOC
+  ) do |*_args|
+    Error.is4x('hiera_include')
   end
 end
-

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # A Provider is an implementation of the actions that manage resources (of some type) on a system.
 # This class is the base class for all implementation of a Puppet Provider.
 #
@@ -40,8 +42,8 @@ class Puppet::Provider
   include Puppet::Util::Warnings
   extend Puppet::Util::Warnings
 
-  require 'puppet/confiner'
-  require 'puppet/provider/command'
+  require_relative '../puppet/confiner'
+  require_relative 'provider/command'
 
   extend Puppet::Confiner
 
@@ -63,14 +65,6 @@ class Puppet::Provider
     #
     # @return [???] The source is WHAT?
     attr_writer :source
-
-    # @todo Original = _"LAK 2007-05-09: Keep the model stuff around for backward compatibility"_
-    #   Is this really needed? The comment about backwards compatibility was made in 2007.
-    #
-    # @return [???] A model kept for backwards compatibility.
-    # @api private
-    # @deprecated This attribute is available for backwards compatibility reasons.
-    attr_reader :model
 
     # @todo What is this type? A reference to a Puppet::Type ?
     # @return [Puppet::Type] the resource type (that this provider is ... WHAT?)
@@ -99,18 +93,12 @@ class Puppet::Provider
     attr_writer :doc
   end
 
-  # @todo original = _"LAK 2007-05-09: Keep the model stuff around for backward compatibility"_, why is it
-  #   both here (instance) and at class level? Is this a different model?
-  # @return [???] model is WHAT?
-  attr_reader :model
-
   # @return [???] This resource is what? Is an instance of a provider attached to one particular Puppet::Resource?
   #
   attr_accessor :resource
 
   # Convenience methods - see class method with the same name.
-  # @see execute
-  # @return (see execute)
+  # @return (see self.execute)
   def execute(*args)
     Puppet::Util::Execution.execute(*args)
   end
@@ -121,8 +109,7 @@ class Puppet::Provider
   end
 
   # Convenience methods - see class method with the same name.
-  # @see execpipe
-  # @return (see execpipe)
+  # @return (see self.execpipe)
   def execpipe(*args, &block)
     Puppet::Util::Execution.execpipe(*args, &block)
   end
@@ -130,18 +117,6 @@ class Puppet::Provider
   # (see Puppet::Util::Execution.execpipe)
   def self.execpipe(*args, &block)
     Puppet::Util::Execution.execpipe(*args, &block)
-  end
-
-  # Convenience methods - see class method with the same name.
-  # @see execfail
-  # @return (see execfail)
-  def execfail(*args)
-    Puppet::Util::Execution.execfail(*args)
-  end
-
-  # (see Puppet::Util::Execution.execfail)
-  def self.execfail(*args)
-    Puppet::Util::Execution.execfail(*args)
   end
 
   # Returns the absolute path to the executable for the command referenced by the given name.
@@ -152,12 +127,11 @@ class Puppet::Provider
   def self.command(name)
     name = name.intern
 
-    if defined?(@commands) and command = @commands[name]
-      # nothing
-    elsif superclass.respond_to? :command and command = superclass.command(name)
-      # nothing
-    else
-      raise Puppet::DevError, "No command #{name} defined for provider #{self.name}"
+    command = @commands[name] if defined?(@commands)
+    command = superclass.command(name) if !command && superclass.respond_to?(:command)
+
+    unless command
+      raise Puppet::DevError, _("No command %{command} defined for provider %{provider}") % { command: name, provider: self.name }
     end
 
     which(command)
@@ -225,7 +199,7 @@ class Puppet::Provider
   # @note the name ´has_command´ looks odd in an API context, but makes more sense when seen in the internal
   #   DSL context where a Provider is declaratively defined.
   # @api public
-  #
+  # rubocop:disable Naming/PredicateName
   def self.has_command(name, path, &block)
     name = name.intern
     command = CommandDefiner.define(name, path, self, &block)
@@ -237,6 +211,7 @@ class Puppet::Provider
       return command.execute(*args)
     end
   end
+  # rubocop:enable Naming/PredicateName
 
   # Internal helper class when creating commands - undocumented.
   # @api private
@@ -257,7 +232,7 @@ class Puppet::Provider
       @custom_environment = {}
     end
 
-    def is_optional
+    def is_optional # rubocop:disable Naming/PredicateName
       @optional = true
     end
 
@@ -292,28 +267,39 @@ class Puppet::Provider
   # @see Provider.defaultfor
   # @api private
   def self.default_match
-    @defaults.find do |default|
+    return nil if some_default_match(@notdefaults) # Blacklist means this provider cannot be a default
+
+    some_default_match(@defaults)
+  end
+
+  def self.some_default_match(defaultlist)
+    defaultlist.find do |default|
       default.all? do |key, values|
-        case key
-          when :feature
-            feature_match(values)
-          else
-            fact_match(key, values)
-        end
+        key == :feature ? feature_match(values) : fact_match(key, values)
       end
     end
   end
 
+  # Compare a fact value against one or more supplied value
+  # @param [Symbol] fact a fact to query to match against one of the given values
+  # @param [Array, Regexp, String] values one or more values to compare to the
+  #   value of the given fact
+  # @return [Boolean] whether or not the fact value matches one of the supplied
+  #   values. Given one or more Regexp instances, fact is compared via the basic
+  #   pattern-matching operator.
   def self.fact_match(fact, values)
-    values = [values] unless values.is_a? Array
-    values.map! { |v| v.to_s.downcase.intern }
-
-    if fval = Facter.value(fact).to_s and fval != ""
-      fval = fval.to_s.downcase.intern
-
-      values.include?(fval)
+    fact_val = Puppet.runtime[:facter].value(fact).to_s.downcase
+    if fact_val.empty?
+      return false
     else
-      false
+      values = [values] unless values.is_a?(Array)
+      values.any? do |value|
+        if value.is_a?(Regexp)
+          fact_val =~ value
+        else
+          fact_val.intern == value.to_s.downcase.intern
+        end
+      end
     end
   end
 
@@ -333,6 +319,10 @@ class Puppet::Provider
     @defaults << hash
   end
 
+  def self.notdefaultfor(hash)
+    @notdefaults << hash
+  end
+
   # @return [Integer] Returns a numeric specificity for this provider based on how many requirements it has
   #  and number of _ancestors_. The higher the number the more specific the provider.
   # The number of requirements is based on the hash size of the matching {Provider.defaultfor}.
@@ -350,6 +340,7 @@ class Puppet::Provider
     # complexity of a provider).
     match = default_match
     length = match ? match.length : 0
+
     (length * 100) + ancestors.select { |a| a.is_a? Class }.length
   end
 
@@ -357,6 +348,7 @@ class Puppet::Provider
   # @return [void]
   def self.initvars
     @defaults = []
+    @notdefaults = []
     @commands = {}
   end
 
@@ -388,32 +380,7 @@ class Puppet::Provider
   # @raise [Puppet::DevError] Error indicating that the method should have been implemented by subclass.
   # @see prefetch
   def self.instances
-    raise Puppet::DevError, "Provider #{self.name} has not defined the 'instances' class method"
-  end
-
-  # Creates the methods for a given command.
-  # @api private
-  # @deprecated Use {commands}, {optional_commands}, or {has_command} instead. This was not meant to be part of a public API
-  def self.make_command_methods(name)
-    Puppet.deprecation_warning "Provider.make_command_methods is deprecated; use Provider.commands or Provider.optional_commands instead for creating command methods"
-
-    # Now define a method for that command
-    unless singleton_class.method_defined?(name)
-      meta_def(name) do |*args|
-        # This might throw an ExecutionFailure, but the system above
-        # will catch it, if so.
-        command = Puppet::Provider::Command.new(name, command(name), Puppet::Util, Puppet::Util::Execution)
-        return command.execute(*args)
-      end
-
-      # And then define an instance method that just calls the class method.
-      # We need both, so both instances and classes can easily run the commands.
-      unless method_defined?(name)
-        define_method(name) do |*args|
-          self.class.send(name, *args)
-        end
-      end
-    end
+    raise Puppet::DevError, _("To support listing resources of this type the '%{provider}' provider needs to implement an 'instances' class method returning the current set of resources. We recommend porting your module to the simpler Resource API instead: https://puppet.com/search/docs?keys=resource+api") % { provider: self.name }
   end
 
   # Creates getter- and setter- methods for each property supported by the resource type.
@@ -433,6 +400,7 @@ class Puppet::Provider
     [resource_type.validproperties, resource_type.parameters].flatten.each do |attr|
       attr = attr.intern
       next if attr == :name
+
       define_method(attr) do
         if @property_hash[attr].nil?
           :absent
@@ -484,25 +452,16 @@ class Puppet::Provider
     if param.is_a?(Class)
       klass = param
     else
-      unless klass = resource_type.attrclass(param)
-        raise Puppet::DevError, "'#{param}' is not a valid parameter for #{resource_type.name}"
+      klass = resource_type.attrclass(param)
+      unless klass
+        raise Puppet::DevError, _("'%{parameter_name}' is not a valid parameter for %{resource_type}") % { parameter_name: param, resource_type: resource_type.name }
       end
     end
-    return true unless features = klass.required_features
+    features = klass.required_features
+    return true unless features
 
     !!satisfies?(*features)
   end
-
-#    def self.to_s
-#        unless defined?(@str)
-#            if self.resource_type
-#                @str = "#{resource_type.name} provider #{self.name}"
-#            else
-#                @str = "unattached provider #{self.name}"
-#            end
-#        end
-#        @str
-#    end
 
   dochook(:defaults) do
     if @defaults.length > 0
@@ -516,7 +475,7 @@ class Puppet::Provider
 
   dochook(:commands) do
     if @commands.length > 0
-      return "Required binaries: " + @commands.collect do |n, c|
+      return "Required binaries: " + @commands.collect do |_n, c|
         "`#{c}`"
       end.sort.join(", ") + "."
     end
@@ -533,7 +492,6 @@ class Puppet::Provider
   # Clears this provider instance to allow GC to clean up.
   def clear
     @resource = nil
-    @model = nil
   end
 
   # (see command)
@@ -555,7 +513,7 @@ class Puppet::Provider
   # structure of the provider - this hash holds the current state property values of system entities
   # as they are being discovered by querying or other operations (typically getters).
   #
-  # @todo The use of a hash as a parameter needs a better exaplanation; why is this done? What is the intent?
+  # @todo The use of a hash as a parameter needs a better explanation; why is this done? What is the intent?
   # @param resource [Puppet::Resource, Hash] optional resource or hash
   #
   def initialize(resource = nil)
@@ -565,8 +523,6 @@ class Puppet::Provider
       @property_hash = resource
     elsif resource
       @resource = resource
-      # LAK 2007-05-09: Keep the model stuff around for backward compatibility
-      @model = resource
       @property_hash = {}
     else
       @property_hash = {}
@@ -578,12 +534,13 @@ class Puppet::Provider
   # @raise [Puppet::DevError] if no resource is set, or no name defined.
   #
   def name
-    if n = @property_hash[:name]
+    n = @property_hash[:name]
+    if n
       return n
     elsif self.resource
       resource.name
     else
-      raise Puppet::DevError, "No resource and no name in property hash in #{self.class.name} instance"
+      raise Puppet::DevError, _("No resource and no name in property hash in %{class_name} instance") % { class_name: self.class.name }
     end
   end
 
@@ -603,6 +560,11 @@ class Puppet::Provider
     "#{@resource}(provider=#{self.class.name})"
   end
 
+  # @return [String] Returns a human readable string with information about the resource and the provider.
+  def inspect
+    to_s
+  end
+
   # Makes providers comparable.
   include Comparable
   # Compares this provider against another provider.
@@ -615,6 +577,7 @@ class Puppet::Provider
   def <=>(other)
     # We can only have ordering against other providers.
     return nil unless other.is_a? Puppet::Provider
+
     # Otherwise, order by the providers class name.
     return self.class.name <=> other.class.name
   end
@@ -648,4 +611,3 @@ class Puppet::Provider
   # @return [void]
   # @api public
 end
-

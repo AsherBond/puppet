@@ -1,4 +1,7 @@
-require 'puppet/util/windows'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/windows'
+require_relative '../../../puppet/error'
 
 # represents an error resulting from a Win32 error code
 class Puppet::Util::Windows::Error < Puppet::Error
@@ -30,22 +33,22 @@ class Puppet::Util::Windows::Error < Puppet::Error
             FORMAT_MESSAGE_ARGUMENT_ARRAY |
             FORMAT_MESSAGE_IGNORE_INSERTS |
             FORMAT_MESSAGE_MAX_WIDTH_MASK
-    error_string = ''
+    error_string = ''.dup
 
     # this pointer actually points to a :lpwstr (pointer) since we're letting Windows allocate for us
     FFI::MemoryPointer.new(:pointer, 1) do |buffer_ptr|
       length = FormatMessageW(flags, FFI::Pointer::NULL, code, dwLanguageId,
-        buffer_ptr, 0, FFI::Pointer::NULL)
+                              buffer_ptr, 0, FFI::Pointer::NULL)
 
       if length == FFI::WIN32_FALSE
         # can't raise same error type here or potentially recurse infinitely
-        raise Puppet::Error.new("FormatMessageW could not format code #{code}")
+        raise Puppet::Error.new(_("FormatMessageW could not format code %{code}") % { code: code })
       end
 
       # returns an FFI::Pointer with autorelease set to false, which is what we want
       buffer_ptr.read_win32_local_pointer do |wide_string_ptr|
         if wide_string_ptr.null?
-          raise Puppet::Error.new("FormatMessageW failed to allocate buffer for code #{code}")
+          raise Puppet::Error.new(_("FormatMessageW failed to allocate buffer for code %{code}") % { code: code })
         end
 
         error_string = wide_string_ptr.read_wide_string(length)
@@ -66,7 +69,7 @@ class Puppet::Util::Windows::Error < Puppet::Error
 
   ffi_convention :stdcall
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/ms679351(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/ms679351(v=vs.85).aspx
   # DWORD WINAPI FormatMessage(
   #   _In_      DWORD dwFlags,
   #   _In_opt_  LPCVOID lpSource,
@@ -79,5 +82,5 @@ class Puppet::Util::Windows::Error < Puppet::Error
   # NOTE: since we're not preallocating the buffer, use a :pointer for lpBuffer
   ffi_lib :kernel32
   attach_function_private :FormatMessageW,
-    [:dword, :lpcvoid, :dword, :dword, :pointer, :dword, :pointer], :dword
+                          [:dword, :lpcvoid, :dword, :dword, :pointer, :dword, :pointer], :dword
 end

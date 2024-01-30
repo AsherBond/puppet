@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # A simple boolean.
 class Puppet::Settings::BooleanSetting < Puppet::Settings::BaseSetting
   # get the arguments in getopt format
@@ -11,7 +13,7 @@ class Puppet::Settings::BooleanSetting < Puppet::Settings::BaseSetting
 
   def optparse_args
     if short
-      ["--[no-]#{name}", "-#{short}", desc, :NONE ]
+      ["--[no-]#{name}", "-#{short}", desc, :NONE]
     else
       ["--[no-]#{name}", desc, :NONE]
     end
@@ -22,7 +24,7 @@ class Puppet::Settings::BooleanSetting < Puppet::Settings::BaseSetting
     when true, "true"; return true
     when false, "false"; return false
     else
-      raise Puppet::Settings::ValidationError, "Invalid value '#{value.inspect}' for boolean parameter: #{@name}"
+      raise Puppet::Settings::ValidationError, _("Invalid value '%{value}' for boolean parameter: %{name}") % { value: value.inspect, name: @name }
     end
   end
 

@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/agent'
 require 'puppet/agent/locker'
@@ -20,14 +19,14 @@ describe Puppet::Agent::Locker do
   ##  the tests.   --cprice 2012-04-16
 
   it "should use a Pidlock instance as its lockfile" do
-    @locker.send(:lockfile).should be_instance_of(Puppet::Util::Pidlock)
+    expect(@locker.send(:lockfile)).to be_instance_of(Puppet::Util::Pidlock)
   end
 
   it "should use puppet's agent_catalog_run_lockfile' setting to determine its lockfile path" do
     lockfile = File.expand_path("/my/lock")
     Puppet[:agent_catalog_run_lockfile] = lockfile
     lock = Puppet::Util::Pidlock.new(lockfile)
-    Puppet::Util::Pidlock.expects(:new).with(lockfile).returns lock
+    expect(Puppet::Util::Pidlock).to receive(:new).with(lockfile).and_return(lock)
 
     @locker.send(:lockfile)
   end
@@ -35,66 +34,66 @@ describe Puppet::Agent::Locker do
   it "#lockfile_path provides the path to the lockfile" do
     lockfile = File.expand_path("/my/lock")
     Puppet[:agent_catalog_run_lockfile] = lockfile
-    @locker.lockfile_path.should == File.expand_path("/my/lock")
+    expect(@locker.lockfile_path).to eq(File.expand_path("/my/lock"))
   end
 
   it "should reuse the same lock file each time" do
-    @locker.send(:lockfile).should equal(@locker.send(:lockfile))
+    expect(@locker.send(:lockfile)).to equal(@locker.send(:lockfile))
   end
 
   it "should have a method that yields when a lock is attained" do
-    @locker.send(:lockfile).expects(:lock).returns true
+    expect(@locker.send(:lockfile)).to receive(:lock).and_return(true)
 
     yielded = false
     @locker.lock do
       yielded = true
     end
-    yielded.should be_true
+    expect(yielded).to be_truthy
   end
 
   it "should return the block result when the lock method successfully locked" do
-    @locker.send(:lockfile).expects(:lock).returns true
+    expect(@locker.send(:lockfile)).to receive(:lock).and_return(true)
 
-    @locker.lock { :result }.should == :result
+    expect(@locker.lock { :result }).to eq(:result)
   end
 
-  it "should return nil when the lock method does not receive the lock" do
-    @locker.send(:lockfile).expects(:lock).returns false
+  it "should raise LockError when the lock method does not receive the lock" do
+    expect(@locker.send(:lockfile)).to receive(:lock).and_return(false)
 
-    @locker.lock {}.should be_nil
+    expect { @locker.lock {} }.to raise_error(Puppet::LockError)
   end
 
   it "should not yield when the lock method does not receive the lock" do
-    @locker.send(:lockfile).expects(:lock).returns false
+    expect(@locker.send(:lockfile)).to receive(:lock).and_return(false)
 
     yielded = false
-    @locker.lock { yielded = true }
-    yielded.should be_false
+    expect { @locker.lock { yielded = true } }.to raise_error(Puppet::LockError)
+    expect(yielded).to be_falsey
   end
 
   it "should not unlock when a lock was not received" do
-    @locker.send(:lockfile).expects(:lock).returns false
-    @locker.send(:lockfile).expects(:unlock).never
+    expect(@locker.send(:lockfile)).to receive(:lock).and_return(false)
+    expect(@locker.send(:lockfile)).not_to receive(:unlock)
 
-    @locker.lock {}
+    expect { @locker.lock {} }.to raise_error(Puppet::LockError)
   end
 
   it "should unlock after yielding upon obtaining a lock" do
-    @locker.send(:lockfile).stubs(:lock).returns true
-    @locker.send(:lockfile).expects(:unlock)
+    allow(@locker.send(:lockfile)).to receive(:lock).and_return(true)
+    expect(@locker.send(:lockfile)).to receive(:unlock)
 
     @locker.lock {}
   end
 
   it "should unlock after yielding upon obtaining a lock, even if the block throws an exception" do
-    @locker.send(:lockfile).stubs(:lock).returns true
-    @locker.send(:lockfile).expects(:unlock)
+    allow(@locker.send(:lockfile)).to receive(:lock).and_return(true)
+    expect(@locker.send(:lockfile)).to receive(:unlock)
 
-    lambda { @locker.lock { raise "foo" } }.should raise_error(RuntimeError)
+    expect { @locker.lock { raise "foo" } }.to raise_error(RuntimeError)
   end
 
   it "should be considered running if the lockfile is locked" do
-    @locker.send(:lockfile).expects(:locked?).returns true
-    @locker.should be_running
+    expect(@locker.send(:lockfile)).to receive(:locked?).and_return(true)
+    expect(@locker).to be_running
   end
 end

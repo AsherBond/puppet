@@ -1,4 +1,6 @@
-require 'puppet/parameter'
+# frozen_string_literal: true
+
+require_relative '../../puppet/parameter'
 
 # This specialized {Puppet::Parameter} handles validation and munging of paths.
 # By default, a single path is accepted, and by calling {accept_arrays} it is possible to
@@ -11,6 +13,7 @@ class Puppet::Parameter::Path < Puppet::Parameter
   def self.accept_arrays(bool = true)
     @accept_arrays = !!bool
   end
+
   def self.arrays?
     @accept_arrays
   end
@@ -23,11 +26,11 @@ class Puppet::Parameter::Path < Puppet::Parameter
   # @return [Array<String>] the given paths
   #
   def validate_path(paths)
-    if paths.is_a?(Array) and ! self.class.arrays? then
-      fail "#{name} only accepts a single path, not an array of paths"
+    if paths.is_a?(Array) and !self.class.arrays? then
+      fail _("%{name} only accepts a single path, not an array of paths") % { name: name }
     end
 
-    fail("#{name} must be a fully qualified path") unless Array(paths).all? {|path| absolute_path?(path)}
+    fail(_("%{name} must be a fully qualified path") % { name: name }) unless Array(paths).all? { |path| absolute_path?(path) }
 
     paths
   end
@@ -49,9 +52,10 @@ class Puppet::Parameter::Path < Puppet::Parameter
   # @return [String, Array<String>] the given paths
   # @raise [Puppet::Error] if the given paths does not comply with the on/many paths rule.
   def unsafe_munge(paths)
-    if paths.is_a?(Array) and ! self.class.arrays? then
-      fail "#{name} only accepts a single path, not an array of paths"
+    if paths.is_a?(Array) and !self.class.arrays? then
+      fail _("%{name} only accepts a single path, not an array of paths") % { name: name }
     end
+
     paths
   end
 end

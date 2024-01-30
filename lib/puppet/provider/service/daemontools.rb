@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Daemontools service management
 #
 # author Brice Figureau <brice-puppet@daysofwonder.com>
@@ -17,11 +19,11 @@ Puppet::Type.type(:service).provide :daemontools, :parent => :base do
     * `/var/lib/service`
     * `/etc`
 
-    ...or this can be overriden in the resource's attributes:
+    ...or this can be overridden in the resource's attributes:
 
-        service { "myservice":
-          provider => "daemontools",
-          path     => "/path/to/daemons",
+        service { 'myservice':
+          provider => 'daemontools',
+          path     => '/path/to/daemons',
         }
 
     This provider supports out of the box:
@@ -39,21 +41,15 @@ Puppet::Type.type(:service).provide :daemontools, :parent => :base do
 
   EOT
 
-  commands :svc  => "/usr/bin/svc", :svstat => "/usr/bin/svstat"
+  commands :svc => "/usr/bin/svc", :svstat => "/usr/bin/svstat"
 
   class << self
     attr_writer :defpath
 
     # Determine the daemon path.
-    def defpath(dummy_argument=:work_arround_for_ruby_GC_bug)
-      unless @defpath
-        ["/var/lib/service", "/etc"].each do |path|
-          if Puppet::FileSystem.exist?(path)
-            @defpath = path
-            break
-          end
-        end
-        raise "Could not find the daemon directory (tested [/var/lib/service,/etc])" unless @defpath
+    def defpath
+      @defpath ||= ["/var/lib/service", "/etc"].find do |path|
+        Puppet::FileSystem.exist?(path) && FileTest.directory?(path)
       end
       @defpath
     end
@@ -65,6 +61,10 @@ Puppet::Type.type(:service).provide :daemontools, :parent => :base do
   # ie enabled or not
   def self.instances
     path = self.defpath
+    unless path
+      Puppet.info("#{self.name} is unsuitable because service directory is nil")
+      return
+    end
     unless FileTest.directory?(path)
       Puppet.notice "Service path #{path} does not exist"
       return
@@ -74,7 +74,7 @@ Puppet::Type.type(:service).provide :daemontools, :parent => :base do
     # or don't contain a run file
     Dir.entries(path).reject { |e|
       fullpath = File.join(path, e)
-      e =~ /^\./ or ! FileTest.directory?(fullpath) or ! Puppet::FileSystem.exist?(File.join(fullpath,"run"))
+      e =~ /^\./ or !FileTest.directory?(fullpath) or !Puppet::FileSystem.exist?(File.join(fullpath, "run"))
     }.collect do |name|
       new(:name => name, :path => path)
     end
@@ -88,7 +88,7 @@ Puppet::Type.type(:service).provide :daemontools, :parent => :base do
   # find the service dir on this node
   def servicedir
     unless @servicedir
-      ["/service", "/etc/service","/var/lib/svscan"].each do |path|
+      ["/service", "/etc/service", "/var/lib/svscan"].each do |path|
         if Puppet::FileSystem.exist?(path)
           @servicedir = path
           break
@@ -106,10 +106,13 @@ Puppet::Type.type(:service).provide :daemontools, :parent => :base do
   end
 
   # returns the full path to the current daemon directory
-  # note that this path can be overriden in the resource
+  # note that this path can be overridden in the resource
   # definition
   def daemon
-    File.join(resource[:path], resource[:name])
+    path = resource[:path]
+    raise Puppet::Error.new("#{self.class.name} must specify a path for daemon directory") unless path
+
+    File.join(path, resource[:name])
   end
 
   def status
@@ -119,20 +122,19 @@ Puppet::Type.type(:service).provide :daemontools, :parent => :base do
         return :running
       end
     rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error.new( "Could not get status for service #{resource.ref}: #{detail}", detail)
+      raise Puppet::Error.new("Could not get status for service #{resource.ref}: #{detail}", detail)
     end
     :stopped
   end
 
   def setupservice
-      if resource[:manifest]
-        Puppet.notice "Configuring #{resource[:name]}"
-        command = [ resource[:manifest], resource[:name] ]
-        #texecute("setupservice", command)
-        system("#{command}")
-      end
+    if resource[:manifest]
+      Puppet.notice "Configuring #{resource[:name]}"
+      command = [resource[:manifest], resource[:name]]
+      system("#{command}")
+    end
   rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error.new( "Cannot config #{self.service} to enable it: #{detail}", detail)
+    raise Puppet::Error.new("Cannot config #{self.service} to enable it: #{detail}", detail)
   end
 
   def enabled?
@@ -147,23 +149,23 @@ Puppet::Type.type(:service).provide :daemontools, :parent => :base do
   end
 
   def enable
-    if ! FileTest.directory?(self.daemon)
+    if !FileTest.directory?(self.daemon)
       Puppet.notice "No daemon dir, calling setupservice for #{resource[:name]}"
       self.setupservice
     end
     if self.daemon
-      if ! Puppet::FileSystem.symlink?(self.service)
+      if !Puppet::FileSystem.symlink?(self.service)
         Puppet.notice "Enabling #{self.service}: linking #{self.daemon} -> #{self.service}"
         Puppet::FileSystem.symlink(self.daemon, self.service)
       end
     end
-rescue Puppet::ExecutionFailure
-    raise Puppet::Error.new( "No daemon directory found for #{self.service}", $!)
+  rescue Puppet::ExecutionFailure
+    raise Puppet::Error.new("No daemon directory found for #{self.service}", $!)
   end
 
   def disable
     begin
-      if ! FileTest.directory?(self.daemon)
+      if !FileTest.directory?(self.daemon)
         Puppet.notice "No daemon dir, calling setupservice for #{resource[:name]}"
         self.setupservice
       end
@@ -174,7 +176,7 @@ rescue Puppet::ExecutionFailure
         end
       end
     rescue Puppet::ExecutionFailure
-      raise Puppet::Error.new( "No daemon directory found for #{self.service}", $!)
+      raise Puppet::Error.new("No daemon directory found for #{self.service}", $!)
     end
     self.stop
   end

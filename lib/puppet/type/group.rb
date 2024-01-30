@@ -1,10 +1,11 @@
+# frozen_string_literal: true
+
 require 'etc'
-require 'facter'
-require 'puppet/property/keyvalue'
-require 'puppet/parameter/boolean'
+require_relative '../../puppet/property/keyvalue'
+require_relative '../../puppet/parameter/boolean'
 
 module Puppet
-  newtype(:group) do
+  Type.newtype(:group) do
     @doc = "Manage groups. On most platforms this can only create groups.
       Group membership must be managed on individual users.
 
@@ -14,17 +15,17 @@ module Puppet
       a group record."
 
     feature :manages_members,
-      "For directories where membership is an attribute of groups not users."
+            "For directories where membership is an attribute of groups not users."
 
     feature :manages_aix_lam,
-      "The provider can manage AIX Loadable Authentication Module (LAM) system."
+            "The provider can manage AIX Loadable Authentication Module (LAM) system."
 
     feature :system_groups,
-      "The provider allows you to create system groups with lower GIDs."
+            "The provider allows you to create system groups with lower GIDs."
 
-    feature :libuser,
-      "Allows local groups to be managed on systems that also use some other
-       remote NSS method of managing accounts."
+    feature :manages_local_users_and_groups,
+            "Allows local groups to be managed on systems that also use some other
+       remote Name Switch Service (NSS) method of managing accounts."
 
     ensurable do
       desc "Create or remove the group."
@@ -36,6 +37,8 @@ module Puppet
       newvalue(:absent) do
         provider.delete
       end
+
+      defaultto :present
     end
 
     newproperty(:gid) do
@@ -54,7 +57,7 @@ module Puppet
 
       def sync
         if self.should == :absent
-          raise Puppet::DevError, "GID cannot be deleted"
+          raise Puppet::DevError, _("GID cannot be deleted")
         else
           provider.gid = self.should
         end
@@ -66,7 +69,7 @@ module Puppet
           if gid =~ /^[-0-9]+$/
             gid = Integer(gid)
           else
-            self.fail "Invalid GID #{gid}"
+            self.fail _("Invalid GID %{gid}") % { gid: gid }
           end
         when Symbol
           unless gid == :absent
@@ -79,10 +82,13 @@ module Puppet
     end
 
     newproperty(:members, :array_matching => :all, :required_features => :manages_members) do
-      desc "The members of the group. For directory services where group
-      membership is stored in the group objects, not the users."
+      desc "The members of the group. For platforms or directory services where group
+        membership is stored in the group objects, not the users. This parameter's
+        behavior can be configured with `auth_membership`."
 
       def change_to_s(currentvalue, newvalue)
+        newvalue = actual_should(currentvalue, newvalue)
+
         currentvalue = currentvalue.join(",") if currentvalue != :absent
         newvalue = newvalue.join(",")
         super(currentvalue, newvalue)
@@ -96,20 +102,59 @@ module Puppet
         super(current)
       end
 
-      def is_to_s(currentvalue)
+      def is_to_s(currentvalue) # rubocop:disable Naming/PredicateName
         if provider.respond_to?(:members_to_s)
           currentvalue = '' if currentvalue.nil?
-          return provider.members_to_s(currentvalue.split(','))
+          currentvalue = currentvalue.is_a?(Array) ? currentvalue : currentvalue.split(',')
+
+          return provider.members_to_s(currentvalue)
         end
 
         super(currentvalue)
       end
-      alias :should_to_s :is_to_s
+
+      def should_to_s(newvalue)
+        is_to_s(actual_should(retrieve, newvalue))
+      end
+
+      # Calculates the actual should value given the current and
+      # new values. This is only used in should_to_s and change_to_s
+      # to fix the change notification issue reported in PUP-6542.
+      def actual_should(currentvalue, newvalue)
+        currentvalue = munge_members_value(currentvalue)
+        newvalue = munge_members_value(newvalue)
+
+        if @resource[:auth_membership]
+          newvalue.uniq.sort
+        else
+          (currentvalue + newvalue).uniq.sort
+        end
+      end
+
+      # Useful helper to handle the possible property value types that we can
+      # both pass-in and return. It munges the value into an array
+      def munge_members_value(value)
+        return [] if value == :absent
+        return value.split(',') if value.is_a?(String)
+
+        value
+      end
+
+      validate do |value|
+        if provider.respond_to?(:member_valid?)
+          return provider.member_valid?(value)
+        end
+      end
     end
 
-    newparam(:auth_membership) do
-      desc "whether the provider is authoritative for group membership."
-      defaultto true
+    newparam(:auth_membership, :boolean => true, :parent => Puppet::Parameter::Boolean) do
+      desc "Configures the behavior of the `members` parameter.
+
+        * `false` (default) --- The provided list of group members is partial,
+          and Puppet **ignores** any members that aren't listed there.
+        * `true` --- The provided list of of group members is comprehensive, and
+          Puppet **purges** any members that aren't listed there."
+      defaultto false
     end
 
     newparam(:name) do
@@ -124,17 +169,21 @@ module Puppet
     end
 
     newparam(:allowdupe, :boolean => true, :parent => Puppet::Parameter::Boolean) do
-      desc "Whether to allow duplicate GIDs. Defaults to `false`."
+      desc "Whether to allow duplicate GIDs."
 
       defaultto false
     end
 
     newparam(:ia_load_module, :required_features => :manages_aix_lam) do
-      desc "The name of the I&A module to use to manage this user"
+      desc "The name of the I&A module to use to manage this group.
+        This should be set to `files` if managing local groups."
     end
 
     newproperty(:attributes, :parent => Puppet::Property::KeyValue, :required_features => :manages_aix_lam) do
-      desc "Specify group AIX attributes in an array of `key=value` pairs."
+      desc "Specify group AIX attributes, as an array of `'key=value'` strings. This
+        parameter's behavior can be configured with `attribute_membership`."
+
+      self.log_only_changed_or_new_keys = true
 
       def membership
         :attribute_membership
@@ -143,16 +192,15 @@ module Puppet
       def delimiter
         " "
       end
-
-      validate do |value|
-        raise ArgumentError, "Attributes value pairs must be separated by an =" unless value.include?("=")
-      end
     end
 
     newparam(:attribute_membership) do
-      desc "Whether specified attribute value pairs should be treated as the only attributes
-        of the user or whether they should merely
-        be treated as the minimum list."
+      desc "AIX only. Configures the behavior of the `attributes` parameter.
+
+        * `minimum` (default) --- The provided list of attributes is partial, and Puppet
+          **ignores** any attributes that aren't listed there.
+        * `inclusive` --- The provided list of attributes is comprehensive, and
+          Puppet **purges** any attributes that aren't listed there."
 
       newvalues(:inclusive, :minimum)
 
@@ -166,10 +214,12 @@ module Puppet
     end
 
     newparam(:forcelocal, :boolean => true,
-             :required_features => :libuser,
-             :parent => Puppet::Parameter::Boolean) do
+                          :required_features => :manages_local_users_and_groups,
+                          :parent => Puppet::Parameter::Boolean) do
       desc "Forces the management of local accounts when accounts are also
-            being managed by some other NSS"
+            being managed by some other Name Switch Service (NSS). For AIX, refer to the `ia_load_module` parameter.
+
+            This option relies on your operating system's implementation of `luser*` commands, such as `luseradd` , `lgroupadd`, and `lusermod`. The `forcelocal` option could behave unpredictably in some circumstances. If the tools it depends on are not available, it might have no effect at all."
       defaultto false
     end
 

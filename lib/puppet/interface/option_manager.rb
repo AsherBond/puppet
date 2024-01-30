@@ -1,15 +1,20 @@
+# frozen_string_literal: true
+
 # This class is not actually public API, but the method
 # {Puppet::Interface::OptionManager#option option} is public when used
 # as part of the Faces DSL (i.e. from within a
 # {Puppet::Interface.define define} block).
 # @api public
 module Puppet::Interface::OptionManager
-
   # @api private
   def display_global_options(*args)
     @display_global_options ||= []
     [args].flatten.each do |refopt|
-      raise ArgumentError, "Global option #{refopt} does not exist in Puppet.settings" unless Puppet.settings.include? refopt
+      unless Puppet.settings.include?(refopt)
+        # TRANSLATORS 'Puppet.settings' references to the Puppet settings options and should not be translated
+        raise ArgumentError, _("Global option %{option} does not exist in Puppet.settings") % { option: refopt }
+      end
+
       @display_global_options << refopt if refopt
     end
     @display_global_options.uniq!
@@ -23,7 +28,7 @@ module Puppet::Interface::OptionManager
 
   # @api private
   def walk_inheritance_tree(start, sym)
-    result = (start ||= [])
+    result = (start || [])
     if self.is_a?(Class) and superclass.respond_to?(sym)
       result = superclass.send(sym) + result
     elsif self.class.respond_to?(sym)
@@ -50,14 +55,18 @@ module Puppet::Interface::OptionManager
     @options_hash ||= {}
 
     option.aliases.each do |name|
-      if conflict = get_option(name) then
-        raise ArgumentError, "Option #{option} conflicts with existing option #{conflict}"
+      conflict = get_option(name)
+      if conflict
+        raise ArgumentError, _("Option %{option} conflicts with existing option %{conflict}") %
+                             { option: option, conflict: conflict }
       end
 
       actions.each do |action|
         action = get_action(action)
-        if conflict = action.get_option(name) then
-          raise ArgumentError, "Option #{option} conflicts with existing option #{conflict} on #{action}"
+        conflict = action.get_option(name)
+        if conflict
+          raise ArgumentError, _("Option %{option} conflicts with existing option %{conflict} on %{action}") %
+                               { option: option, conflict: conflict, action: action }
         end
       end
     end

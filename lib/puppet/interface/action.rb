@@ -1,4 +1,6 @@
-require 'puppet/util/methodhelper'
+# coding: utf-8
+# frozen_string_literal: true
+
 require 'prettyprint'
 
 # This represents an action that is attached to a face. Actions should
@@ -7,13 +9,13 @@ require 'prettyprint'
 # {Puppet::Interface::ActionBuilder} in the supplied block.
 # @api private
 class Puppet::Interface::Action
-  include Puppet::Util::MethodHelper
   extend  Puppet::Interface::DocGen
   include Puppet::Interface::FullDocs
 
   # @api private
-  def initialize(face, name, attrs = {})
+  def initialize(face, name)
     raise "#{name.inspect} is an invalid action name" unless name.to_s =~ /^[a-z]\w*$/
+
     @face    = face
     @name    = name.to_sym
 
@@ -21,13 +23,11 @@ class Puppet::Interface::Action
     # is a favour to our end users; if you happen to get that in a core face
     # report it as a bug, please. --daniel 2011-04-26
     @authors = []
-    @license  = 'All Rights Reserved'
-
-    set_options(attrs)
+    @license = 'All Rights Reserved'
 
     # @options collects the added options in the order they're declared.
     # @options_hash collects the options keyed by alias for quick lookups.
-    @options        = []
+    @options = []
     @display_global_options = []
     @options_hash   = {}
     @when_rendering = {}
@@ -59,6 +59,7 @@ class Puppet::Interface::Action
   # @return [Boolean]
   # @api private
   attr_accessor :default
+
   def default?
     !!@default
   end
@@ -74,11 +75,10 @@ class Puppet::Interface::Action
   ########################################################################
   # Support for rendering formats and all.
 
-
   # @api private
   def when_rendering(type)
     unless type.is_a? Symbol
-      raise ArgumentError, "The rendering format must be a symbol, not #{type.class.name}"
+      raise ArgumentError, _("The rendering format must be a symbol, not %{class_name}") % { class_name: type.class.name }
     end
     # Do we have a rendering hook for this name?
     return @when_rendering[type].bind(@face) if @when_rendering.has_key? type
@@ -94,34 +94,45 @@ class Puppet::Interface::Action
   # @api private
   def set_rendering_method_for(type, proc)
     unless proc.is_a? Proc
-      msg = "The second argument to set_rendering_method_for must be a Proc"
-      msg += ", not #{proc.class.name}" unless proc.nil?
+      msg = if proc.nil?
+              # TRANSLATORS 'set_rendering_method_for' and 'Proc' should not be translated
+              _("The second argument to set_rendering_method_for must be a Proc")
+            else
+              # TRANSLATORS 'set_rendering_method_for' and 'Proc' should not be translated
+              _("The second argument to set_rendering_method_for must be a Proc, not %{class_name}") %
+                { class_name: proc.class.name }
+            end
       raise ArgumentError, msg
     end
 
     if proc.arity != 1 and proc.arity != (@positional_arg_count + 1)
-      msg =  "the when_rendering method for the #{@face.name} face #{name} action "
-      msg += "takes either just one argument, the result of when_invoked, "
-      msg += "or the result plus the #{@positional_arg_count} arguments passed "
-      msg += "to the when_invoked block, not "
-      if proc.arity < 0 then
-        msg += "a variable number"
-      else
-        msg += proc.arity.to_s
-      end
+      msg = if proc.arity < 0 then
+              # TRANSLATORS 'when_rendering', 'when_invoked' are method names and should not be translated
+              _("The when_rendering method for the %{face} face %{name} action takes either just one argument,"\
+                " the result of when_invoked, or the result plus the %{arg_count} arguments passed to the"\
+                " when_invoked block, not a variable number") %
+                { face: @face.name, name: name, arg_count: @positional_arg_count }
+            else
+              # TRANSLATORS 'when_rendering', 'when_invoked' are method names and should not be translated
+              _("The when_rendering method for the %{face} face %{name} action takes either just one argument,"\
+                " the result of when_invoked, or the result plus the %{arg_count} arguments passed to the"\
+                " when_invoked block, not %{string}") %
+                { face: @face.name, name: name, arg_count: @positional_arg_count, string: proc.arity.to_s }
+            end
       raise ArgumentError, msg
     end
     unless type.is_a? Symbol
-      raise ArgumentError, "The rendering format must be a symbol, not #{type.class.name}"
+      raise ArgumentError, _("The rendering format must be a symbol, not %{class_name}") % { class_name: type.class.name }
     end
     if @when_rendering.has_key? type then
-      raise ArgumentError, "You can't define a rendering method for #{type} twice"
+      raise ArgumentError, _("You can't define a rendering method for %{type} twice") % { type: type }
     end
+
     # Now, the ugly bit.  We add the method to our interface object, and
     # retrieve it, to rotate through the dance of getting a suitable method
     # object out of the whole process. --daniel 2011-04-18
     @when_rendering[type] =
-      @face.__send__( :__add_method, __render_method_name_for(type), proc)
+      @face.__send__(:__add_method, __render_method_name_for(type), proc)
   end
 
   # @return [void]
@@ -131,14 +142,25 @@ class Puppet::Interface::Action
   end
   private :__render_method_name_for
 
-
   # @api private
   # @return [Symbol]
-  attr_accessor :render_as
+  attr_reader :render_as
+
   def render_as=(value)
     @render_as = value.to_sym
   end
 
+  # @api private
+  # @return [void]
+  def deprecate
+    @deprecated = true
+  end
+
+  # @api private
+  # @return [Boolean]
+  def deprecated?
+    @deprecated
+  end
 
   ########################################################################
   # Initially, this was defined to allow the @action.invoke pattern, which is
@@ -175,7 +197,6 @@ class Puppet::Interface::Action
   #   @face.send(name, *args, &block)
   # end
 
-
   # We need to build an instance method as a wrapper, using normal code, to be
   # able to expose argument defaulting between the caller and definer in the
   # Ruby API.  An extra method is, sadly, required for Ruby 1.8 to work since
@@ -195,16 +216,15 @@ class Puppet::Interface::Action
   # idea how motivated we were to make this cleaner.  Sorry.
   # --daniel 2011-03-31
 
-
   # The arity of the action
   # @return [Integer]
-  attr_reader   :positional_arg_count
+  attr_reader :positional_arg_count
 
   # The block that is executed when the action is invoked
   # @return [block]
-  attr_accessor :when_invoked
-  def when_invoked=(block)
+  attr_reader :when_invoked
 
+  def when_invoked=(block)
     internal_name = "#{@name} implementation, required on Ruby 1.8".to_sym
 
     arity = @positional_arg_count = block.arity
@@ -213,7 +233,8 @@ class Puppet::Interface::Action
       # but will on 1.9.2, which treats it as "no arguments".  Which bites,
       # because this just begs for us to wind up in the horrible situation
       # where a 1.8 vs 1.9 error bites our end users. --daniel 2011-04-19
-      raise ArgumentError, "when_invoked requires at least one argument (options) for action #{@name}"
+      # TRANSLATORS 'when_invoked' should not be translated
+      raise ArgumentError, _("when_invoked requires at least one argument (options) for action %{name}") % { name: @name }
     elsif arity > 0 then
       range = Range.new(1, arity - 1)
       decl = range.map { |x| "arg#{x}" } << "options = {}"
@@ -232,25 +253,27 @@ class Puppet::Interface::Action
 
     file    = __FILE__ + "+eval[wrapper]"
     line    = __LINE__ + 2 # <== points to the same line as 'def' in the wrapper.
-    wrapper = <<WRAPPER
-def #{@name}(#{decl.join(", ")})
-  #{optn}
-  args    = #{args}
-  action  = get_action(#{name.inspect})
-  args   << action.validate_and_clean(args.pop)
-  __invoke_decorations(:before, action, args, args.last)
-  rval = self.__send__(#{internal_name.inspect}, *args)
-  __invoke_decorations(:after, action, args, args.last)
-  return rval
-end
-WRAPPER
+    wrapper = <<~WRAPPER
+      def #{@name}(#{decl.join(", ")})
+        #{optn}
+        args    = #{args}
+        action  = get_action(#{name.inspect})
+        args   << action.validate_and_clean(args.pop)
+        __invoke_decorations(:before, action, args, args.last)
+        rval = self.__send__(#{internal_name.inspect}, *args)
+        __invoke_decorations(:after, action, args, args.last)
+        return rval
+      end
+    WRAPPER
 
+    # It should be possible to rewrite this code to use `define_method`
+    # instead of `class/instance_eval` since Ruby 1.8 is long dead.
     if @face.is_a?(Class)
-      @face.class_eval do eval wrapper, nil, file, line end
+      @face.class_eval do eval wrapper, nil, file, line end # rubocop:disable Security/Eval
       @face.send(:define_method, internal_name, &block)
       @when_invoked = @face.instance_method(name)
     else
-      @face.instance_eval do eval wrapper, nil, file, line end
+      @face.instance_eval do eval wrapper, nil, file, line end # rubocop:disable Security/Eval
       @face.meta_def(internal_name, &block)
       @when_invoked = @face.method(name).unbind
     end
@@ -258,10 +281,16 @@ WRAPPER
 
   def add_option(option)
     option.aliases.each do |name|
-      if conflict = get_option(name) then
-        raise ArgumentError, "Option #{option} conflicts with existing option #{conflict}"
-      elsif conflict = @face.get_option(name) then
-        raise ArgumentError, "Option #{option} conflicts with existing option #{conflict} on #{@face}"
+      conflict = get_option(name)
+      if conflict
+        raise ArgumentError, _("Option %{option} conflicts with existing option %{conflict}") %
+                             { option: option, conflict: conflict }
+      else
+        conflict = @face.get_option(name)
+        if conflict
+          raise ArgumentError, _("Option %{option} conflicts with existing option %{conflict} on %{face}") %
+                               { option: option, conflict: conflict, face: @face }
+        end
       end
     end
 
@@ -285,7 +314,11 @@ WRAPPER
   def add_display_global_options(*args)
     @display_global_options ||= []
     [args].flatten.each do |refopt|
-      raise ArgumentError, "Global option #{refopt} does not exist in Puppet.settings" unless Puppet.settings.include? refopt
+      unless Puppet.settings.include? refopt
+        # TRANSLATORS 'Puppet.settings' should not be translated
+        raise ArgumentError, _("Global option %{option} does not exist in Puppet.settings") % { option: refopt }
+      end
+
       @display_global_options << refopt
     end
     @display_global_options.uniq!
@@ -316,7 +349,8 @@ WRAPPER
     overlap = Hash.new do |h, k| h[k] = [] end
     unknown = []
     original.keys.each do |name|
-      if option = get_option(name) then
+      option = get_option(name)
+      if option
         canonical = option.name
         if result.has_key? canonical
           overlap[canonical] << name
@@ -331,18 +365,19 @@ WRAPPER
     end
 
     unless overlap.empty?
-      msg = overlap.map {|k, v| "(#{k}, #{v.sort.join(', ')})" }.join(", ")
-      raise ArgumentError, "Multiple aliases for the same option passed: #{msg}"
+      overlap_list = overlap.map { |k, v| "(#{k}, #{v.sort.join(', ')})" }.join(", ")
+      raise ArgumentError, _("Multiple aliases for the same option passed: %{overlap_list}") %
+                           { overlap_list: overlap_list }
     end
 
     unless unknown.empty?
-      msg = unknown.sort.join(", ")
-      raise ArgumentError, "Unknown options passed: #{msg}"
+      unknown_list = unknown.sort.join(", ")
+      raise ArgumentError, _("Unknown options passed: %{unknown_list}") % { unknown_list: unknown_list }
     end
 
     # Inject default arguments and check for missing mandating options.
     missing = []
-    options.map {|x| get_option(x) }.each do |option|
+    options.map { |x| get_option(x) }.each do |option|
       name = option.name
       next if result.has_key? name
 
@@ -354,8 +389,8 @@ WRAPPER
     end
 
     unless missing.empty?
-      msg = missing.sort.join(', ')
-      raise ArgumentError, "The following options are required: #{msg}"
+      missing_list = missing.sort.join(', ')
+      raise ArgumentError, _("The following options are required: %{missing_list}") % { missing_list: missing_list }
     end
 
     # All done.
@@ -366,6 +401,7 @@ WRAPPER
   # Support code for action decoration; see puppet/interface.rb for the gory
   # details of why this is hidden away behind private. --daniel 2011-04-15
   private
+
   # @return [void]
   # @api private
   def __add_method(name, proc)

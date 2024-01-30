@@ -1,20 +1,27 @@
+# frozen_string_literal: true
+
+module Puppet::Pops
+module Model
 # A provider of labels for model object, producing a human name for the model object.
 # As an example, if object is an ArithmeticExpression with operator +, `#a_an(o)` produces "a '+' Expression",
 # #the(o) produces "the + Expression", and #label produces "+ Expression".
 #
-class Puppet::Pops::Model::ModelLabelProvider < Puppet::Pops::LabelProvider
+class ModelLabelProvider
+  include LabelProvider
+
   def initialize
-    @@label_visitor ||= Puppet::Pops::Visitor.new(self,"label",0,0)
+    @@label_visitor ||= Visitor.new(self, "label", 0, 0)
   end
 
   # Produces a label for the given objects type/operator without article.
   # If a Class is given, its name is used as label
   #
   def label o
-    @@label_visitor.visit(o)
+    @@label_visitor.visit_this_0(self, o)
   end
 
-  def label_Factory o                     ; label(o.current)                    end
+  # rubocop:disable Layout/SpaceBeforeSemicolon
+  def label_Factory o                     ; label(o.model)                      end
   def label_Array o                       ; "Array"                             end
   def label_LiteralInteger o              ; "Literal Integer"                   end
   def label_LiteralFloat o                ; "Literal Float"                     end
@@ -45,16 +52,19 @@ class Puppet::Pops::Model::ModelLabelProvider < Puppet::Pops::LabelProvider
   def label_LiteralRegularExpression o    ; "Regular Expression"                end
   def label_Nop o                         ; "Nop Expression"                    end
   def label_NamedAccessExpression o       ; "'.' expression"                    end
-  def label_NilClass o                    ; "Nil Object"                        end
+  def label_NilClass o                    ; "Undef Value"                       end
   def label_NotExpression o               ; "'not' expression"                  end
   def label_VariableExpression o          ; "Variable"                          end
   def label_TextExpression o              ; "Expression in Interpolated String" end
   def label_UnaryMinusExpression o        ; "Unary Minus"                       end
   def label_UnfoldExpression o            ; "Unfold"                            end
   def label_BlockExpression o             ; "Block Expression"                  end
+  def label_ApplyBlockExpression o        ; "Apply Block Expression"            end
   def label_ConcatenatedString o          ; "Double Quoted String"              end
   def label_HeredocExpression o           ; "'@(#{o.syntax})' expression"       end
   def label_HostClassDefinition o         ; "Host Class Definition"             end
+  def label_FunctionDefinition o          ; "Function Definition"               end
+  def label_PlanDefinition o              ; "Plan Definition"                   end
   def label_NodeDefinition o              ; "Node Definition"                   end
   def label_ResourceTypeDefinition o      ; "'define' expression"               end
   def label_ResourceOverrideExpression o  ; "Resource Override"                 end
@@ -64,6 +74,7 @@ class Puppet::Pops::Model::ModelLabelProvider < Puppet::Pops::LabelProvider
   def label_UnlessExpression o            ; "'unless' Statement"                end
   def label_CallNamedFunctionExpression o ; "Function Call"                     end
   def label_CallMethodExpression o        ; "Method call"                       end
+  def label_ApplyExpression o             ; "'apply' expression"                end
   def label_CaseExpression o              ; "'case' statement"                  end
   def label_CaseOption o                  ; "Case Option"                       end
   def label_RenderStringExpression o      ; "Epp Text"                          end
@@ -75,8 +86,6 @@ class Puppet::Pops::Model::ModelLabelProvider < Puppet::Pops::LabelProvider
   def label_SelectorExpression o          ; "Selector Expression"               end
   def label_SelectorEntry o               ; "Selector Option"                   end
   def label_Integer o                     ; "Integer"                           end
-  def label_Fixnum o                      ; "Integer"                           end
-  def label_Bignum o                      ; "Integer"                           end
   def label_Float o                       ; "Float"                             end
   def label_String o                      ; "String"                            end
   def label_Regexp o                      ; "Regexp"                            end
@@ -84,23 +93,45 @@ class Puppet::Pops::Model::ModelLabelProvider < Puppet::Pops::LabelProvider
   def label_Hash o                        ; "Hash"                              end
   def label_QualifiedName o               ; "Name"                              end
   def label_QualifiedReference o          ; "Type-Name"                         end
-  def label_PAnyType o                    ; "#{Puppet::Pops::Types::TypeCalculator.string(o)}-Type" end
+  def label_PAnyType o                    ; "#{o}-Type" end
   def label_ReservedWord o                ; "Reserved Word '#{o.word}'"         end
+  def label_CatalogCollector o            ; "Catalog-Collector"                 end
+  def label_ExportedCollector o           ; "Exported-Collector"                end
+  def label_TypeAlias o                   ; "Type Alias"                        end
+  def label_TypeMapping o                 ; "Type Mapping"                      end
+  def label_TypeDefinition o              ; "Type Definition"                   end
+  def label_Binary o                      ; "Binary"                            end
+  def label_Sensitive o                   ; "Sensitive"                         end
+  def label_Timestamp o                   ; "Timestamp"                         end
+  def label_Timespan o                    ; "Timespan"                          end
+  def label_Version o                     ; "Semver"                            end
+  def label_VersionRange o                ; "SemverRange"                       end
+  # rubocop:enable Layout/SpaceBeforeSemicolon
 
   def label_PResourceType o
     if o.title
-      "#{Puppet::Pops::Types::TypeCalculator.string(o)} Resource-Reference"
+      "#{o} Resource-Reference"
     else
-      "#{Puppet::Pops::Types::TypeCalculator.string(o)}-Type"
+      "#{o}-Type"
     end
   end
 
+  def label_Resource o
+    'Resource Statement'
+  end
+
   def label_Class o
-    if o <= Puppet::Pops::Types::PAnyType
+    if o <= Types::PAnyType
       simple_name = o.name.split('::').last
       simple_name[1..-5] + "-Type"
     else
-      o.name
+      n = o.name
+      if n.nil?
+        n = o.respond_to?(:_pcore_type) ? o._pcore_type.name : 'Anonymous Class'
+      end
+      n
     end
   end
+end
+end
 end

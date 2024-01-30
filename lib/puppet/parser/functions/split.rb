@@ -1,10 +1,11 @@
+# frozen_string_literal: true
+
 module Puppet::Parser::Functions
-
   newfunction(
-  :split, :type => :rvalue,
-  :arity => 2,
+    :split, :type => :rvalue,
+            :arity => 2,
 
-    :doc => "\
+            :doc => "\
 Split a string variable into an array using the specified split regexp.
 
 *Example:*
@@ -12,7 +13,7 @@ Split a string variable into an array using the specified split regexp.
     $string     = 'v1.v2:v3.v4'
     $array_var1 = split($string, ':')
     $array_var2 = split($string, '[.]')
-    $array_var3 = split($string, '[.:]')
+    $array_var3 = split($string, Regexp['[.:]'])
 
 `$array_var1` now holds the result `['v1.v2', 'v3.v4']`,
 while `$array_var2` holds `['v1', 'v2:v3', 'v4']`, and
@@ -21,8 +22,8 @@ while `$array_var2` holds `['v1', 'v2:v3', 'v4']`, and
 Note that in the second example, we split on a literal string that contains
 a regexp meta-character (.), which must be escaped.  A simple
 way to do that for a single character is to enclose it in square
-brackets; a backslash will also escape a single character.") do |args|
-
-  return args[0].split(Regexp.compile(args[1]))
+brackets; a backslash will also escape a single character."
+  ) do |_args|
+    Error.is4x('split')
   end
 end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Various methods used to coerce values into a canonical form.
 #
 # @api private
@@ -18,9 +20,9 @@ module Puppet::Coercion
     end
 
     case value
-    when true, :true, 'true', :yes, 'yes'
+    when true, :true, 'true', :yes, 'yes' # rubocop:disable Lint/BooleanSymbol
       true
-    when false, :false, 'false', :no, 'no'
+    when false, :false, 'false', :no, 'no' # rubocop:disable Lint/BooleanSymbol
       false
     else
       fail('expected a boolean value')

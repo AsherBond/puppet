@@ -12,44 +12,97 @@ describe Puppet::Transaction::AdditionalResourceGenerator do
   include Matchers::Resource
 
   let(:prioritizer) { Puppet::Graph::SequentialPrioritizer.new }
+  let(:env) { Puppet::Node::Environment.create(:testing, []) }
+  let(:node) { Puppet::Node.new('test', :environment => env) }
+  let(:loaders) { Puppet::Pops::Loaders.new(env) }
+
+  before(:each) do
+    allow_any_instance_of(Puppet::Parser::Compiler).to receive(:loaders).and_return(loaders)
+    Puppet.push_context({:loaders => loaders, :current_environment => env})
+    Puppet::Type.newtype(:generator) do
+      include PuppetSpec::Compiler
+
+      newparam(:name) do
+        isnamevar
+      end
+
+      newparam(:kind) do
+        defaultto :eval_generate
+        newvalues(:eval_generate, :generate)
+      end
+
+      newparam(:code)
+
+      def eval_generate
+        eval_code
+      end
+
+      def generate
+        eval_code
+      end
+
+      def eval_code
+        if self[:code]
+          compile_to_ral(self[:code]).resources.select { |r| r.ref =~ /Notify/ }
+        else
+          []
+        end
+      end
+    end
+
+    Puppet::Type.newtype(:autorequire) do
+      newparam(:name) do
+        isnamevar
+      end
+
+      autorequire(:notify) do
+        self[:name]
+      end
+    end
+
+    Puppet::Type.newtype(:gen_auto) do
+      newparam(:name) do
+        isnamevar
+      end
+
+      newparam(:eval_after) do
+      end
+
+      def generate()
+        [ Puppet::Type.type(:autorequire).new(:name => self[:eval_after]) ]
+      end
+    end
+
+    Puppet::Type.newtype(:empty) do
+      newparam(:name) do
+        isnamevar
+      end
+    end
+
+    Puppet::Type.newtype(:gen_empty) do
+      newparam(:name) do
+        isnamevar
+      end
+
+      newparam(:eval_after) do
+      end
+
+      def generate()
+        [ Puppet::Type.type(:empty).new(:name => self[:eval_after], :require => "Notify[#{self[:eval_after]}]") ]
+      end
+    end
+  end
+
+  after(:each) do
+    Puppet::Type.rmtype(:gen_empty)
+    Puppet::Type.rmtype(:eval_after)
+    Puppet::Type.rmtype(:autorequire)
+    Puppet::Type.rmtype(:generator)
+    Puppet.pop_context()
+  end
 
   def find_vertex(graph, type, title)
     graph.vertices.find {|v| v.type == type and v.title == title}
-  end
-
-  Puppet::Type.newtype(:generator) do
-    include PuppetSpec::Compiler
-
-    newparam(:name) do
-      isnamevar
-    end
-
-    newparam(:kind) do
-      defaultto :eval_generate
-      newvalues(:eval_generate, :generate)
-    end
-
-    newparam(:code)
-
-    def respond_to?(method_name)
-      method_name == self[:kind] || super
-    end
-
-    def eval_generate
-      eval_code
-    end
-
-    def generate
-      eval_code
-    end
-
-    def eval_code
-      if self[:code]
-        compile_to_ral(self[:code]).resources.select { |r| r.ref =~ /Notify/ }
-      else
-        []
-      end
-    end
   end
 
   context "when applying eval_generate" do
@@ -72,7 +125,7 @@ describe Puppet::Transaction::AdditionalResourceGenerator do
         }
       MANIFEST
 
-      find_vertex(graph, :whit, "completed_thing").must be_a(Puppet::Type.type(:whit))
+      expect(find_vertex(graph, :whit, "completed_thing")).to be_a(Puppet::Type.type(:whit))
     end
 
     it "should replace dependencies on the resource with dependencies on the sentinel" do
@@ -123,6 +176,17 @@ describe Puppet::Transaction::AdditionalResourceGenerator do
 
       expect(graph).to enforce_order_with_edge(
         'Generator[thing]', 'Whit[completed_thing]')
+    end
+
+    it "should tag the sentinel with the tags of the resource" do
+      graph = relationships_after_eval_generating(<<-MANIFEST, 'Generator[thing]')
+        generator { thing:
+          code => 'notify { hello: }',
+          tag  => 'foo',
+        }
+      MANIFEST
+      whit = find_vertex(graph, :whit, "completed_thing")
+      expect(whit.tags).to be_superset(['thing', 'foo', 'generator'].to_set)
     end
 
     it "should contain the generated resources in the same container as the generator" do
@@ -240,6 +304,19 @@ describe Puppet::Transaction::AdditionalResourceGenerator do
 
       expect(order_resources_traversed_in(graph)).to(
         include_in_order("Notify[before]", "Generator[thing]", "Notify[hello]", "Notify[third]", "Notify[after]"))
+    end
+
+    it "sets resources_failed_to_generate to true if resource#eval_generate raises an exception" do
+      catalog = compile_to_ral(<<-MANIFEST)
+        generator { thing: }
+      MANIFEST
+
+      allow(catalog.resource("Generator[thing]")).to receive(:eval_generate).and_raise(RuntimeError)
+      relationship_graph = relationship_graph_for(catalog)
+      generator = Puppet::Transaction::AdditionalResourceGenerator.new(catalog, relationship_graph, prioritizer)
+      generator.eval_generate(catalog.resource("Generator[thing]"))
+
+      expect(generator.resources_failed_to_generate).to be_truthy
     end
 
     def relationships_after_eval_generating(manifest, resource_to_generate)
@@ -368,13 +445,59 @@ describe Puppet::Transaction::AdditionalResourceGenerator do
                          "Notify[after]"))
     end
 
+    it "runs autorequire on the generated resource" do
+      graph = relationships_after_generating(<<-MANIFEST, 'Gen_auto[thing]')
+        gen_auto { thing:
+          eval_after => hello,
+        }
+
+        notify { hello: }
+        notify { goodbye: }
+      MANIFEST
+
+      expect(order_resources_traversed_in(graph)).to(
+        include_in_order("Gen_auto[thing]",
+                         "Notify[hello]",
+                         "Autorequire[hello]",
+                         "Notify[goodbye]"))
+    end
+
+    it "evaluates metaparameters on the generated resource" do
+      graph = relationships_after_generating(<<-MANIFEST, 'Gen_empty[thing]')
+        gen_empty { thing:
+          eval_after => hello,
+        }
+
+        notify { hello: }
+        notify { goodbye: }
+      MANIFEST
+
+      expect(order_resources_traversed_in(graph)).to(
+        include_in_order("Gen_empty[thing]",
+                         "Notify[hello]",
+                         "Empty[hello]",
+                         "Notify[goodbye]"))
+    end
+
+    it "sets resources_failed_to_generate to true if resource#generate raises an exception" do
+      catalog = compile_to_ral(<<-MANIFEST)
+        user { 'foo':
+          ensure => present,
+        }
+      MANIFEST
+
+      allow(catalog.resource("User[foo]")).to receive(:generate).and_raise(RuntimeError)
+      relationship_graph = relationship_graph_for(catalog)
+      generator = Puppet::Transaction::AdditionalResourceGenerator.new(catalog, relationship_graph, prioritizer)
+      generator.generate_additional_resources(catalog.resource("User[foo]"))
+
+      expect(generator.resources_failed_to_generate).to be_truthy
+    end
+
     def relationships_after_generating(manifest, resource_to_generate)
       catalog = compile_to_ral(manifest)
-      relationship_graph = relationship_graph_for(catalog)
-
-      generate_resources_in(catalog, relationship_graph, resource_to_generate)
-
-      relationship_graph
+      generate_resources_in(catalog, nil, resource_to_generate)
+      relationship_graph_for(catalog)
     end
 
     def generate_resources_in(catalog, relationship_graph, resource_to_generate)
@@ -404,7 +527,7 @@ describe Puppet::Transaction::AdditionalResourceGenerator do
       @containers.all? { |resource_ref| resource_ref == @containers[0] }
     end
 
-    def failure_message_for_should
+    def failure_message
       "expected #{@expected.join(', ')} to all be contained in the same resource but the containment was #{@expected.zip(@containers).collect { |(res, container)| res + ' => ' + container }.join(', ')}"
     end
   end

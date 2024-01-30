@@ -1,5 +1,3 @@
-#! /usr/bin/env ruby
-
 require 'spec_helper'
 
 describe Puppet::Util::SUIDManager do
@@ -12,266 +10,244 @@ describe Puppet::Util::SUIDManager do
   end
 
   before :each do
-    Puppet::Util::SUIDManager.stubs(:convert_xid).returns(42)
-    pwent = stub('pwent', :name => 'fred', :uid => 42, :gid => 42)
-    Etc.stubs(:getpwuid).with(42).returns(pwent)
+    allow(Puppet::Util::SUIDManager).to receive(:convert_xid).and_return(42)
+    pwent = double('pwent', :name => 'fred', :uid => 42, :gid => 42)
+    allow(Etc).to receive(:getpwuid).with(42).and_return(pwent)
 
-    [:euid, :egid, :uid, :gid, :groups].each do |id|
-      Process.stubs("#{id}=").with {|value| xids[id] = value }
+    unless Puppet::Util::Platform.windows?
+      [:euid, :egid, :uid, :gid, :groups].each do |id|
+        allow(Process).to receive("#{id}=") {|value| xids[id] = value}
+      end
     end
   end
 
-  describe "#initgroups" do
+  describe "#initgroups", unless: Puppet::Util::Platform.windows? do
     it "should use the primary group of the user as the 'basegid'" do
-      Process.expects(:initgroups).with('fred', 42)
+      expect(Process).to receive(:initgroups).with('fred', 42)
       described_class.initgroups(42)
     end
   end
 
   describe "#uid" do
-    it "should allow setting euid/egid" do
+    it "should allow setting euid/egid", unless: Puppet::Util::Platform.windows? do
       Puppet::Util::SUIDManager.egid = user[:gid]
       Puppet::Util::SUIDManager.euid = user[:uid]
 
-      xids[:egid].should == user[:gid]
-      xids[:euid].should == user[:uid]
+      expect(xids[:egid]).to eq(user[:gid])
+      expect(xids[:euid]).to eq(user[:uid])
     end
   end
 
   describe "#asuser" do
-    it "should not get or set euid/egid when not root" do
-      Puppet.features.stubs(:microsoft_windows?).returns(false)
-      Process.stubs(:uid).returns(1)
+    it "should not get or set euid/egid when not root", unless: Puppet::Util::Platform.windows? do
+      allow(Process).to receive(:uid).and_return(1)
 
-      Process.stubs(:egid).returns(51)
-      Process.stubs(:euid).returns(50)
+      allow(Process).to receive(:egid).and_return(51)
+      allow(Process).to receive(:euid).and_return(50)
 
       Puppet::Util::SUIDManager.asuser(user[:uid], user[:gid]) {}
 
-      xids.should be_empty
+      expect(xids).to be_empty
     end
 
-    context "when root and not windows" do
+    context "when root and not Windows" do
       before :each do
-        Process.stubs(:uid).returns(0)
-        Puppet.features.stubs(:microsoft_windows?).returns(false)
+        allow(Process).to receive(:uid).and_return(0)
       end
 
-      it "should set euid/egid when root" do
-        Process.stubs(:uid).returns(0)
+      it "should set euid/egid", unless: Puppet::Util::Platform.windows? do
+        allow(Process).to receive(:egid).and_return(51, 51, user[:gid])
+        allow(Process).to receive(:euid).and_return(50, 50, user[:uid])
 
-        Process.stubs(:egid).returns(51)
-        Process.stubs(:euid).returns(50)
-
-        Puppet::Util::SUIDManager.stubs(:convert_xid).with(:gid, 51).returns(51)
-        Puppet::Util::SUIDManager.stubs(:convert_xid).with(:uid, 50).returns(50)
-        Puppet::Util::SUIDManager.stubs(:initgroups).returns([])
+        allow(Puppet::Util::SUIDManager).to receive(:convert_xid).with(:gid, 51).and_return(51)
+        allow(Puppet::Util::SUIDManager).to receive(:convert_xid).with(:uid, 50).and_return(50)
+        allow(Puppet::Util::SUIDManager).to receive(:initgroups).and_return([])
 
         yielded = false
         Puppet::Util::SUIDManager.asuser(user[:uid], user[:gid]) do
-          xids[:egid].should == user[:gid]
-          xids[:euid].should == user[:uid]
+          expect(xids[:egid]).to eq(user[:gid])
+          expect(xids[:euid]).to eq(user[:uid])
           yielded = true
         end
 
-        xids[:egid].should == 51
-        xids[:euid].should == 50
+        expect(xids[:egid]).to eq(51)
+        expect(xids[:euid]).to eq(50)
 
         # It's possible asuser could simply not yield, so the assertions in the
         # block wouldn't fail. So verify those actually got checked.
-        yielded.should be_true
+        expect(yielded).to be_truthy
       end
 
       it "should just yield if user and group are nil" do
-        yielded = false
-        Puppet::Util::SUIDManager.asuser(nil, nil) { yielded = true }
-        yielded.should be_true
-        xids.should == {}
+        expect { |b| Puppet::Util::SUIDManager.asuser(nil, nil, &b) }.to yield_control
+        expect(xids).to eq({})
       end
 
-      it "should just change group if only group is given" do
-        yielded = false
-        Puppet::Util::SUIDManager.asuser(nil, 42) { yielded = true }
-        yielded.should be_true
-        xids.should == { :egid => 42 }
+      it "should just change group if only group is given", unless: Puppet::Util::Platform.windows? do
+        expect { |b| Puppet::Util::SUIDManager.asuser(nil, 42, &b) }.to yield_control
+        expect(xids).to eq({ :egid => 42 })
       end
 
-      it "should change gid to the primary group of uid by default" do
-        Process.stubs(:initgroups)
+      it "should change gid to the primary group of uid by default", unless: Puppet::Util::Platform.windows? do
+        allow(Process).to receive(:initgroups)
 
-        yielded = false
-        Puppet::Util::SUIDManager.asuser(42) { yielded = true }
-        yielded.should be_true
-        xids.should == { :euid => 42, :egid => 42 }
+        expect { |b| Puppet::Util::SUIDManager.asuser(42, nil, &b) }.to yield_control
+        expect(xids).to eq({ :euid => 42, :egid => 42 })
       end
 
-      it "should change both uid and gid if given" do
+      it "should change both uid and gid if given", unless: Puppet::Util::Platform.windows? do
         # I don't like the sequence, but it is the only way to assert on the
         # internal behaviour in a reliable fashion, given we need multiple
         # sequenced calls to the same methods. --daniel 2012-02-05
-        horror = sequence('of user and group changes')
-        Puppet::Util::SUIDManager.expects(:change_group).with(43, false).in_sequence(horror)
-        Puppet::Util::SUIDManager.expects(:change_user).with(42, false).in_sequence(horror)
-        Puppet::Util::SUIDManager.expects(:change_group).
-          with(Puppet::Util::SUIDManager.egid, false).in_sequence(horror)
-        Puppet::Util::SUIDManager.expects(:change_user).
-          with(Puppet::Util::SUIDManager.euid, false).in_sequence(horror)
+        expect(Puppet::Util::SUIDManager).to receive(:change_group).with(43, false).ordered()
+        expect(Puppet::Util::SUIDManager).to receive(:change_user).with(42, false).ordered()
+        expect(Puppet::Util::SUIDManager).to receive(:change_group).with(Puppet::Util::SUIDManager.egid, false).ordered()
+        expect(Puppet::Util::SUIDManager).to receive(:change_user).with(Puppet::Util::SUIDManager.euid, false).ordered()
 
-        yielded = false
-        Puppet::Util::SUIDManager.asuser(42, 43) { yielded = true }
-        yielded.should be_true
+        expect { |b| Puppet::Util::SUIDManager.asuser(42, 43, &b) }.to yield_control
       end
     end
 
-    it "should not get or set euid/egid on Windows" do
-      Puppet.features.stubs(:microsoft_windows?).returns true
-
-      Puppet::Util::SUIDManager.asuser(user[:uid], user[:gid]) {}
-
-      xids.should be_empty
+    it "should just yield on Windows", if: Puppet::Util::Platform.windows? do
+      expect { |b| Puppet::Util::SUIDManager.asuser(1, 2, &b) }.to yield_control
     end
   end
 
   describe "#change_group" do
-    describe "when changing permanently" do
+    it "raises on Windows", if: Puppet::Util::Platform.windows? do
+      expect {
+        Puppet::Util::SUIDManager.change_group(42, true)
+      }.to raise_error(NotImplementedError, /change_privilege\(\) function is unimplemented/)
+    end
+
+    describe "when changing permanently", unless: Puppet::Util::Platform.windows? do
       it "should change_privilege" do
-        Process::GID.expects(:change_privilege).with do |gid|
+        expect(Process::GID).to receive(:change_privilege) do |gid|
           Process.gid = gid
           Process.egid = gid
         end
 
         Puppet::Util::SUIDManager.change_group(42, true)
 
-        xids[:egid].should == 42
-        xids[:gid].should == 42
+        expect(xids[:egid]).to eq(42)
+        expect(xids[:gid]).to eq(42)
+      end
+
+      it "should not change_privilege when gid already matches" do
+        expect(Process::GID).to receive(:change_privilege) do |gid|
+          Process.gid = 42
+          Process.egid = 42
+        end
+
+        Puppet::Util::SUIDManager.change_group(42, true)
+
+        expect(xids[:egid]).to eq(42)
+        expect(xids[:gid]).to eq(42)
       end
     end
 
-    describe "when changing temporarily" do
+    describe "when changing temporarily", unless: Puppet::Util::Platform.windows? do
       it "should change only egid" do
         Puppet::Util::SUIDManager.change_group(42, false)
 
-        xids[:egid].should == 42
-        xids[:gid].should == 0
+        expect(xids[:egid]).to eq(42)
+        expect(xids[:gid]).to eq(0)
       end
     end
   end
 
   describe "#change_user" do
-    describe "when changing permanently" do
+    it "raises on Windows", if: Puppet::Util::Platform.windows? do
+      expect {
+        Puppet::Util::SUIDManager.change_user(42, true)
+      }.to raise_error(NotImplementedError, /initgroups\(\) function is unimplemented/)
+    end
+
+    describe "when changing permanently", unless: Puppet::Util::Platform.windows? do
       it "should change_privilege" do
-        Process::UID.expects(:change_privilege).with do |uid|
+        expect(Process::UID).to receive(:change_privilege) do |uid|
           Process.uid = uid
           Process.euid = uid
         end
 
-        Puppet::Util::SUIDManager.expects(:initgroups).with(42)
+        expect(Puppet::Util::SUIDManager).to receive(:initgroups).with(42)
 
         Puppet::Util::SUIDManager.change_user(42, true)
 
-        xids[:euid].should == 42
-        xids[:uid].should == 42
+        expect(xids[:euid]).to eq(42)
+        expect(xids[:uid]).to eq(42)
+      end
+
+      it "should not change_privilege when uid already matches" do
+        expect(Process::UID).to receive(:change_privilege) do |uid|
+          Process.uid = 42
+          Process.euid = 42
+        end
+
+        expect(Puppet::Util::SUIDManager).to receive(:initgroups).with(42)
+
+        Puppet::Util::SUIDManager.change_user(42, true)
+
+        expect(xids[:euid]).to eq(42)
+        expect(xids[:uid]).to eq(42)
       end
     end
 
-    describe "when changing temporarily" do
+    describe "when changing temporarily", unless: Puppet::Util::Platform.windows? do
       it "should change only euid and groups" do
-        Puppet::Util::SUIDManager.stubs(:initgroups).returns([])
+        allow(Puppet::Util::SUIDManager).to receive(:initgroups).and_return([])
         Puppet::Util::SUIDManager.change_user(42, false)
 
-        xids[:euid].should == 42
-        xids[:uid].should == 0
+        expect(xids[:euid]).to eq(42)
+        expect(xids[:uid]).to eq(0)
       end
 
       it "should set euid before groups if changing to root" do
-        Process.stubs(:euid).returns 50
+        allow(Process).to receive(:euid).and_return(50)
 
-        when_not_root = sequence 'when_not_root'
-
-        Process.expects(:euid=).in_sequence(when_not_root)
-        Puppet::Util::SUIDManager.expects(:initgroups).in_sequence(when_not_root)
+        expect(Process).to receive(:euid=).ordered()
+        expect(Puppet::Util::SUIDManager).to receive(:initgroups).ordered()
 
         Puppet::Util::SUIDManager.change_user(0, false)
       end
 
       it "should set groups before euid if changing from root" do
-        Process.stubs(:euid).returns 0
+        allow(Process).to receive(:euid).and_return(0)
 
-        when_root = sequence 'when_root'
-
-        Puppet::Util::SUIDManager.expects(:initgroups).in_sequence(when_root)
-        Process.expects(:euid=).in_sequence(when_root)
+        expect(Puppet::Util::SUIDManager).to receive(:initgroups).ordered()
+        expect(Process).to receive(:euid=).ordered()
 
         Puppet::Util::SUIDManager.change_user(50, false)
       end
     end
   end
 
-  describe "when running commands" do
-    before :each do
-      # We want to make sure $CHILD_STATUS is set
-      Kernel.system '' if $CHILD_STATUS.nil?
-    end
-
-    describe "with #run_and_capture" do
-      it "should capture the output and return process status" do
-        Puppet::Util::Execution.
-          expects(:execute).with() do |*args|
-              args[0] == 'yay' &&
-              args[1][:combine] == true &&
-              args[1][:failonfail] == false &&
-              args[1][:uid] == user[:uid] &&
-              args[1][:gid] == user[:gid] &&
-              args[1][:override_locale] == true &&
-              args[1].has_key?(:custom_environment)
-        end .
-          returns('output')
-        output = Puppet::Util::SUIDManager.run_and_capture 'yay', user[:uid], user[:gid]
-
-        output.first.should == 'output'
-        output.last.should be_a(Process::Status)
-      end
-
-      it "should log a deprecation notice" do
-        Puppet::Util::Execution.stubs(:execute).returns("success")
-        Puppet.expects(:deprecation_warning).with('Puppet::Util::SUIDManager.run_and_capture is deprecated; please use Puppet::Util::Execution.execute instead.')
-
-        output = Puppet::Util::SUIDManager.run_and_capture 'yay', user[:uid], user[:gid]
-      end
-    end
-  end
-
   describe "#root?" do
-    describe "on POSIX systems" do
-      before :each do
-        Puppet.features.stubs(:posix?).returns(true)
-        Puppet.features.stubs(:microsoft_windows?).returns(false)
-      end
-
+    describe "on POSIX systems", unless: Puppet::Util::Platform.windows? do
       it "should be root if uid is 0" do
-        Process.stubs(:uid).returns(0)
+        allow(Process).to receive(:uid).and_return(0)
 
-        Puppet::Util::SUIDManager.should be_root
+        expect(Puppet::Util::SUIDManager).to be_root
       end
 
       it "should not be root if uid is not 0" do
-        Process.stubs(:uid).returns(1)
+        allow(Process).to receive(:uid).and_return(1)
 
-        Puppet::Util::SUIDManager.should_not be_root
+        expect(Puppet::Util::SUIDManager).not_to be_root
       end
     end
 
-    describe "on Microsoft Windows", :if => Puppet.features.microsoft_windows? do
+    describe "on Windows", :if => Puppet::Util::Platform.windows? do
       it "should be root if user is privileged" do
-        Puppet::Util::Windows::User.stubs(:admin?).returns true
+        allow(Puppet::Util::Windows::User).to receive(:admin?).and_return(true)
 
-        Puppet::Util::SUIDManager.should be_root
+        expect(Puppet::Util::SUIDManager).to be_root
       end
 
       it "should not be root if user is not privileged" do
-        Puppet::Util::Windows::User.stubs(:admin?).returns false
+        allow(Puppet::Util::Windows::User).to receive(:admin?).and_return(false)
 
-        Puppet::Util::SUIDManager.should_not be_root
+        expect(Puppet::Util::SUIDManager).not_to be_root
       end
     end
   end
@@ -282,16 +258,21 @@ describe 'Puppet::Util::SUIDManager#groups=' do
     Puppet::Util::SUIDManager
   end
 
+  it "raises on Windows", if: Puppet::Util::Platform.windows? do
+    expect {
+      subject.groups = []
+    }.to raise_error(NotImplementedError, /groups=\(\) function is unimplemented/)
+  end
 
-  it "(#3419) should rescue Errno::EINVAL on OS X" do
-    Process.expects(:groups=).raises(Errno::EINVAL, 'blew up')
-    subject.expects(:osx_maj_ver).returns('10.7').twice
+  it "(#3419) should rescue Errno::EINVAL on OS X", unless: Puppet::Util::Platform.windows? do
+    expect(Process).to receive(:groups=).and_raise(Errno::EINVAL, 'blew up')
+    expect(subject).to receive(:osx_maj_ver).and_return('10.7').twice
     subject.groups = ['list', 'of', 'groups']
   end
 
-  it "(#3419) should fail if an Errno::EINVAL is raised NOT on OS X" do
-    Process.expects(:groups=).raises(Errno::EINVAL, 'blew up')
-    subject.expects(:osx_maj_ver).returns(false)
+  it "(#3419) should fail if an Errno::EINVAL is raised NOT on OS X", unless: Puppet::Util::Platform.windows? do
+    expect(Process).to receive(:groups=).and_raise(Errno::EINVAL, 'blew up')
+    expect(subject).to receive(:osx_maj_ver).and_return(false)
     expect { subject.groups = ['list', 'of', 'groups'] }.to raise_error(Errno::EINVAL)
   end
 end

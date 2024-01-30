@@ -1,23 +1,34 @@
-# Call a lambda with the given arguments. Since the parameters of the lambda
-# are local to the lambda's scope, this can be used to create private sections
-# of logic in a class so that the variables are not visible outside of the
-# class.
+# frozen_string_literal: true
+
+# Calls a [lambda](https://puppet.com/docs/puppet/latest/lang_lambdas.html)
+# with the given arguments and returns the result.
 #
-# @example Using with
+# Since a lambda's scope is
+# [local](https://puppet.com/docs/puppet/latest/lang_lambdas.html#lambda-scope)
+# to the lambda, you can use the `with` function to create private blocks of code within a
+# class using variables whose values cannot be accessed outside of the lambda.
 #
-#     # notices the array [1, 2, 'foo']
-#     with(1, 2, 'foo') |$x, $y, $z| { notice [$x, $y, $z] }
+# @example Using `with`
 #
-# @since 3.7.0
+# ```puppet
+# # Concatenate three strings into a single string formatted as a list.
+# $fruit = with("apples", "oranges", "bananas") |$x, $y, $z| {
+#   "${x}, ${y}, and ${z}"
+# }
+# $check_var = $x
+# # $fruit contains "apples, oranges, and bananas"
+# # $check_var is undefined, as the value of $x is local to the lambda.
+# ```
+#
+# @since 4.0.0
 #
 Puppet::Functions.create_function(:with) do
   dispatch :with do
-    param 'Any', 'arg'
-    arg_count(0, :default)
-    required_block_param
+    repeated_param 'Any', :arg
+    block_param
   end
 
   def with(*args)
-    args[-1].call({}, *args[0..-2])
+    yield(*args)
   end
 end

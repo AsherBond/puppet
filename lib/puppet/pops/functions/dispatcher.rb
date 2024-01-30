@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Evaluate the dispatches defined as {Puppet::Pops::Functions::Dispatch}
 # instances to call the appropriate method on the
 # {Puppet::Pops::Functions::Function} instance.
@@ -7,8 +9,8 @@ class Puppet::Pops::Functions::Dispatcher
   attr_reader :dispatchers
 
   # @api private
-  def initialize()
-    @dispatchers = [ ]
+  def initialize
+    @dispatchers = []
   end
 
   # Answers if dispatching has been defined
@@ -19,6 +21,10 @@ class Puppet::Pops::Functions::Dispatcher
     @dispatchers.empty?
   end
 
+  def find_matching_dispatcher(args, &block)
+    @dispatchers.find { |d| d.type.callable_with?(args, block) }
+  end
+
   # Dispatches the call to the first found signature (entry with matching type).
   #
   # @param instance [Puppet::Functions::Function] - the function to call
@@ -27,36 +33,36 @@ class Puppet::Pops::Functions::Dispatcher
   # @return [Object] - what the called function produced
   #
   # @api private
-  def dispatch(instance, calling_scope, args)
-    tc = Puppet::Pops::Types::TypeCalculator
-    actual = tc.infer_set(args)
-    found = @dispatchers.find { |d| tc.callable?(d.type, actual) }
-    if found
-      found.invoke(instance, calling_scope, args)
-    else
-      raise ArgumentError, "function '#{instance.class.name}' called with mis-matched arguments\n#{Puppet::Pops::Evaluator::CallableMismatchDescriber.diff_string(instance.class.name, actual, @dispatchers)}"
+  def dispatch(instance, calling_scope, args, &block)
+    dispatcher = find_matching_dispatcher(args, &block)
+    unless dispatcher
+      args_type = Puppet::Pops::Types::TypeCalculator.singleton.infer_set(block_given? ? args + [block] : args)
+      raise ArgumentError, Puppet::Pops::Types::TypeMismatchDescriber.describe_signatures(instance.class.name, signatures, args_type)
+    end
+    if dispatcher.argument_mismatch_handler?
+      msg = dispatcher.invoke(instance, calling_scope, args)
+      raise ArgumentError, "'#{instance.class.name}' #{msg}"
+    end
+
+    catch(:next) do
+      dispatcher.invoke(instance, calling_scope, args, &block)
     end
   end
 
-  # Adds a regular dispatch for one method name
-  #
-  # @param type [Puppet::Pops::Types::PArrayType, Puppet::Pops::Types::PTupleType] - type describing signature
-  # @param method_name [String] - the name of the method that will be called when type matches given arguments
-  # @param names [Array<String>] - array with names matching the number of parameters specified by type (or empty array)
-  #
+  # Adds a dispatch directly to the set of dispatchers.
   # @api private
-  def add_dispatch(type, method_name, param_names, block_name, injections, weaving, last_captures)
-    @dispatchers << Puppet::Pops::Functions::Dispatch.new(type, method_name, param_names, block_name, injections, weaving, last_captures)
+  def add(a_dispatch)
+    @dispatchers << a_dispatch
   end
 
   # Produces a CallableType for a single signature, and a Variant[<callables>] otherwise
   #
   # @api private
-  def to_type()
+  def to_type
     # make a copy to make sure it can be contained by someone else (even if it is not contained here, it
     # should be treated as immutable).
     #
-    callables = dispatchers.map { | dispatch | dispatch.type.copy }
+    callables = dispatchers.map { |dispatch| dispatch.type }
 
     # multiple signatures, produce a Variant type of Callable1-n (must copy them)
     # single signature, produce single Callable
@@ -65,6 +71,6 @@ class Puppet::Pops::Functions::Dispatcher
 
   # @api private
   def signatures
-    @dispatchers
+    @dispatchers.reject { |dispatcher| dispatcher.argument_mismatch_handler? }
   end
 end

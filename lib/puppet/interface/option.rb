@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # This represents an option on an action or face (to be globally applied
 # to its actions). Options should be constructed by calling
 # {Puppet::Interface::OptionManager#option}, which is available on
@@ -18,8 +20,9 @@ class Puppet::Interface::Option
     declaration.each do |item|
       if item.is_a? String and item.to_s =~ /^-/ then
         unless item =~ /^-[a-z]\b/ or item =~ /^--[^-]/ then
-          raise ArgumentError, "#{item.inspect}: long options need two dashes (--)"
+          raise ArgumentError, _("%{option}: long options need two dashes (--)") % { option: item.inspect }
         end
+
         @optparse << item
 
         # Duplicate checking...
@@ -33,20 +36,23 @@ class Puppet::Interface::Option
         # jeffweiss 17 april 2012
         name = optparse_to_optionname(item)
         if Puppet.settings.include? name then
-          raise ArgumentError, "#{item.inspect}: already defined in puppet"
+          raise ArgumentError, _("%{option}: already defined in puppet") % { option: item.inspect }
         end
-        if dup = dups[name] then
-          raise ArgumentError, "#{item.inspect}: duplicates existing alias #{dup.inspect} in #{@parent}"
+
+        dup = dups[name]
+        if dup
+          raise ArgumentError, _("%{option}: duplicates existing alias %{duplicate} in %{parent}") %
+                               { option: item.inspect, duplicate: dup.inspect, parent: @parent }
         else
           dups[name] = item
         end
       else
-        raise ArgumentError, "#{item.inspect} is not valid for an option argument"
+        raise ArgumentError, _("%{option} is not valid for an option argument") % { option: item.inspect }
       end
     end
 
     if @optparse.empty? then
-      raise ArgumentError, "No option declarations found while building"
+      raise ArgumentError, _("No option declarations found while building")
     end
 
     # Now, infer the name from the options; we prefer the first long option as
@@ -59,15 +65,17 @@ class Puppet::Interface::Option
     # relax this rule later if we find a valid use case for it. --daniel 2011-03-30
     @argument = @optparse.any? { |o| o =~ /[ =]/ }
     if @argument and not @optparse.all? { |o| o =~ /[ =]/ } then
-      raise ArgumentError, "Option #{@name} is inconsistent about taking an argument"
+      raise ArgumentError, _("Option %{name} is inconsistent about taking an argument") % { name: @name }
     end
 
     # Is our argument optional?  The rules about consistency apply here, also,
     # just like they do to taking arguments at all. --daniel 2011-03-30
-    @optional_argument = @optparse.any? { |o| o=~/[ =]\[/ }
-    @optional_argument and raise ArgumentError, "Options with optional arguments are not supported"
-    if @optional_argument and not @optparse.all? { |o| o=~/[ =]\[/ } then
-      raise ArgumentError, "Option #{@name} is inconsistent about the argument being optional"
+    @optional_argument = @optparse.any? { |o| o =~ /[ =]\[/ }
+    if @optional_argument
+      raise ArgumentError, _("Options with optional arguments are not supported")
+    end
+    if @optional_argument and not @optparse.all? { |o| o =~ /[ =]\[/ } then
+      raise ArgumentError, _("Option %{name} is inconsistent about the argument being optional") % { name: @name }
     end
   end
 
@@ -81,26 +89,32 @@ class Puppet::Interface::Option
 
   # @api private
   def optparse_to_optionname(declaration)
-    unless found = declaration.match(/^-+(?:\[no-\])?([^ =]+)/) then
-      raise ArgumentError, "Can't find a name in the declaration #{declaration.inspect}"
+    found = declaration.match(/^-+(?:\[no-\])?([^ =]+)/)
+    unless found
+      raise ArgumentError, _("Can't find a name in the declaration %{declaration}") % { declaration: declaration.inspect }
     end
+
     found.captures.first
   end
 
   # @api private
   def optparse_to_name(declaration)
     name = optparse_to_optionname(declaration).tr('-', '_')
-    raise "#{name.inspect} is an invalid option name" unless name.to_s =~ /^[a-z]\w*$/
+    unless name.to_s =~ /^[a-z]\w*$/
+      raise _("%{name} is an invalid option name") % { name: name.inspect }
+    end
+
     name.to_sym
   end
-
 
   def takes_argument?
     !!@argument
   end
+
   def optional_argument?
     !!@optional_argument
   end
+
   def required?
     !!@required
   end
@@ -110,8 +124,15 @@ class Puppet::Interface::Option
   end
 
   def default=(proc)
-    required and raise ArgumentError, "#{self} can't be optional and have a default value"
-    proc.is_a? Proc or raise ArgumentError, "default value for #{self} is a #{proc.class.name.inspect}, not a proc"
+    if required
+      raise ArgumentError, _("%{name} can't be optional and have a default value") % { name: self }
+    end
+
+    unless proc.is_a? Proc
+      # TRANSLATORS 'proc' is a Ruby block of code
+      raise ArgumentError, _("default value for %{name} is a %{class_name}, not a proc") %
+                           { name: self, class_name: proc.class.name.inspect }
+    end
     @default = proc
   end
 
@@ -119,23 +140,36 @@ class Puppet::Interface::Option
     @default and @default.call
   end
 
-  attr_reader   :parent, :name, :aliases, :optparse
-  attr_accessor :required
+  attr_reader :parent, :name, :aliases, :optparse, :required
+
   def required=(value)
-    has_default? and raise ArgumentError, "#{self} can't be optional and have a default value"
+    if has_default?
+      raise ArgumentError, _("%{name} can't be optional and have a default value") % { name: self }
+    end
+
     @required = value
   end
 
-  attr_accessor :before_action
+  attr_reader :before_action
+
   def before_action=(proc)
-    proc.is_a? Proc or raise ArgumentError, "before action hook for #{self} is a #{proc.class.name.inspect}, not a proc"
+    unless proc.is_a? Proc
+      # TRANSLATORS 'proc' is a Ruby block of code
+      raise ArgumentError, _("before action hook for %{name} is a %{class_name}, not a proc") %
+                           { name: self, class_name: proc.class.name.inspect }
+    end
     @before_action =
       @parent.__send__(:__add_method, __decoration_name(:before), proc)
   end
 
-  attr_accessor :after_action
+  attr_reader :after_action
+
   def after_action=(proc)
-    proc.is_a? Proc or raise ArgumentError, "after action hook for #{self} is a #{proc.class.name.inspect}, not a proc"
+    unless proc.is_a? Proc
+      # TRANSLATORS 'proc' is a Ruby block of code
+      raise ArgumentError, _("after action hook for %{name} is a %{class_name}, not a proc") %
+                           { name: self, class_name: proc.class.name.inspect }
+    end
     @after_action =
       @parent.__send__(:__add_method, __decoration_name(:after), proc)
   end

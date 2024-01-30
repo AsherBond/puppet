@@ -1,28 +1,53 @@
-require 'puppet/util/windows'
-require 'win32/process'
-require 'ffi'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/windows/monkey_patches/process'
+require_relative '../../../puppet/ffi/windows'
 
 module Puppet::Util::Windows::Process
+  extend Puppet::FFI::Windows::Functions
+  include Puppet::FFI::Windows::Structs
   extend Puppet::Util::Windows::String
-  extend FFI::Library
 
   WAIT_TIMEOUT = 0x102
+  WAIT_INTERVAL = 200
+  # https://docs.microsoft.com/en-us/windows/desktop/ProcThread/process-creation-flags
+  CREATE_NO_WINDOW = 0x08000000
+  # https://docs.microsoft.com/en-us/windows/desktop/ProcThread/process-security-and-access-rights
+  PROCESS_QUERY_INFORMATION = 0x0400
+  # https://docs.microsoft.com/en-us/windows/desktop/FileIO/naming-a-file#maximum-path-length-limitation
+  MAX_PATH_LENGTH = 32767
 
   def execute(command, arguments, stdin, stdout, stderr)
-    Process.create( :command_line => command, :startup_info => {:stdin => stdin, :stdout => stdout, :stderr => stderr}, :close_handles => false )
+    create_args = {
+      :command_line => command,
+      :startup_info => {
+        :stdin => stdin,
+        :stdout => stdout,
+        :stderr => stderr
+      },
+      :close_handles => false,
+    }
+    if arguments[:suppress_window]
+      create_args[:creation_flags] = CREATE_NO_WINDOW
+    end
+    if arguments[:cwd]
+      create_args[:cwd] = arguments[:cwd]
+    end
+    Process.create(create_args)
   end
   module_function :execute
 
   def wait_process(handle)
-    while WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
-      sleep(1)
+    while WaitForSingleObject(handle, WAIT_INTERVAL) == WAIT_TIMEOUT
+      sleep(0)
     end
 
     exit_status = -1
     FFI::MemoryPointer.new(:dword, 1) do |exit_status_ptr|
       if GetExitCodeProcess(handle, exit_status_ptr) == FFI::WIN32_FALSE
-        raise Puppet::Util::Windows::Error.new("Failed to get child process exit code")
+        raise Puppet::Util::Windows::Error.new(_("Failed to get child process exit code"))
       end
+
       exit_status = exit_status_ptr.read_dword
 
       # $CHILD_STATUS is not set when calling win32/process Process.create
@@ -42,6 +67,27 @@ module Puppet::Util::Windows::Process
   end
   module_function :get_current_process
 
+  def open_process(desired_access, inherit_handle, process_id, &block)
+    phandle = nil
+    inherit = inherit_handle ? FFI::WIN32_TRUE : FFI::WIN32_FALSE
+    begin
+      phandle = OpenProcess(desired_access, inherit, process_id)
+      if phandle == FFI::Pointer::NULL_HANDLE
+        raise Puppet::Util::Windows::Error.new(
+          "OpenProcess(#{desired_access.to_s(8)}, #{inherit}, #{process_id})"
+        )
+      end
+
+      yield phandle
+    ensure
+      FFI::WIN32.CloseHandle(phandle) if phandle
+    end
+
+    # phandle has had CloseHandle called against it, so nothing to return
+    nil
+  end
+  module_function :open_process
+
   def open_process_token(handle, desired_access, &block)
     token_handle = nil
     begin
@@ -49,7 +95,8 @@ module Puppet::Util::Windows::Process
         result = OpenProcessToken(handle, desired_access, token_handle_ptr)
         if result == FFI::WIN32_FALSE
           raise Puppet::Util::Windows::Error.new(
-            "OpenProcessToken(#{handle}, #{desired_access.to_s(8)}, #{token_handle_ptr})")
+            "OpenProcessToken(#{handle}, #{desired_access.to_s(8)}, #{token_handle_ptr})"
+          )
         end
 
         yield token_handle = token_handle_ptr.read_handle
@@ -77,17 +124,46 @@ module Puppet::Util::Windows::Process
   end
   module_function :with_process_token
 
+  def get_process_image_name_by_pid(pid)
+    image_name = ''.dup
+
+    Puppet::Util::Windows::Security.with_privilege(Puppet::Util::Windows::Security::SE_DEBUG_NAME) do
+      open_process(PROCESS_QUERY_INFORMATION, false, pid) do |phandle|
+        FFI::MemoryPointer.new(:dword, 1) do |exe_name_length_ptr|
+          # UTF is 2 bytes/char:
+          max_chars = MAX_PATH_LENGTH + 1
+          exe_name_length_ptr.write_dword(max_chars)
+          FFI::MemoryPointer.new(:wchar, max_chars) do |exe_name_ptr|
+            use_win32_path_format = 0
+            result = QueryFullProcessImageNameW(phandle, use_win32_path_format, exe_name_ptr, exe_name_length_ptr)
+            if result == FFI::WIN32_FALSE
+              raise Puppet::Util::Windows::Error.new(
+                "QueryFullProcessImageNameW(phandle, #{use_win32_path_format}, " +
+                "exe_name_ptr, #{max_chars}"
+              )
+            end
+            image_name = exe_name_ptr.read_wide_string(exe_name_length_ptr.read_dword)
+          end
+        end
+      end
+    end
+
+    image_name
+  end
+  module_function :get_process_image_name_by_pid
+
   def lookup_privilege_value(name, system_name = '', &block)
     FFI::MemoryPointer.new(LUID.size) do |luid_ptr|
       result = LookupPrivilegeValueW(
         wide_string(system_name),
         wide_string(name.to_s),
         luid_ptr
-        )
+      )
 
       if result == FFI::WIN32_FALSE
         raise Puppet::Util::Windows::Error.new(
-          "LookupPrivilegeValue(#{system_name}, #{name}, #{luid_ptr})")
+          "LookupPrivilegeValue(#{system_name}, #{name}, #{luid_ptr})"
+        )
       end
 
       yield LUID.new(luid_ptr)
@@ -106,18 +182,20 @@ module Puppet::Util::Windows::Process
 
       if return_length <= 0
         raise Puppet::Util::Windows::Error.new(
-          "GetTokenInformation(#{token_handle}, #{token_information}, nil, 0, #{return_length_ptr})")
+          "GetTokenInformation(#{token_handle}, #{token_information}, nil, 0, #{return_length_ptr})"
+        )
       end
 
       # re-call API with properly sized buffer for all results
       FFI::MemoryPointer.new(return_length) do |token_information_buf|
         result = GetTokenInformation(token_handle, token_information,
-          token_information_buf, return_length, return_length_ptr)
+                                     token_information_buf, return_length, return_length_ptr)
 
         if result == FFI::WIN32_FALSE
           raise Puppet::Util::Windows::Error.new(
             "GetTokenInformation(#{token_handle}, #{token_information}, #{token_information_buf}, " +
-              "#{return_length}, #{return_length_ptr})")
+              "#{return_length}, #{return_length_ptr})"
+          )
         end
 
         yield token_information_buf
@@ -138,7 +216,7 @@ module Puppet::Util::Windows::Process
 
     # extract each instance of LUID_AND_ATTRIBUTES
     0.upto(privileges[:count] - 1) do |i|
-      privileges[:privileges] <<  LUID_AND_ATTRIBUTES.new(privilege_ptr[i])
+      privileges[:privileges] << LUID_AND_ATTRIBUTES.new(privilege_ptr[i])
     end
 
     privileges
@@ -204,151 +282,91 @@ module Puppet::Util::Windows::Process
   end
   module_function :elevated_security?
 
-  ABOVE_NORMAL_PRIORITY_CLASS = 0x0008000
-  BELOW_NORMAL_PRIORITY_CLASS = 0x0004000
-  HIGH_PRIORITY_CLASS         = 0x0000080
-  IDLE_PRIORITY_CLASS         = 0x0000040
-  NORMAL_PRIORITY_CLASS       = 0x0000020
-  REALTIME_PRIORITY_CLASS     = 0x0000010
+  def windows_major_version
+    ver = 0
 
-  ffi_convention :stdcall
+    FFI::MemoryPointer.new(OSVERSIONINFO.size) do |os_version_ptr|
+      os_version = OSVERSIONINFO.new(os_version_ptr)
+      os_version[:dwOSVersionInfoSize] = OSVERSIONINFO.size
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/ms687032(v=vs.85).aspx
-  # DWORD WINAPI WaitForSingleObject(
-  #   _In_  HANDLE hHandle,
-  #   _In_  DWORD dwMilliseconds
-  # );
-  ffi_lib :kernel32
-  attach_function_private :WaitForSingleObject,
-    [:handle, :dword], :dword
+      result = GetVersionExW(os_version_ptr)
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/ms683189(v=vs.85).aspx
-  # BOOL WINAPI GetExitCodeProcess(
-  #   _In_   HANDLE hProcess,
-  #   _Out_  LPDWORD lpExitCode
-  # );
-  ffi_lib :kernel32
-  attach_function_private :GetExitCodeProcess,
-    [:handle, :lpdword], :win32_bool
+      if result == FFI::WIN32_FALSE
+        raise Puppet::Util::Windows::Error.new(_("GetVersionEx failed"))
+      end
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/ms683179(v=vs.85).aspx
-  # HANDLE WINAPI GetCurrentProcess(void);
-  ffi_lib :kernel32
-  attach_function_private :GetCurrentProcess, [], :handle
+      ver = os_version[:dwMajorVersion]
+    end
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa379295(v=vs.85).aspx
-  # BOOL WINAPI OpenProcessToken(
-  #   _In_   HANDLE ProcessHandle,
-  #   _In_   DWORD DesiredAccess,
-  #   _Out_  PHANDLE TokenHandle
-  # );
-  ffi_lib :advapi32
-  attach_function_private :OpenProcessToken,
-    [:handle, :dword, :phandle], :win32_bool
-
-
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa379261(v=vs.85).aspx
-  # typedef struct _LUID {
-  #   DWORD LowPart;
-  #   LONG  HighPart;
-  # } LUID, *PLUID;
-  class LUID < FFI::Struct
-    layout :LowPart, :dword,
-           :HighPart, :win32_long
+    ver
   end
+  module_function :windows_major_version
 
-  # http://msdn.microsoft.com/en-us/library/Windows/desktop/aa379180(v=vs.85).aspx
-  # BOOL WINAPI LookupPrivilegeValue(
-  #   _In_opt_  LPCTSTR lpSystemName,
-  #   _In_      LPCTSTR lpName,
-  #   _Out_     PLUID lpLuid
-  # );
-  ffi_lib :advapi32
-  attach_function_private :LookupPrivilegeValueW,
-    [:lpcwstr, :lpcwstr, :pointer], :win32_bool
+  # Returns a hash of the current environment variables encoded as UTF-8
+  # The memory block returned from GetEnvironmentStringsW is double-null terminated and the vars are paired as below;
+  # Var1=Value1\0
+  # Var2=Value2\0
+  # VarX=ValueX\0\0
+  # Note - Some env variable names start with '=' and are excluded from the return value
+  # Note - The env_ptr MUST be freed using the FreeEnvironmentStringsW function
+  # Note - There is no technical limitation to the size of the environment block returned.
+  #   However a practical limit of 64K is used as no single environment variable can exceed 32KB
+  def get_environment_strings
+    env_ptr = GetEnvironmentStringsW()
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa379626(v=vs.85).aspx
-  TOKEN_INFORMATION_CLASS = enum(
-      :TokenUser, 1,
-      :TokenGroups,
-      :TokenPrivileges,
-      :TokenOwner,
-      :TokenPrimaryGroup,
-      :TokenDefaultDacl,
-      :TokenSource,
-      :TokenType,
-      :TokenImpersonationLevel,
-      :TokenStatistics,
-      :TokenRestrictedSids,
-      :TokenSessionId,
-      :TokenGroupsAndPrivileges,
-      :TokenSessionReference,
-      :TokenSandBoxInert,
-      :TokenAuditPolicy,
-      :TokenOrigin,
-      :TokenElevationType,
-      :TokenLinkedToken,
-      :TokenElevation,
-      :TokenHasRestrictions,
-      :TokenAccessInformation,
-      :TokenVirtualizationAllowed,
-      :TokenVirtualizationEnabled,
-      :TokenIntegrityLevel,
-      :TokenUIAccess,
-      :TokenMandatoryPolicy,
-      :TokenLogonSid,
-      :TokenIsAppContainer,
-      :TokenCapabilities,
-      :TokenAppContainerSid,
-      :TokenAppContainerNumber,
-      :TokenUserClaimAttributes,
-      :TokenDeviceClaimAttributes,
-      :TokenRestrictedUserClaimAttributes,
-      :TokenRestrictedDeviceClaimAttributes,
-      :TokenDeviceGroups,
-      :TokenRestrictedDeviceGroups,
-      :TokenSecurityAttributes,
-      :TokenIsRestricted,
-      :MaxTokenInfoClass
-  )
-
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa379263(v=vs.85).aspx
-  # typedef struct _LUID_AND_ATTRIBUTES {
-  #   LUID  Luid;
-  #   DWORD Attributes;
-  # } LUID_AND_ATTRIBUTES, *PLUID_AND_ATTRIBUTES;
-  class LUID_AND_ATTRIBUTES < FFI::Struct
-    layout :Luid, LUID,
-           :Attributes, :dword
+    # pass :invalid => :replace to the Ruby String#encode to use replacement characters
+    pairs = env_ptr.read_arbitrary_wide_string_up_to(65534, :double_null, { :invalid => :replace })
+                   .split(?\x00)
+                   .reject { |env_str| env_str.nil? || env_str.empty? || env_str[0] == '=' }
+                   .reject do |env_str|
+                     # reject any string containing the Unicode replacement character
+                     if env_str.include?("\uFFFD")
+                       Puppet.warning(_("Discarding environment variable %{string} which contains invalid bytes") % { string: env_str })
+                       true
+                     end
+                   end
+                   .map { |env_pair| env_pair.split('=', 2) }
+    Hash[pairs]
+  ensure
+    if env_ptr && !env_ptr.null?
+      if FreeEnvironmentStringsW(env_ptr) == FFI::WIN32_FALSE
+        Puppet.debug "FreeEnvironmentStringsW memory leak"
+      end
+    end
   end
+  module_function :get_environment_strings
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa379630(v=vs.85).aspx
-  # typedef struct _TOKEN_PRIVILEGES {
-  #   DWORD               PrivilegeCount;
-  #   LUID_AND_ATTRIBUTES Privileges[ANYSIZE_ARRAY];
-  # } TOKEN_PRIVILEGES, *PTOKEN_PRIVILEGES;
-  class TOKEN_PRIVILEGES < FFI::Struct
-    layout :PrivilegeCount, :dword,
-           :Privileges, [LUID_AND_ATTRIBUTES, 1]    # placeholder for offset
+  def set_environment_variable(name, val)
+    raise Puppet::Util::Windows::Error(_('environment variable name must not be nil or empty')) if !name || name.empty?
+
+    FFI::MemoryPointer.from_string_to_wide_string(name) do |name_ptr|
+      if (val.nil?)
+        if SetEnvironmentVariableW(name_ptr, FFI::MemoryPointer::NULL) == FFI::WIN32_FALSE
+          raise Puppet::Util::Windows::Error.new(_("Failed to remove environment variable: %{name}") % { name: name })
+        end
+      else
+        FFI::MemoryPointer.from_string_to_wide_string(val) do |val_ptr|
+          if SetEnvironmentVariableW(name_ptr, val_ptr) == FFI::WIN32_FALSE
+            raise Puppet::Util::Windows::Error.new(_("Failed to set environment variable: %{name}") % { name: name })
+          end
+        end
+      end
+    end
   end
+  module_function :set_environment_variable
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/bb530717(v=vs.85).aspx
-  # typedef struct _TOKEN_ELEVATION {
-  #   DWORD TokenIsElevated;
-  # } TOKEN_ELEVATION, *PTOKEN_ELEVATION;
-  class TOKEN_ELEVATION < FFI::Struct
-    layout :TokenIsElevated, :dword
+  def get_system_default_ui_language
+    GetSystemDefaultUILanguage()
   end
+  module_function :get_system_default_ui_language
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa446671(v=vs.85).aspx
-  # BOOL WINAPI GetTokenInformation(
-  #   _In_       HANDLE TokenHandle,
-  #   _In_       TOKEN_INFORMATION_CLASS TokenInformationClass,
-  #   _Out_opt_  LPVOID TokenInformation,
-  #   _In_       DWORD TokenInformationLength,
-  #   _Out_      PDWORD ReturnLength
-  # );
-  ffi_lib :advapi32
-  attach_function_private :GetTokenInformation,
-    [:handle, TOKEN_INFORMATION_CLASS, :lpvoid, :dword, :pdword ], :win32_bool
+  # Returns whether or not the OS has the ability to set elevated
+  # token information.
+  #
+  # Returns true on Windows Vista or later, otherwise false
+  #
+  def supports_elevated_security?
+    windows_major_version >= 6
+  end
+  module_function :supports_elevated_security?
 end

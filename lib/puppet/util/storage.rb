@@ -1,7 +1,8 @@
+# frozen_string_literal: true
+
 require 'yaml'
-require 'sync'
 require 'singleton'
-require 'puppet/util/yaml'
+require_relative '../../puppet/util/yaml'
 
 # a class for storing state
 class Puppet::Util::Storage
@@ -50,25 +51,25 @@ class Puppet::Util::Storage
       return
     end
     unless File.file?(filename)
-      Puppet.warning("Checksumfile #{filename} is not a file, ignoring")
+      Puppet.warning(_("Checksumfile %{filename} is not a file, ignoring") % { filename: filename })
       return
     end
-    Puppet::Util.benchmark(:debug, "Loaded state") do
+    Puppet::Util.benchmark(:debug, "Loaded state in %{seconds} seconds") do
       begin
-        @@state = Puppet::Util::Yaml.load_file(filename)
+        @@state = Puppet::Util::Yaml.safe_load_file(filename, [Symbol, Time])
       rescue Puppet::Util::Yaml::YamlLoadError => detail
-        Puppet.err "Checksumfile #{filename} is corrupt (#{detail}); replacing"
+        Puppet.err _("Checksumfile %{filename} is corrupt (%{detail}); replacing") % { filename: filename, detail: detail }
 
         begin
           File.rename(filename, filename + ".bad")
         rescue
-          raise Puppet::Error, "Could not rename corrupt #{filename}; remove manually", detail.backtrace
+          raise Puppet::Error, _("Could not rename corrupt %{filename}; remove manually") % { filename: filename }, detail.backtrace
         end
       end
     end
 
     unless @@state.is_a?(Hash)
-      Puppet.err "State got corrupted"
+      Puppet.err _("State got corrupted")
       self.init
     end
   end
@@ -80,9 +81,21 @@ class Puppet::Util::Storage
   def self.store
     Puppet.debug "Storing state"
 
-    Puppet.info "Creating state file #{Puppet[:statefile]}" unless Puppet::FileSystem.exist?(Puppet[:statefile])
+    Puppet.info _("Creating state file %{file}") % { file: Puppet[:statefile] } unless Puppet::FileSystem.exist?(Puppet[:statefile])
 
-    Puppet::Util.benchmark(:debug, "Stored state") do
+    if Puppet[:statettl] == 0 || Puppet[:statettl] == Float::INFINITY
+      Puppet.debug "Not pruning old state cache entries"
+    else
+      Puppet::Util.benchmark(:debug, "Pruned old state cache entries in %{seconds} seconds") do
+        ttl_cutoff = Time.now - Puppet[:statettl]
+
+        @@state.reject! do |k, _v|
+          @@state[k][:checked] && @@state[k][:checked] < ttl_cutoff
+        end
+      end
+    end
+
+    Puppet::Util.benchmark(:debug, "Stored state in %{seconds} seconds") do
       Puppet::Util::Yaml.dump(@@state, Puppet[:statefile])
     end
   end

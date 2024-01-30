@@ -45,7 +45,8 @@ class Benchmarker
     measurements = []
     @micro_benchmarks.each do |name, source|
       # skip if all but the wanted if a single benchmark is wanted
-      next unless details == 'all' || match = details.match(/#{name}(?:[\._\s](parse|eval))?$/)
+      match = details.match(/#{name}(?:[\._\s](parse|eval))?$/)
+      next unless details == 'all' || match
       # if name ends with .parse or .eval only do that part, else do both parts
       ending = match ? match[1] : nil # parse, eval or nil ending
       unless ending == 'eval'
@@ -64,7 +65,7 @@ class Benchmarker
               @parser.evaluate(@scope, model)
             ensure
               # Toss the created local scope
-              @scope.unset_ephemeral_var(scope_memo)
+              @scope.pop_ephemerals(scope_memo)
             end
           end
         end

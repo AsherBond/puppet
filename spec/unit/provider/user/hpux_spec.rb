@@ -1,10 +1,8 @@
-#!/usr/bin/env ruby
 require 'spec_helper'
 require 'etc'
 
-provider_class = Puppet::Type.type(:user).provider(:hpuxuseradd)
-
-describe provider_class do
+describe Puppet::Type.type(:user).provider(:hpuxuseradd),
+         unless: Puppet::Util::Platform.windows? do
   let :resource do
     Puppet::Type.type(:user).new(
       :title => 'testuser',
@@ -15,38 +13,60 @@ describe provider_class do
   let(:provider) { resource.provider }
 
   it "should add -F when modifying a user" do
-    resource.stubs(:allowdupe?).returns true
-    provider.expects(:execute).with { |args| args.include?("-F") }
+    allow(resource).to receive(:allowdupe?).and_return(true)
+    allow(provider).to receive(:trusted).and_return(true)
+    expect(provider).to receive(:execute).with(include("-F"), anything)
     provider.uid = 1000
   end
 
   it "should add -F when deleting a user" do
-    provider.stubs(:exists?).returns(true)
-    provider.expects(:execute).with { |args| args.include?("-F") }
+    allow(provider).to receive(:exists?).and_return(true)
+    expect(provider).to receive(:execute).with(include("-F"), anything)
     provider.delete
   end
 
   context "managing passwords" do
     let :pwent do
-      Struct::Passwd.new("testuser", "foopassword")
+      Etc::Passwd.new("testuser", "foopassword")
     end
 
     before :each do
-      Etc.stubs(:getpwent).returns(pwent)
-      Etc.stubs(:getpwnam).returns(pwent)
+      allow(Etc).to receive(:getpwent).and_return(pwent)
+      allow(Etc).to receive(:getpwnam).and_return(pwent)
+      allow(provider).to receive(:command).with(:modify).and_return('/usr/sam/lbin/usermod.sam')
     end
 
     it "should have feature manages_passwords" do
-      provider_class.should be_manages_passwords
+      expect(described_class).to be_manages_passwords
     end
 
     it "should return nil if user does not exist" do
-      Etc.stubs(:getpwent).returns(nil)
-      provider.password.must be_nil
+      allow(Etc).to receive(:getpwent).and_return(nil)
+      expect(provider.password).to be_nil
     end
 
     it "should return password entry if exists" do
-      provider.password.must == "foopassword"
+      expect(provider.password).to eq("foopassword")
+    end
+  end
+
+  context "check for trusted computing" do
+    before :each do
+      allow(provider).to receive(:command).with(:modify).and_return('/usr/sam/lbin/usermod.sam')
+    end
+
+    it "should add modprpw to modifycmd if Trusted System" do
+      allow(resource).to receive(:allowdupe?).and_return(true)
+      expect(provider).to receive(:exec_getprpw).with('root','-m uid').and_return('uid=0')
+      expect(provider).to receive(:execute).with(['/usr/sam/lbin/usermod.sam', '-F', '-u', 1000, '-o', 'testuser', ';', '/usr/lbin/modprpw', '-v', '-l', 'testuser'], hash_including(custom_environment: {}))
+      provider.uid = 1000
+    end
+
+    it "should not add modprpw if not Trusted System" do
+      allow(resource).to receive(:allowdupe?).and_return(true)
+      expect(provider).to receive(:exec_getprpw).with('root','-m uid').and_return('System is not trusted')
+      expect(provider).to receive(:execute).with(['/usr/sam/lbin/usermod.sam', '-F', '-u', 1000, '-o', 'testuser'], hash_including(custom_environment: {}))
+      provider.uid = 1000
     end
   end
 end

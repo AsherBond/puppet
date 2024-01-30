@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Methods to help with handling warnings.
 module Puppet::Util::Warnings
   module_function
@@ -7,6 +9,8 @@ module Puppet::Util::Warnings
   end
 
   def debug_once(msg)
+    return nil unless Puppet[:debug]
+
     Puppet::Util::Warnings.maybe_log(msg, self.class) { Puppet.debug msg }
   end
 
@@ -19,12 +23,11 @@ module Puppet::Util::Warnings
     nil
   end
 
-  protected
-
   def self.maybe_log(message, klass)
     @stampwarnings ||= {}
     @stampwarnings[klass] ||= []
     return nil if @stampwarnings[klass].include? message
+
     yield
     @stampwarnings[klass] << message
     nil

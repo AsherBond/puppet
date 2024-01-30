@@ -1,21 +1,21 @@
-require 'puppet'
-require 'puppet/util/autoload'
+# frozen_string_literal: true
+
+require_relative '../puppet'
+require_relative '../puppet/util/autoload'
 require 'prettyprint'
-require 'semver'
 
 # @api public
 class Puppet::Interface
-  require 'puppet/interface/documentation'
-  require 'puppet/interface/face_collection'
+  require_relative 'interface/documentation'
+  require_relative 'interface/face_collection'
 
-  require 'puppet/interface/action'
-  require 'puppet/interface/action_builder'
-  require 'puppet/interface/action_manager'
+  require_relative 'interface/action'
+  require_relative 'interface/action_builder'
+  require_relative 'interface/action_manager'
 
-  require 'puppet/interface/option'
-  require 'puppet/interface/option_builder'
-  require 'puppet/interface/option_manager'
-
+  require_relative 'interface/option'
+  require_relative 'interface/option_builder'
+  require_relative 'interface/option_manager'
 
   include FullDocs
 
@@ -30,13 +30,6 @@ class Puppet::Interface
   class << self
     # This is just so we can search for actions.  We only use its
     # list of directories to search.
-
-    # @api private
-    # @deprecated
-    def autoloader
-      Puppet.deprecation_warning("Puppet::Interface.autoloader is deprecated; please use Puppet::Interface#loader instead")
-      @autoloader ||= Puppet::Util::Autoload.new(:application, "puppet/face")
-    end
 
     # Lists all loaded faces
     # @return [Array<Symbol>] The names of the loaded faces
@@ -99,12 +92,13 @@ class Puppet::Interface
     #
     # @api public
     def [](name, version)
-      unless face = Puppet::Interface::FaceCollection[name, version]
+      face = Puppet::Interface::FaceCollection[name, version]
+      unless face
         # REVISIT (#18042) no sense in rechecking if version == :current -- josh
         if Puppet::Interface::FaceCollection[name, :current]
           raise Puppet::Error, "Could not find version #{version} of #{name}"
         else
-          raise Puppet::Error, "Could not find Puppet Face #{name.to_s}"
+          raise Puppet::Error, "Could not find Puppet Face #{name}"
         end
       end
 
@@ -127,7 +121,6 @@ class Puppet::Interface
   # splits out this should merge into a module that both the action and face
   # include. --daniel 2011-04-17
 
-
   # Returns the synopsis for the face. This shows basic usage and global
   # options.
   # @return [String] usage synopsis
@@ -135,7 +128,6 @@ class Puppet::Interface
   def synopsis
     build_synopsis self.name, '<action>'
   end
-
 
   ########################################################################
 
@@ -145,7 +137,7 @@ class Puppet::Interface
   attr_reader :name
 
   # The version of the face
-  # @return [SemVer]
+  # @return [SemanticPuppet::Version]
   attr_reader :version
 
   # The autoloader instance for the face
@@ -156,12 +148,12 @@ class Puppet::Interface
 
   # @api private
   def initialize(name, version, &block)
-    unless SemVer.valid?(version)
-      raise ArgumentError, "Cannot create face #{name.inspect} with invalid version number '#{version}'!"
+    unless SemanticPuppet::Version.valid?(version)
+      raise ArgumentError, _("Cannot create face %{name} with invalid version number '%{version}'!") % { name: name.inspect, version: version }
     end
 
     @name    = Puppet::Interface::FaceCollection.underscorize(name)
-    @version = SemVer.new(version)
+    @version = SemanticPuppet::Version.parse(version)
 
     # The few bits of documentation we actually demand.  The default license
     # is a favour to our end users; if you happen to get that in a core face
@@ -178,7 +170,7 @@ class Puppet::Interface
   # @return [void]
   # @api private
   def load_actions
-    loader.loadall
+    loader.loadall(Puppet.lookup(:current_environment))
   end
 
   # Returns a string representation with the face's name and version
@@ -186,7 +178,17 @@ class Puppet::Interface
   def to_s
     "Puppet::Face[#{name.inspect}, #{version.inspect}]"
   end
+  alias_method :inspect, :to_s
 
+  # @return [void]
+  def deprecate
+    @deprecated = true
+  end
+
+  # @return [Boolean]
+  def deprecated?
+    @deprecated
+  end
   ########################################################################
   # Action decoration, whee!  You are not expected to care about this code,
   # which exists to support face building and construction.  I marked these
@@ -197,7 +199,9 @@ class Puppet::Interface
   # to be unrecognizable in the final outcome.  At which point we will throw
   # all this away, replace it with something nice, and work out if we should
   # be making this visible to the outside world... --daniel 2011-04-14
+
   private
+
   # @return [void]
   # @api private
   def __invoke_decorations(type, action, passed_args = [], passed_options = {})
@@ -232,4 +236,5 @@ class Puppet::Interface
     define_method(name, proc)
     instance_method(name)
   end
+  private_class_method :__add_method
 end

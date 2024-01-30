@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Puppet::ModuleTool
   module Applications
     class Uninstaller < Application
@@ -6,7 +8,7 @@ module Puppet::ModuleTool
       def initialize(name, options)
         @name        = name
         @options     = options
-        @errors      = Hash.new {|h, k| h[k] = {}}
+        @errors      = Hash.new { |h, k| h[k] = {} }
         @unfiltered  = []
         @installed   = []
         @suggestions = []
@@ -16,7 +18,7 @@ module Puppet::ModuleTool
 
       def run
         results = {
-          :module_name       => @name,
+          :module_name => @name,
           :requested_version => @version,
         }
 
@@ -30,7 +32,7 @@ module Puppet::ModuleTool
           results[:result] = :success
         rescue ModuleToolError => err
           results[:error] = {
-            :oneline   => err.message,
+            :oneline => err.message,
             :multiline => err.multiline,
           }
         rescue => e
@@ -49,15 +51,15 @@ module Puppet::ModuleTool
 
       def find_installed_module
         @environment.modules_by_path.values.flatten.each do |mod|
-          mod_name = (mod.forge_name || mod.name).gsub('/', '-')
+          mod_name = (mod.forge_name || mod.name).tr('/', '-')
           if mod_name == @name
             @unfiltered << {
-              :name    => mod_name,
+              :name => mod_name,
               :version => mod.version,
-              :path    => mod.modulepath,
+              :path => mod.modulepath,
             }
             if @options[:version] && mod.version
-              next unless SemVer[@options[:version]].include?(SemVer.new(mod.version))
+              next unless Puppet::Module.parse_range(@options[:version]).include?(SemanticPuppet::Version.parse(mod.version))
             end
             @installed << mod
           elsif mod_name =~ /#{@name}/
@@ -67,20 +69,20 @@ module Puppet::ModuleTool
 
         if @installed.length > 1
           raise MultipleInstalledError,
-            :action            => :uninstall,
-            :module_name       => @name,
-            :installed_modules => @installed.sort_by { |mod| @environment.modulepath.index(mod.modulepath) }
+                :action => :uninstall,
+                :module_name => @name,
+                :installed_modules => @installed.sort_by { |mod| @environment.modulepath.index(mod.modulepath) }
         elsif @installed.empty?
           if @unfiltered.empty?
             raise NotInstalledError,
-              :action      => :uninstall,
-              :suggestions => @suggestions,
-              :module_name => @name
+                  :action => :uninstall,
+                  :suggestions => @suggestions,
+                  :module_name => @name
           else
             raise NoVersionMatchesError,
-              :installed_modules => @unfiltered.sort_by { |mod| @environment.modulepath.index(mod[:path]) },
-              :version_range     => @options[:version],
-              :module_name       => @name
+                  :installed_modules => @unfiltered.sort_by { |mod| @environment.modulepath.index(mod[:path]) },
+                  :version_range => @options[:version],
+                  :module_name => @name
           end
         end
       end
@@ -89,6 +91,8 @@ module Puppet::ModuleTool
         mod = @installed.first
 
         unless @ignore_changes
+          raise _("Either the `--ignore_changes` or `--force` argument must be specified to uninstall modules when running in FIPS mode.") if Puppet.runtime[:facter].value(:fips_enabled)
+
           changes = begin
             Puppet::ModuleTool::Applications::Checksummer.run(mod.path)
           rescue ArgumentError
@@ -97,19 +101,19 @@ module Puppet::ModuleTool
 
           if mod.has_metadata? && !changes.empty?
             raise LocalChangesError,
-              :action            => :uninstall,
-              :module_name       => (mod.forge_name || mod.name).gsub('/', '-'),
-              :requested_version => @options[:version],
-              :installed_version => mod.version
+                  :action => :uninstall,
+                  :module_name => (mod.forge_name || mod.name).tr('/', '-'),
+                  :requested_version => @options[:version],
+                  :installed_version => mod.version
           end
         end
 
         if !@options[:force] && !mod.required_by.empty?
           raise ModuleIsRequiredError,
-            :module_name       => (mod.forge_name || mod.name).gsub('/', '-'),
-            :required_by       => mod.required_by,
-            :requested_version => @options[:version],
-            :installed_version => mod.version
+                :module_name => (mod.forge_name || mod.name).tr('/', '-'),
+                :required_by => mod.required_by,
+                :requested_version => @options[:version],
+                :installed_version => mod.version
         end
       end
     end

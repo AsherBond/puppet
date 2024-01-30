@@ -1,35 +1,5 @@
 module Puppet
   module Acceptance
-    module ZoneUtils
-      def clean(agent)
-        lst = on(agent, "zoneadm list -cip").stdout.lines.each do |l|
-          case l
-          when /tstzone:running/
-            on agent,"zoneadm -z tstzone halt"
-            on agent,"zoneadm -z tstzone uninstall -F"
-            on agent,"zonecfg -z tstzone delete -F"
-            on agent,"rm -f /etc/zones/tstzone.xml"
-          when /tstzone:configured/
-            on agent,"zonecfg -z tstzone delete -F"
-            on agent,"rm -f /etc/zones/tstzone.xml"
-          when /tstzone:*/
-            on agent,"zonecfg -z tstzone delete -F"
-            on agent,"rm -f /etc/zones/tstzone.xml"
-          end
-        end
-        lst = on(agent, "zfs list").stdout.lines.each do |l|
-          case l
-          when /rpool.tstzones/
-            on agent,"zfs destroy -r rpool/tstzones"
-          end
-        end
-        on agent, "rm -rf /tstzones"
-      end
-
-      def setup(agent, o={})
-        o = {:size => '64m'}.merge(o)
-      end
-    end
     module IPSUtils
       def clean(agent, o={})
         o = {:repo => '/var/tstrepo', :pkg => 'mypkg', :publisher => 'tstpub.lan'}.merge(o)
@@ -87,8 +57,15 @@ module Puppet
     module SMFUtils
       def clean(agent, o={})
         o = {:service => 'tstapp'}.merge(o)
-        on agent, "svcadm disable %s ||:" % o[:service]
-        on agent, "svccfg delete %s ||:" % o[:service]
+        on(agent, "svcs -l %s" % o[:service], acceptable_exit_codes: [0, 1]) do |result|
+          next if result.stdout =~ /doesn't match/
+          lines = result.stdout.chomp.lines
+          instances = lines.select { |line| line =~ /^fmri/ }.map { |line| line.split(' ')[1].chomp }
+          instances.each do |instance|
+            on agent, "svcadm disable %s ||:" % instance
+            on agent, "svccfg delete %s ||:" % instance
+          end
+        end
         on agent, "rm -rf /var/svc/manifest/application/%s.xml ||:" % o[:service]
         on agent, "rm -f /opt/bin/%s ||:" % o[:service]
       end
@@ -133,7 +110,6 @@ trap '' HUP
 <service_bundle type='manifest' name='%s:default'>
   <service name='application/tstapp' type='service' version='1'>
   <create_default_instance enabled='false' />
-  <single_instance />
   <method_context> <method_credential user='root' group='root' /> </method_context>
   <exec_method type='method' name='start' exec='/lib/svc/method/%s start' timeout_seconds="60" />
   <exec_method type='method' name='stop' exec='/lib/svc/method/%s stop' timeout_seconds="60" />
@@ -151,36 +127,6 @@ trap '' HUP
         on agent, "svccfg -v validate /var/smf-%s.xml" % o[:service]
         on agent, "echo > /var/svc/log/application-%s:default.log" % o[:service]
         return ("/var/smf-%s.xml" % o[:service]), ("/lib/svc/method/%s" % o[:service])
-      end
-    end
-    module ZFSUtils
-      def clean(agent, o={})
-        o = {:fs=>'tstfs', :pool=>'tstpool', :poolpath => '/ztstpool'}.merge(o)
-        on agent, "zfs destroy -r %s/%s ||:" % [o[:pool], o[:fs]]
-        on agent, "zpool destroy %s ||:" %  o[:pool]
-        on agent, "rm -rf %s ||:" % o[:poolpath]
-      end
-
-      def setup(agent, o={})
-        o = {:poolpath=>'/ztstpool', :pool => 'tstpool'}.merge(o)
-        on agent, "mkdir -p %s/mnt" % o[:poolpath]
-        on agent, "mkdir -p %s/mnt2" % o[:poolpath]
-        on agent, "mkfile 64m %s/dsk" % o[:poolpath]
-        on agent, "zpool create %s %s/dsk" % [ o[:pool],  o[:poolpath]]
-      end
-    end
-    module ZPoolUtils
-      def clean(agent, o={})
-        o = {:pool=>'tstpool', :poolpath => '/ztstpool'}.merge(o)
-        on agent, "zpool destroy %s ||:" % o[:pool]
-        on agent, "rm -rf %s ||:" % o[:poolpath]
-      end
-
-      def setup(agent, o={})
-        o = {:poolpath => '/ztstpool'}.merge(o)
-        on agent, "mkdir -p %s/mnt||:" % o[:poolpath]
-        on agent, "mkfile 100m %s/dsk1 %s/dsk2 %s/dsk3 %s/dsk5 ||:" % ([o[:poolpath]] * 4)
-        on agent, "mkfile 50m %s/dsk4 ||:" % o[:poolpath]
       end
     end
   end

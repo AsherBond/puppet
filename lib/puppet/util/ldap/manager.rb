@@ -1,6 +1,8 @@
-require 'puppet/util/ldap'
-require 'puppet/util/ldap/connection'
-require 'puppet/util/ldap/generator'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/ldap'
+require_relative '../../../puppet/util/ldap/connection'
+require_relative '../../../puppet/util/ldap/generator'
 
 # The configuration class for LDAP providers, plus
 # connection handling for actually interacting with ldap.
@@ -44,7 +46,8 @@ class Puppet::Util::Ldap::Manager
   # Open, yield, and close the connection.  Cannot be left
   # open, at this point.
   def connect
-    raise ArgumentError, "You must pass a block to #connect" unless block_given?
+    # TRANSLATORS '#connect' is a method name and and should not be translated, 'block' refers to a Ruby code block
+    raise ArgumentError, _("You must pass a block to #connect") unless block_given?
 
     unless @connection
       if Puppet[:ldaptls]
@@ -54,11 +57,13 @@ class Puppet::Util::Ldap::Manager
       else
         ssl = false
       end
-      options = {:ssl => ssl}
-      if user = Puppet[:ldapuser] and user != ""
+      options = { :ssl => ssl }
+      user = Puppet[:ldapuser]
+      if user && user != ""
         options[:user] = user
       end
-      if password = Puppet[:ldappassword] and password != ""
+      password = Puppet[:ldappassword]
+      if password && password != ""
         options[:password] = password
       end
       @connection = Puppet::Util::Ldap::Connection.new(Puppet[:ldapserver], Puppet[:ldapport], options)
@@ -85,14 +90,15 @@ class Puppet::Util::Ldap::Manager
 
   # Convert an ldap-style entry hash to a provider-style hash.
   def entry2provider(entry)
-    raise ArgumentError, "Could not get dn from ldap entry" unless entry["dn"]
+    # TRANSLATOR 'dn' refers to a 'distinguished name' in LDAP (Lightweight Directory Access Protocol) and they should not be translated
+    raise ArgumentError, _("Could not get dn from ldap entry") unless entry["dn"]
 
     # DN is always a single-entry array.  Strip off the bits before the
     # first comma, then the bits after the remaining equal sign.  This is the
     # name.
     name = entry["dn"].dup.pop.split(",").shift.split("=").pop
 
-    result = {:name => name}
+    result = { :name => name }
 
     @ldap2puppet.each do |ldap, puppet|
       result[puppet] = entry[ldap.to_s] || :absent
@@ -136,8 +142,10 @@ class Puppet::Util::Ldap::Manager
       next if values[generator.name]
 
       if generator.source
-        unless value = values[generator.source]
-          raise ArgumentError, "#{generator.source} must be defined to generate #{generator.name}"
+        value = values[generator.source]
+        unless value
+          raise ArgumentError, _("%{source} must be defined to generate %{name}") %
+                               { source: generator.source, name: generator.name }
         end
         result = generator.generate(value)
       else
@@ -213,14 +221,14 @@ class Puppet::Util::Ldap::Manager
   # Update the ldap entry with the desired state.
   def update(name, is, should)
     if should[:ensure] == :absent
-      Puppet.info "Removing #{dn(name)} from ldap"
+      Puppet.info _("Removing %{name} from ldap") % { name: dn(name) }
       delete(name)
       return
     end
 
     # We're creating a new entry
     if is.empty? or is[:ensure] == :absent
-      Puppet.info "Creating #{dn(name)} in ldap"
+      Puppet.info _("Creating %{name} in ldap") % { name: dn(name) }
       # Remove any :absent params and :ensure, then convert the names to ldap names.
       attrs = ldap_convert(should)
       create(name, attrs)
@@ -261,7 +269,7 @@ class Puppet::Util::Ldap::Manager
 
   # Is this a complete ldap configuration?
   def valid?
-    location and objectclasses and ! objectclasses.empty? and puppet2ldap
+    location and objectclasses and !objectclasses.empty? and puppet2ldap
   end
 
   private

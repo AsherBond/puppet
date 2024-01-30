@@ -1,21 +1,24 @@
+# frozen_string_literal: true
+
 module Puppet::FileSystem
-  require 'puppet/file_system/path_pattern'
-  require 'puppet/file_system/file_impl'
-  require 'puppet/file_system/memory_file'
-  require 'puppet/file_system/memory_impl'
-  require 'puppet/file_system/uniquefile'
+  require_relative '../puppet/util'
+  require_relative 'file_system/path_pattern'
+  require_relative 'file_system/file_impl'
+  require_relative 'file_system/memory_file'
+  require_relative 'file_system/memory_impl'
+  require_relative 'file_system/uniquefile'
 
   # create instance of the file system implementation to use for the current platform
-  @impl = if RUBY_VERSION =~ /^1\.8/
-           require 'puppet/file_system/file18'
-           Puppet::FileSystem::File18
-         elsif Puppet::Util::Platform.windows?
-           require 'puppet/file_system/file19windows'
-           Puppet::FileSystem::File19Windows
-         else
-           require 'puppet/file_system/file19'
-           Puppet::FileSystem::File19
-         end.new()
+  @impl = if Puppet::Util::Platform.windows?
+            require_relative 'file_system/windows'
+            Puppet::FileSystem::Windows
+          elsif Puppet::Util::Platform.jruby?
+            require_relative 'file_system/jruby'
+            Puppet::FileSystem::JRuby
+          else
+            require_relative 'file_system/posix'
+            Puppet::FileSystem::Posix
+          end.new()
 
   # Allows overriding the filesystem for the duration of the given block.
   # The filesystem will only contain the given file(s).
@@ -33,6 +36,15 @@ module Puppet::FileSystem
   end
 
   # Opens the given path with given mode, and options and optionally yields it to the given block.
+  #
+  # @param path [String, Pathname] the path to the file to operate on
+  # @param mode [Integer] The mode to apply to the file if it is created
+  # @param options [String] Extra file operation mode information to use
+  #   This is the standard mechanism Ruby uses in the IO class, and therefore
+  #   encoding may be specified explicitly as fmode : encoding or fmode : "BOM|UTF-*"
+  #   for example, a:ASCII or w+:UTF-8
+  # @yield The file handle, in the mode given by options, else read-write mode
+  # @return [Void]
   #
   # @api public
   #
@@ -82,28 +94,23 @@ module Puppet::FileSystem
     @impl.path_string(@impl.basename(assert_path(path)))
   end
 
-  # @return [Integer] the size of the file
-  #
-  # @api public
-  #
-  def self.size(path)
-    @impl.size(assert_path(path))
-  end
-
   # Allows exclusive updates to a file to be made by excluding concurrent
   # access using flock. This means that if the file is on a filesystem that
   # does not support flock, this method will provide no protection.
   #
-  # While polling to aquire the lock the process will wait ever increasing
+  # While polling to acquire the lock the process will wait ever increasing
   # amounts of time in order to prevent multiple processes from wasting
   # resources.
   #
   # @param path [Pathname] the path to the file to operate on
   # @param mode [Integer] The mode to apply to the file if it is created
-  # @param options [Integer] Extra file operation mode information to use
-  #   (defaults to read-only mode)
+  # @param options [String] Extra file operation mode information to use
+  #   (defaults to read-only mode 'r')
+  #   This is the standard mechanism Ruby uses in the IO class, and therefore
+  #   encoding may be specified explicitly as fmode : encoding or fmode : "BOM|UTF-*"
+  #   for example, a:ASCII or w+:UTF-8
   # @param timeout [Integer] Number of seconds to wait for the lock (defaults to 300)
-  # @yield The file handle, in read-write mode
+  # @yield The file handle, in the mode given by options, else read-write mode
   # @return [Void]
   # @raise [Timeout::Error] If the timeout is exceeded while waiting to acquire the lock
   #
@@ -125,8 +132,21 @@ module Puppet::FileSystem
   #
   # @api public
   #
-  def self.read(path)
-    @impl.read(assert_path(path))
+  def self.read(path, opts = {})
+    @impl.read(assert_path(path), opts)
+  end
+
+  # Read a file keeping the original line endings intact. This
+  # attempts to open files using binary mode using some encoding
+  # overrides and falling back to IO.read when none of the
+  # encodings are valid.
+  #
+  # @return [String] The contents of the file
+  #
+  # @api public
+  #
+  def self.read_preserve_line_endings(path)
+    @impl.read_preserve_line_endings(assert_path(path))
   end
 
   # @return [String] The binary contents of the file
@@ -188,10 +208,12 @@ module Puppet::FileSystem
 
   # Touches the file. On most systems this updates the mtime of the file.
   #
+  # @param mtime [Time] The last modified time or nil to use the current time
+  #
   # @api public
   #
-  def self.touch(path)
-    @impl.touch(assert_path(path))
+  def self.touch(path, mtime: nil)
+    @impl.touch(assert_path(path), mtime: mtime)
   end
 
   # Creates directories for all parts of the given path.
@@ -266,7 +288,7 @@ module Puppet::FileSystem
   # @api public
   #
   def self.unlink(*paths)
-    @impl.unlink(*(paths.map {|p| assert_path(p) }))
+    @impl.unlink(*(paths.map { |p| assert_path(p) }))
   end
 
   # @return [File::Stat] object for the named file.
@@ -319,6 +341,22 @@ module Puppet::FileSystem
     @impl.pathname(path)
   end
 
+  # Produces a string representation of the opaque path handle, with expansions
+  # performed on ~.  For Windows, this means that C:\Users\Admini~1\AppData will
+  # be expanded to C:\Users\Administrator\AppData.  On POSIX filesystems, the
+  # value ~ will be expanded to something like /Users/Foo
+  #
+  # This method exists primarlily to resolve a Ruby deficiency where
+  # File.expand_path doesn't convert short paths to long paths, which is
+  # important when resolving the path to load.
+  #
+  # @param path [Object] a path handle produced by {#pathname}
+  # @return [String] a string representation of the path
+  #
+  def self.expand_path(path, dir_string = nil)
+    @impl.expand_path(path, dir_string)
+  end
+
   # Asserts that the given path is of the expected type produced by #pathname
   #
   # @raise [ArgumentError] when path is not of the expected type
@@ -361,6 +399,23 @@ module Puppet::FileSystem
   # @api public
   #
   def self.chmod(mode, path)
-    @impl.chmod(mode, path)
+    @impl.chmod(mode, assert_path(path))
+  end
+
+  # Replace the contents of a file atomically, creating the file if necessary.
+  # If a `mode` is specified, then it will always be applied to the file. If
+  # a `mode` is not specified and the file exists, its mode will be preserved.
+  # If the file doesn't exist, the mode will be set to a platform-specific
+  # default.
+  #
+  # @param path [String] The path to the file, can also accept [PathName]
+  # @param mode [Integer] Optional mode for the file.
+  #
+  # @raise [Errno::EISDIR]: path is a directory
+  #
+  # @api public
+  #
+  def self.replace_file(path, mode = nil, &block)
+    @impl.replace_file(assert_path(path), mode, &block)
   end
 end

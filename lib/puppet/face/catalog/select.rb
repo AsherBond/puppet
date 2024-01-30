@@ -1,9 +1,11 @@
+# frozen_string_literal: true
+
 # Select and show a list of resources of a given type.
 Puppet::Face.define(:catalog, '0.0.1') do
   action :select do
-    summary "Retrieve a catalog and filter it for resources of a given type."
-    arguments "<host> <resource_type>"
-    returns <<-'EOT'
+    summary _("Retrieve a catalog and filter it for resources of a given type.")
+    arguments _("<host> <resource_type>")
+    returns _(<<-'EOT')
       A list of resource references ("Type[title]"). When used from the API,
       returns an array of Puppet::Resource objects excised from a catalog.
     EOT
@@ -24,7 +26,7 @@ Puppet::Face.define(:catalog, '0.0.1') do
 
       $ puppet catalog select --terminus rest somenode.magpie.lan file
     EOT
-    when_invoked do |host, type, options|
+    when_invoked do |host, type, _options|
       # REVISIT: Eventually, type should have a default value that triggers
       # the non-specific behaviour.  For now, though, this will do.
       # --daniel 2011-05-03
@@ -40,9 +42,9 @@ Puppet::Face.define(:catalog, '0.0.1') do
 
     when_rendering :console do |value|
       if value.nil? then
-        "no matching resources found"
+        _("no matching resources found")
       else
-        value.map {|x| x.to_s }.join("\n")
+        value.map { |x| x.to_s }.join("\n")
       end
     end
   end

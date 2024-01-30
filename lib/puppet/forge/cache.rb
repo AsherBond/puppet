@@ -1,13 +1,14 @@
+# frozen_string_literal: true
+
 require 'uri'
 
-require 'puppet/forge'
+require_relative '../../puppet/forge'
 
 class Puppet::Forge
   # = Cache
   #
   # Provides methods for reading files from local cache, filesystem or network.
   class Cache
-
     # Instantiate new cache for the +repository+ instance.
     def initialize(repository, options = {})
       @repository = repository
@@ -24,7 +25,8 @@ class Puppet::Forge
         uri = url.is_a?(::URI) ? url : ::URI.parse(url)
         unless cached_file.file?
           if uri.scheme == 'file'
-            FileUtils.cp(URI.unescape(uri.path), cached_file)
+            # CGI.unescape butchers Uris that are escaped properly
+            FileUtils.cp(Puppet::Util.uri_unescape(uri.path), cached_file)
           else
             # TODO: Handle HTTPS; probably should use repository.contact
             data = read_retrieve(uri)
@@ -41,12 +43,12 @@ class Puppet::Forge
 
     # Return Pathname for repository's cache directory, create it if needed.
     def path
-      (self.class.base_path + @repository.cache_key).tap{ |o| o.mkpath }
+      (self.class.base_path + @repository.cache_key).tap { |o| o.mkpath }
     end
 
     # Return the base Pathname for all the caches.
     def self.base_path
-      (Pathname(Puppet.settings[:module_working_dir]) + 'cache').tap do |o|
+      (Pathname(Puppet.settings[:module_working_dir]) + 'cache').cleanpath.tap do |o|
         o.mkpath unless o.exist?
       end
     end

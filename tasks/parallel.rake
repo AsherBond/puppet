@@ -5,9 +5,9 @@ require 'thread'
 begin
   require 'rspec'
   require 'rspec/core/formatters/helpers'
-  require 'facter'
+  require 'etc'
 rescue LoadError
-  # Don't define the task if we don't have rspec or facter present
+  # Don't define the task if we don't have rspec present
 else
   module Parallel
     module RSpec
@@ -156,19 +156,21 @@ else
 
       #
       # Responsible for parallelizing spec testing.
+      # Optional options list will be passed to rspec.
       #
       class Parallelizer
-        include ::RSpec::Core::Formatters::Helpers
-
         # Number of processes to use
         attr_reader :process_count
         # Approximate size of each group of tests
         attr_reader :group_size
+        # Options list for rspec
+        attr_reader :options
 
-        def initialize(process_count, group_size, color)
+        def initialize(process_count, group_size, color, options = [])
           @process_count = process_count
           @group_size = group_size
           @color = color
+          @options = options
         end
 
         def color?
@@ -182,7 +184,7 @@ else
           fail red('error: no specs were found') if groups.length == 0
 
           begin
-            run_specs groups
+            run_specs(groups, options)
           ensure
             groups.each do |file|
               File.unlink(file)
@@ -213,7 +215,7 @@ else
           spec_group_files
         end
 
-        def run_specs(groups)
+        def run_specs(groups, options)
           puts "Processing #{groups.length} spec group(s) with #{@process_count} worker(s)"
 
           interrupted = false
@@ -248,7 +250,8 @@ else
                 break unless group && !interrupted
 
                 # Spawn the worker process with redirected output
-                io = IO.popen("ruby util/rspec_runner #{group}")
+                options_string = options ? options.join(' ') : ''
+                io = IO.popen("ruby util/rspec_runner #{group} #{options_string}")
                 pids[thread_id] = io.pid
 
                 # TODO: make the buffer pluggable to handle other output formats like documentation
@@ -341,7 +344,7 @@ else
           end
 
           # Print out the run time
-          puts "\nFinished in #{format_duration(Time.now - @start_time)}"
+          puts "\nFinished in #{::RSpec::Core::Formatters::Helpers.format_duration(Time.now - @start_time)}"
 
           # Count all of the examples
           examples = 0
@@ -373,8 +376,8 @@ else
         end
 
         def summary_count_line(examples, failures, pending)
-          summary = pluralize(examples, "example")
-          summary << ", " << pluralize(failures, "failure")
+          summary = ::RSpec::Core::Formatters::Helpers.pluralize(examples, "example")
+          summary << ", " << ::RSpec::Core::Formatters::Helpers.pluralize(failures, "failure")
           summary << ", #{pending} pending" if pending > 0
           summary
         end
@@ -389,20 +392,19 @@ else
       config.error_stream = $stderr
       config.output_stream = $stdout
       options = ::RSpec::Core::ConfigurationOptions.new []
-      options.parse_options
       options.configure config
       config.color
     end
 
-    desc 'Runs specs in parallel.'
-    task 'spec', :process_count, :group_size do |_, args|
+    desc 'Runs specs in parallel. Extra args are passed to rspec.'
+    task 'spec', [:process_count, :group_size] do |_, args|
       # Default group size in rspec examples
       DEFAULT_GROUP_SIZE = 1000
 
-      process_count = [(args[:process_count] || Facter["processorcount"].value).to_i, 1].max
+      process_count = [(args[:process_count] || Etc.nprocessors).to_i, 1].max
       group_size = [(args[:group_size] || DEFAULT_GROUP_SIZE).to_i, 1].max
 
-      abort unless Parallel::RSpec::Parallelizer.new(process_count, group_size, color_output?).run
+      abort unless Parallel::RSpec::Parallelizer.new(process_count, group_size, color_output?, args.extras).run
     end
   end
 end

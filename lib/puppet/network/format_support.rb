@@ -1,4 +1,6 @@
-require 'puppet/network/format_handler'
+# frozen_string_literal: true
+
+require_relative '../../puppet/network/format_handler'
 
 # Provides network serialization support when included
 # @api public
@@ -11,19 +13,22 @@ module Puppet::Network::FormatSupport
     def convert_from(format, data)
       get_format(format).intern(self, data)
     rescue => err
-      raise Puppet::Network::FormatHandler::FormatError, "Could not intern from #{format}: #{err}", err.backtrace
+      # TRANSLATORS "intern" is a function name and should not be translated
+      raise Puppet::Network::FormatHandler::FormatError, _("Could not intern from %{format}: %{err}") % { format: format, err: err }, err.backtrace
     end
 
     def convert_from_multiple(format, data)
       get_format(format).intern_multiple(self, data)
     rescue => err
-      raise Puppet::Network::FormatHandler::FormatError, "Could not intern_multiple from #{format}: #{err}", err.backtrace
+      # TRANSLATORS "intern_multiple" is a function name and should not be translated
+      raise Puppet::Network::FormatHandler::FormatError, _("Could not intern_multiple from %{format}: %{err}") % { format: format, err: err }, err.backtrace
     end
 
     def render_multiple(format, instances)
       get_format(format).render_multiple(instances)
     rescue => err
-      raise Puppet::Network::FormatHandler::FormatError, "Could not render_multiple to #{format}: #{err}", err.backtrace
+      # TRANSLATORS "render_multiple" is a function name and should not be translated
+      raise Puppet::Network::FormatHandler::FormatError, _("Could not render_multiple to %{format}: %{err}") % { format: format, err: err }, err.backtrace
     end
 
     def default_format
@@ -42,13 +47,11 @@ module Puppet::Network::FormatSupport
       end.sort do |a, b|
         # It's an inverse sort -- higher weight formats go first.
         b.weight <=> a.weight
-      end.collect do |f|
-        f.name
       end
 
-      result = put_preferred_format_first(result)
+      result = put_preferred_format_first(result).map(&:name)
 
-      Puppet.debug "#{friendly_name} supports formats: #{result.join(' ')}"
+      Puppet.debug { "#{friendly_name} supports formats: #{result.join(' ')}" }
 
       result
     end
@@ -73,13 +76,20 @@ module Puppet::Network::FormatSupport
     end
 
     def put_preferred_format_first(list)
-      preferred_format = Puppet.settings[:preferred_serialization_format].to_sym
-      if list.include?(preferred_format)
-        list.delete(preferred_format)
-        list.unshift(preferred_format)
+      preferred_format = Puppet.settings[:preferred_serialization_format].to_s
+
+      preferred = list.select { |format|
+        format.mime.end_with?(preferred_format)
+      }
+
+      if preferred.empty?
+        Puppet.debug { "Value of 'preferred_serialization_format' (#{preferred_format}) is invalid for #{friendly_name}, using default (#{list.first.name})" }
       else
-        Puppet.debug "Value of 'preferred_serialization_format' (#{preferred_format}) is invalid for #{friendly_name}, using default (#{list.first})"
+        list = preferred + list.reject { |format|
+          format.mime.end_with?(preferred_format)
+        }
       end
+
       list
     end
   end
@@ -88,8 +98,13 @@ module Puppet::Network::FormatSupport
     to_data_hash.to_msgpack(*args)
   end
 
+  # @deprecated, use to_json
   def to_pson(*args)
     to_data_hash.to_pson(*args)
+  end
+
+  def to_json(*args)
+    Puppet::Util::Json.dump(to_data_hash, *args)
   end
 
   def render(format = nil)
@@ -97,7 +112,8 @@ module Puppet::Network::FormatSupport
 
     self.class.get_format(format).render(self)
   rescue => err
-    raise Puppet::Network::FormatHandler::FormatError, "Could not render to #{format}: #{err}", err.backtrace
+    # TRANSLATORS "render" is a function name and should not be translated
+    raise Puppet::Network::FormatHandler::FormatError, _("Could not render to %{format}: %{err}") % { format: format, err: err }, err.backtrace
   end
 
   def mime(format = nil)
@@ -105,7 +121,8 @@ module Puppet::Network::FormatSupport
 
     self.class.get_format(format).mime
   rescue => err
-    raise Puppet::Network::FormatHandler::FormatError, "Could not mime to #{format}: #{err}", err.backtrace
+    # TRANSLATORS "mime" is a function name and should not be translated
+    raise Puppet::Network::FormatHandler::FormatError, _("Could not mime to %{format}: %{err}") % { format: format, err: err }, err.backtrace
   end
 
   def support_format?(name)
@@ -121,4 +138,3 @@ module Puppet::Network::FormatSupport
   # If the method exists it will be called from to_msgpack and other serialization methods.
   # @return [Hash]
 end
-

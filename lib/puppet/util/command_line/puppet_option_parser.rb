@@ -1,4 +1,6 @@
-require 'puppet/util/command_line/trollop'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/command_line/trollop'
 
 module Puppet
   module Util
@@ -16,14 +18,13 @@ module Puppet
 
       class PuppetOptionParser
         def initialize(usage_msg = nil)
-          require "puppet/util/command_line/trollop"
+          require_relative '../../../puppet/util/command_line/trollop'
 
           @create_default_short_options = false
 
           @parser = Trollop::Parser.new do
             banner usage_msg
           end
-
         end
 
         # This parameter, if set, will tell the underlying option parser not to throw an
@@ -39,29 +40,30 @@ module Puppet
 
         def on(*args, &block)
           # The 2nd element is an optional "short" representation.
-          if args.length == 3
+          case args.length
+          when 3
             long, desc, type = args
-          elsif args.length == 4
+          when 4
             long, short, desc, type = args
           else
-            raise ArgumentError, "this method only takes 3 or 4 arguments. Given: #{args.inspect}"
+            raise ArgumentError, _("this method only takes 3 or 4 arguments. Given: %{args}") % { args: args.inspect }
           end
 
           options = {
-              :long => long,
-              :short => short,
-              :required => false,
-              :callback => pass_only_last_value_on_to(block),
-              :multi => true,
+            :long => long,
+            :short => short,
+            :required => false,
+            :callback => pass_only_last_value_on_to(block),
+            :multi => true,
           }
 
           case type
-            when :REQUIRED
-              options[:type] = :string
-            when :NONE
-              options[:type] = :flag
-            else
-              raise PuppetOptionError.new("Unsupported type: '#{type}'")
+          when :REQUIRED
+            options[:type] = :string
+          when :NONE
+            options[:type] = :flag
+          else
+            raise PuppetOptionError.new(_("Unsupported type: '%{type}'") % { type: type })
           end
 
           @parser.opt long.sub("^--", "").intern, desc, options
@@ -73,7 +75,7 @@ module Puppet
           begin
             @parser.parse args_copy
           rescue Puppet::Util::CommandLine::Trollop::CommandlineError => err
-            raise PuppetOptionError.new("Error parsing arguments", err)
+            raise PuppetOptionError.new(_("Error parsing arguments"), err)
           end
         end
 

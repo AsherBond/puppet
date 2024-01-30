@@ -1,4 +1,4 @@
-require 'puppet/indirector/data_binding/hiera'
+# frozen_string_literal: true
 
 require 'tmpdir'
 require 'fileutils'
@@ -35,10 +35,10 @@ module Puppet::Test
     # Call this method once, as early as possible, such as before loading tests
     # that call Puppet.
     # @return nil
-    def self.initialize()
+    def self.initialize
       # This meta class instance variable is used as a guard to ensure that
       # before_each, and after_each are only called once. This problem occurs
-      # when there are more than one puppet test infrastructure "orchestrator in us.
+      # when there are more than one puppet test infrastructure orchestrator in use.
       # The use of both puppetabs-spec_helper, and rodjek-rspec_puppet will cause
       # two resets of the puppet environment, and will cause problem rolling back to
       # a known point as there is no way to differentiate where the calls are coming
@@ -49,26 +49,35 @@ module Puppet::Test
       #
       @@reentry_count ||= 0
 
+      @environmentpath = Dir.mktmpdir('environments')
+      Dir.mkdir("#{@environmentpath}/production")
       owner = Process.pid
       Puppet.push_context(Puppet.base_context({
-        :environmentpath => "",
-        :basemodulepath => "",
-        :manifest => "/dev/null"
-      }), "Initial for specs")
+                                                :environmentpath => @environmentpath,
+                                                :basemodulepath => "",
+                                              }), "Initial for specs")
       Puppet::Parser::Functions.reset
+
+      ObjectSpace.define_finalizer(Puppet.lookup(:environments), proc {
+        if Process.pid == owner
+          FileUtils.rm_rf(@environmentpath)
+        end
+      })
+      Puppet::SSL::Oids.register_puppet_oids
     end
 
     # Call this method once, when beginning a test run--prior to running
     #  any individual tests.
     # @return nil
-    def self.before_all_tests()
-      # Make sure that all of the setup is also done for any before(:all) blocks
+    def self.before_all_tests
+      # The process environment is a shared, persistent resource.
+      $old_env = ENV.to_hash
     end
 
     # Call this method once, at the end of a test run, when no more tests
     #  will be run.
     # @return nil
-    def self.after_all_tests()
+    def self.after_all_tests
     end
 
     # The name of the rollback mark used in the Puppet.context. This is what
@@ -76,9 +85,9 @@ module Puppet::Test
     #
     ROLLBACK_MARK = "initial testing state"
 
-    # Call this method once per test, prior to execution of each invididual test.
+    # Call this method once per test, prior to execution of each individual test.
     # @return nil
-    def self.before_each_test()
+    def self.before_each_test
       # When using both rspec-puppet and puppet-rspec-helper, there are two packages trying
       # to be helpful and orchestrate the callback sequence. We let only the first win, the
       # second callback results in a no-op.
@@ -86,6 +95,7 @@ module Puppet::Test
       # only once.
       #
       return unless @@reentry_count == 0
+
       @@reentry_count = 1
 
       Puppet.mark_context(ROLLBACK_MARK)
@@ -107,13 +117,13 @@ module Puppet::Test
       indirections = Puppet::Indirector::Indirection.send(:class_variable_get, :@@indirections)
       indirections.each do |indirector|
         $saved_indirection_state[indirector.name] = {
-            :@terminus_class => indirector.instance_variable_get(:@terminus_class),
-            :@cache_class    => indirector.instance_variable_get(:@cache_class)
+          :@terminus_class => indirector.instance_variable_get(:@terminus_class).value,
+          :@cache_class => indirector.instance_variable_get(:@cache_class).value,
+          # dup the termini hash so termini created and registered during
+          # the test aren't stored in our saved_indirection_state
+          :@termini => indirector.instance_variable_get(:@termini).dup
         }
       end
-
-      # The process environment is a shared, persistent resource.
-      $old_env = ENV.to_hash
 
       # So is the load_path
       $old_load_path = $LOAD_PATH.dup
@@ -122,97 +132,96 @@ module Puppet::Test
 
       Puppet.push_context(
         {
-          :trusted_information =>
-            Puppet::Context::TrustedInformation.new('local', 'testing', {}),
+          trusted_information:
+            Puppet::Context::TrustedInformation.new('local', 'testing', {}, { "trusted_testhelper" => true }),
+          ssl_context: Puppet::SSL::SSLContext.new(cacerts: []).freeze,
+          http_session: proc { Puppet.runtime[:http].create_session }
         },
-        "Context for specs")
+        "Context for specs"
+      )
+
+      # trigger `require 'facter'`
+      Puppet.runtime[:facter]
 
       Puppet::Parser::Functions.reset
-      Puppet::Node::Environment.clear
       Puppet::Application.clear!
       Puppet::Util::Profiler.clear
 
-      Puppet.clear_deprecation_warnings
+      Puppet::Node::Facts.indirection.terminus_class = :memory
+      facts = Puppet::Node::Facts.new(Puppet[:node_name_value])
+      Puppet::Node::Facts.indirection.save(facts)
 
-      Puppet::DataBinding::Hiera.instance_variable_set("@hiera", nil)
+      Puppet.clear_deprecation_warnings
     end
 
     # Call this method once per test, after execution of each individual test.
     # @return nil
-    def self.after_each_test()
+    def self.after_each_test
       # Ensure that a matching tear down only happens once per completed setup
       # (see #before_each_test).
       return unless @@reentry_count == 1
+
       @@reentry_count = 0
 
       Puppet.settings.send(:clear_everything_for_tests)
 
       Puppet::Util::Storage.clear
       Puppet::Util::ExecutionStub.reset
+      Puppet.runtime.clear
 
       Puppet.clear_deprecation_warnings
 
       # uncommenting and manipulating this can be useful when tracking down calls to deprecated code
-      #Puppet.log_deprecations_to_file("deprecations.txt", /^Puppet::Util.exec/)
+      # Puppet.log_deprecations_to_file("deprecations.txt", /^Puppet::Util.exec/)
 
       # Restore the indirector configuration.  See before hook.
       indirections = Puppet::Indirector::Indirection.send(:class_variable_get, :@@indirections)
       indirections.each do |indirector|
         $saved_indirection_state.fetch(indirector.name, {}).each do |variable, value|
-          indirector.instance_variable_set(variable, value)
+          if variable == :@termini
+            indirector.instance_variable_set(variable, value)
+          else
+            indirector.instance_variable_get(variable).value = value
+          end
         end
       end
       $saved_indirection_state = nil
 
-      # Restore the global process environment.  Can't just assign because this
-      # is a magic variable, sadly, and doesn't do that™.  It is sufficiently
-      # faster to use the compare-then-set model to avoid excessive work that it
-      # justifies the complexity.  --daniel 2012-03-15
-      unless ENV.to_hash == $old_env
-        ENV.clear
-        $old_env.each {|k, v| ENV[k] = v }
-      end
+      # Restore the global process environment.
+      ENV.replace($old_env)
 
-
-      # Some tests can cause us to connect, in which case the lingering
-      # connection is a resource that can cause unexpected failure in later
-      # tests, as well as sharing state accidentally.
-      # We're testing if ActiveRecord::Base is defined because some test cases
-      # may stub Puppet.features.rails? which is how we should normally
-      # introspect for this functionality.
-      ActiveRecord::Base.remove_connection if defined?(ActiveRecord::Base)
+      # Clear all environments
+      Puppet.lookup(:environments).clear_all
 
       # Restore the load_path late, to avoid messing with stubs from the test.
       $LOAD_PATH.clear
-      $old_load_path.each {|x| $LOAD_PATH << x }
+      $old_load_path.each { |x| $LOAD_PATH << x }
 
       Puppet.rollback_context(ROLLBACK_MARK)
     end
-
 
     #########################################################################################
     # PRIVATE METHODS (not part of the public TestHelper API--do not call these from outside
     #  of this class!)
     #########################################################################################
 
-    def self.app_defaults_for_tests()
+    def self.app_defaults_for_tests
       {
-          :logdir     => "/dev/null",
-          :confdir    => "/dev/null",
-          :vardir     => "/dev/null",
-          :rundir     => "/dev/null",
-          :hiera_config => "/dev/null",
+        :logdir => "/dev/null",
+        :confdir => "/dev/null",
+        :publicdir => "/dev/null",
+        :codedir => "/dev/null",
+        :vardir => "/dev/null",
+        :rundir => "/dev/null",
+        :hiera_config => "/dev/null",
       }
     end
     private_class_method :app_defaults_for_tests
 
-    def self.initialize_settings_before_each()
+    def self.initialize_settings_before_each
       Puppet.settings.preferred_run_mode = "user"
       # Initialize "app defaults" settings to a good set of test values
       Puppet.settings.initialize_app_defaults(app_defaults_for_tests)
-
-      # Avoid opening ports to the outside world
-      Puppet.settings[:bindaddress] = "127.0.0.1"
 
       # We don't want to depend upon the reported domain name of the
       # machine running the tests, nor upon the DNS setup of that
@@ -227,7 +236,6 @@ module Puppet::Test
       #
       # I would make these even shorter, but OpenSSL doesn't support anything
       # below 512 bits.  Sad, really, because a 0 bit key would be just fine.
-      Puppet[:req_bits]  = 512
       Puppet[:keylength] = 512
 
       # Although we setup a testing context during initialization, some tests

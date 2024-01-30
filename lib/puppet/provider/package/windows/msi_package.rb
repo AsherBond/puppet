@@ -1,4 +1,6 @@
-require 'puppet/provider/package/windows/package'
+# frozen_string_literal: true
+
+require_relative '../../../../puppet/provider/package/windows/package'
 
 class Puppet::Provider::Package::Windows
   class MsiPackage < Puppet::Provider::Package::Windows::Package
@@ -7,6 +9,14 @@ class Puppet::Provider::Package::Windows
     # From msi.h
     INSTALLSTATE_DEFAULT = 5 # product is installed for the current user
     INSTALLUILEVEL_NONE  = 2 # completely silent installation
+
+    # registry values to load under each product entry in
+    # HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall
+    # for this provider
+    REG_VALUE_NAMES = [
+      'DisplayVersion',
+      'WindowsInstaller'
+    ]
 
     # Get the COM installer object, it's in a separate method for testing
     def self.installer
@@ -20,7 +30,7 @@ class Puppet::Provider::Package::Windows
         inst = installer
 
         if inst.ProductState(name) == INSTALLSTATE_DEFAULT
-          MsiPackage.new(values['DisplayName'],
+          MsiPackage.new(get_display_name(values),
                          values['DisplayVersion'],
                          name, # productcode
                          inst.ProductInfo(name, 'PackageCode'))
@@ -31,9 +41,9 @@ class Puppet::Provider::Package::Windows
     # Is this a valid MSI package we should manage?
     def self.valid?(name, values)
       # See http://community.spiceworks.com/how_to/show/2238
-      !!(values['DisplayName'] and values['DisplayName'].length > 0 and
-         values['SystemComponent'] != 1 and # DWORD
-         values['WindowsInstaller'] == 1 and # DWORD
+      displayName = get_display_name(values)
+      !!(displayName && displayName.length > 0 &&
+         values['WindowsInstaller'] == 1 && # DWORD
          name =~ /\A\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}\Z/i)
     end
 

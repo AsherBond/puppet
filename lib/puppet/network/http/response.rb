@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 class Puppet::Network::HTTP::Response
   def initialize(handler, response)
     @handler = handler
@@ -5,7 +7,19 @@ class Puppet::Network::HTTP::Response
   end
 
   def respond_with(code, type, body)
-    @handler.set_content_type(@response, type)
+    format = Puppet::Network::FormatHandler.format_for(type)
+    mime = format.mime
+    charset = format.charset
+
+    if charset
+      if body.is_a?(String) && body.encoding != charset
+        body.encode!(charset)
+      end
+
+      mime += "; charset=#{charset.name.downcase}"
+    end
+
+    @handler.set_content_type(@response, mime)
     @handler.set_response(@response, body, code)
   end
 end

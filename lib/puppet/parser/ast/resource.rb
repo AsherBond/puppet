@@ -1,16 +1,19 @@
-require 'puppet/parser/ast/resource_reference'
+# frozen_string_literal: true
 
-# Any normal puppet resource declaration.  Can point to a definition or a
-# builtin type.
-class Puppet::Parser::AST
-class Resource < AST::Branch
-
-  associates_doc
-
+# Instruction for Resource instantiation.
+# Instantiates resources of both native and user defined types.
+#
+class Puppet::Parser::AST::Resource < Puppet::Parser::AST::Branch
   attr_accessor :type, :instances, :exported, :virtual
 
-  # Does not actually return an object; instead sets an object
-  # in the current scope.
+  def initialize(argshash)
+    Puppet.warn_once('deprecations', 'AST::Resource', _('Use of Puppet::Parser::AST::Resource is deprecated and not fully functional'))
+    super(argshash)
+  end
+
+  # Evaluates resources by adding them to the compiler for lazy evaluation
+  # and returning the produced resource references.
+  #
   def evaluate(scope)
     # We want virtual to be true if exported is true.  We can't
     # just set :virtual => self.virtual in the initialization,
@@ -22,12 +25,9 @@ class Resource < AST::Branch
     # First level of implicit iteration: build a resource for each
     # instance.  This handles things like:
     # file { '/foo': owner => blah; '/bar': owner => blah }
-    @instances.collect { |instance|
-
+    @instances.map do |instance|
       # Evaluate all of the specified params.
-      paramobjects = instance.parameters.collect { |param|
-        param.safeevaluate(scope)
-      }
+      paramobjects = instance.parameters.map { |param| param.safeevaluate(scope) }
 
       resource_titles = instance.title.safeevaluate(scope)
 
@@ -39,7 +39,7 @@ class Resource < AST::Branch
       # Second level of implicit iteration; build a resource for each
       # title.  This handles things like:
       # file { ['/foo', '/bar']: owner => blah }
-      resource_titles.flatten.collect { |resource_title|
+      resource_titles.flatten.map do |resource_title|
         exceptwrap :type => Puppet::ParseError do
           resource = Puppet::Parser::Resource.new(
             fully_qualified_type, resource_title,
@@ -57,11 +57,10 @@ class Resource < AST::Branch
             resource.resource_type.instantiate_resource(scope, resource)
           end
           scope.compiler.add_resource(scope, resource)
-          scope.compiler.evaluate_classes([resource_title], scope, false, true) if fully_qualified_type == 'class'
+          scope.compiler.evaluate_classes([resource_title], scope, false) if fully_qualified_type == 'class'
           resource
         end
-      }
-    }.flatten.reject { |resource| resource.nil? }
+      end
+    end.flatten.compact
   end
-end
 end

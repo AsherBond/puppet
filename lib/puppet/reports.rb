@@ -1,4 +1,6 @@
-require 'puppet/util/instance_loader'
+# frozen_string_literal: true
+
+require_relative '../puppet/util/instance_loader'
 
 # This class is an implementation of a simple mechanism for loading and returning reports.
 # The intent is that a user registers a report by calling {register_report} and providing a code
@@ -54,7 +56,11 @@ class Puppet::Reports
   def self.register_report(name, options = {}, &block)
     name = name.intern
 
-    mod = genmodule(name, :extend => Puppet::Util::Docs, :hash => instance_hash(:report), :block => block)
+    mod = genmodule(name,
+                    :extend => Puppet::Util::Docs,
+                    :hash => instance_hash(:report),
+                    :overwrite => true,
+                    :block => block)
 
     mod.useyaml = true if options[:useyaml]
 
@@ -66,11 +72,11 @@ class Puppet::Reports
   # Collects the docs for all reports.
   # @api private
   def self.reportdocs
-    docs = ""
+    docs = ''.dup
 
     # Use this method so they all get loaded
-    instance_loader(:report).loadall
-    loaded_instances(:report).sort { |a,b| a.to_s <=> b.to_s }.each do |name|
+    instance_loader(:report).loadall(Puppet.lookup(:current_environment))
+    loaded_instances(:report).sort_by(&:to_s).each do |name|
       mod = self.report(name)
       docs << "#{name}\n#{"-" * name.to_s.length}\n"
 
@@ -83,7 +89,7 @@ class Puppet::Reports
   # Lists each of the reports.
   # @api private
   def self.reports
-    instance_loader(:report).loadall
+    instance_loader(:report).loadall(Puppet.lookup(:current_environment))
     loaded_instances(:report)
   end
 end

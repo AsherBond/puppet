@@ -1,6 +1,12 @@
 test_name "group should not create existing group"
 
-name = "test-group-#{Time.new.to_i}"
+tag 'audit:high',
+    'audit:refactor',  # Use block style `test_name`
+    'audit:acceptance' # Could be done at the integration (or unit) layer though
+                       # actual changing of resources could irreparably damage a
+                       # host running this, or require special permissions.
+
+name = "gr#{rand(999999).to_i}"
 
 agents.each do |agent|
   step "ensure the group exists on the target node"

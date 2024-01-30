@@ -1,7 +1,9 @@
-require 'puppet/file_serving/configuration'
-require 'puppet/file_serving/fileset'
-require 'puppet/file_serving/terminus_helper'
-require 'puppet/indirector/terminus'
+# frozen_string_literal: true
+
+require_relative '../../puppet/file_serving/configuration'
+require_relative '../../puppet/file_serving/fileset'
+require_relative '../../puppet/file_serving/terminus_helper'
+require_relative '../../puppet/indirector/terminus'
 
 # Look files up using the file server.
 class Puppet::Indirector::FileServer < Puppet::Indirector::Terminus
@@ -11,11 +13,12 @@ class Puppet::Indirector::FileServer < Puppet::Indirector::Terminus
   def authorized?(request)
     return false unless [:find, :search].include?(request.method)
 
-    mount, file_path = configuration.split_path(request)
+    mount, _ = configuration.split_path(request)
 
     # If we're not serving this mount, then access is denied.
     return false unless mount
-    mount.allowed?(request.node, request.ip)
+
+    true
   end
 
   # Find our key using the fileserver.
@@ -26,11 +29,10 @@ class Puppet::Indirector::FileServer < Puppet::Indirector::Terminus
 
     # The mount checks to see if the file exists, and returns nil
     # if not.
-    return nil unless path = mount.find(relative_path, request)
-    result = model.new(path)
-    result.links = request.options[:links] if request.options[:links]
-    result.collect(request.options[:source_permissions])
-    result
+    path = mount.find(relative_path, request)
+    return nil unless path
+
+    path2instance(request, path)
   end
 
   # Search for files.  This returns an array rather than a single
@@ -38,22 +40,12 @@ class Puppet::Indirector::FileServer < Puppet::Indirector::Terminus
   def search(request)
     mount, relative_path = configuration.split_path(request)
 
-    unless mount and paths = mount.search(relative_path, request)
-      Puppet.info "Could not find filesystem info for file '#{request.key}' in environment #{request.environment}"
+    paths = mount.search(relative_path, request) if mount
+    unless paths
+      Puppet.info _("Could not find filesystem info for file '%{request}' in environment %{env}") % { request: request.key, env: request.environment }
       return nil
     end
-
-    filesets = paths.collect do |path|
-      # Filesets support indirector requests as an options collection
-      Puppet::FileServing::Fileset.new(path, request)
-    end
-
-    Puppet::FileServing::Fileset.merge(*filesets).collect do |file, base_path|
-      inst = model.new(base_path, :relative_path => file)
-      inst.links = request.options[:links] if request.options[:links]
-      inst.collect
-      inst
-    end
+    path2instances(request, *paths)
   end
 
   private

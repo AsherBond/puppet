@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet_spec/files'
@@ -32,9 +31,30 @@ describe Puppet::Node::Environment do
     environment = Puppet::Node::Environment.create(:foo, dirs)
 
     environment.modules.each do |mod|
-      mod.environment.should == environment
-      mod.path.should == mods[mod.name]
+      expect(mod.environment).to eq(environment)
+      expect(mod.path).to eq(mods[mod.name])
     end
+  end
+
+  it "should expand 8.3 paths on Windows when creating an environment",
+    :if => Puppet::Util::Platform.windows? do
+
+    # asking for short names only works on paths that exist
+    base = Puppet::Util::Windows::File.get_short_pathname(tmpdir("env_modules"))
+    parent_modules_dir = File.join(base, 'testmoduledir')
+
+    # make sure the paths have ~ in them, indicating unexpanded 8.3 paths
+    expect(parent_modules_dir).to match(/~/)
+
+    module_dir = a_module_in('testmodule', parent_modules_dir)
+
+    # create the environment with unexpanded 8.3 paths
+    environment = Puppet::Node::Environment.create(:foo, [parent_modules_dir])
+
+    # and expect fully expanded paths inside the environment
+    # necessary for comparing module paths internally by the parser
+    expect(environment.modulepath).to eq([Puppet::FileSystem.expand_path(parent_modules_dir)])
+    expect(environment.modules.first.path).to eq(Puppet::FileSystem.expand_path(module_dir))
   end
 
   it "should not yield the same module from different module paths" do
@@ -52,8 +72,23 @@ describe Puppet::Node::Environment do
     environment = Puppet::Node::Environment.create(:foo, dirs)
 
     mods = environment.modules
-    mods.length.should == 1
-    mods[0].path.should == File.join(base, "dir1", "mod")
+    expect(mods.length).to eq(1)
+    expect(mods[0].path).to eq(File.join(base, "dir1", "mod"))
+  end
+
+  it "should not yield a module with the same name as a defined Bolt project" do
+    project_path = File.join(tmpfile('project'), 'bolt_project')
+    FileUtils.mkdir_p(project_path)
+    project = Struct.new("Project", :name, :path, :load_as_module?).new('project', project_path, true)
+
+    Puppet.override(bolt_project: project) do
+      base = tmpfile("base")
+      FileUtils.mkdir_p([File.join(base, 'project'), File.join(base, 'other')])
+      environment = Puppet::Node::Environment.create(:env, [base])
+      mods = environment.modules
+      expect(mods.length).to eq(2)
+      expect(mods.map(&:path)).to eq([project_path, File.join(base, 'other')])
+    end
   end
 
   shared_examples_for "the environment's initial import" do |settings|
@@ -80,7 +115,7 @@ describe Puppet::Node::Environment do
     end
   end
 
-  shared_examples_for "the environment's initial import in the future" do |settings|
+  shared_examples_for "the environment's initial import in 4x" do |settings|
     it "a manifest referring to a directory invokes recursive parsing of all its files in sorted order" do
       settings.each do |name, value|
         Puppet[name] = value
@@ -104,22 +139,32 @@ describe Puppet::Node::Environment do
     end
   end
 
-  describe 'using classic parser' do
+  describe 'using 4x parser' do
     it_behaves_like "the environment's initial import",
-      :parser => 'current',
       # fixture uses variables that are set in a particular order (this ensures
       # that files are parsed and combined in the right order or an error will
       # be raised if 'b' is evaluated before 'a').
       :strict_variables => true
   end
 
-  describe 'using future parser' do
-    it_behaves_like "the environment's initial import",
-      :parser    => 'future',
-      # Turned off because currently future parser turns on the binder which
-      # causes lookup of facts that are uninitialized and it will fail with
-      # errors for 'osfamily' etc.  This can be turned back on when the binder
-      # is taken out of the equation.
-      :strict_variables => false
+  describe 'using 4x parser' do
+    it_behaves_like "the environment's initial import in 4x",
+      # fixture uses variables that are set in a particular order (this ensures
+      # that files are parsed and combined in the right order or an error will
+      # be raised if 'b' is evaluated before 'a').
+      :strict_variables => true
+  end
+
+  describe "#extralibs on Windows", :if => Puppet::Util::Platform.windows? do
+
+    describe "with UTF8 characters in PUPPETLIB" do
+      let(:rune_utf8) { "\u16A0\u16C7\u16BB\u16EB\u16D2\u16E6\u16A6\u16EB\u16A0\u16B1\u16A9\u16A0\u16A2\u16B1\u16EB\u16A0\u16C1\u16B1\u16AA\u16EB\u16B7\u16D6\u16BB\u16B9\u16E6\u16DA\u16B3\u16A2\u16D7" }
+
+      before { Puppet::Util::Windows::Process.set_environment_variable('PUPPETLIB', rune_utf8) }
+
+      it "should use UTF8 characters in PUPPETLIB environment variable" do
+        expect(Puppet::Node::Environment.extralibs()).to eq([rune_utf8])
+      end
+    end
   end
 end

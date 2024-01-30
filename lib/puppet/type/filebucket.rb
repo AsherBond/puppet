@@ -1,11 +1,13 @@
-module Puppet
-  require 'puppet/file_bucket/dipper'
+# frozen_string_literal: true
 
-  newtype(:filebucket) do
+module Puppet
+  require_relative '../../puppet/file_bucket/dipper'
+
+  Type.newtype(:filebucket) do
     @doc = <<-EOT
-      A repository for storing and retrieving file content by MD5 checksum. Can
-      be local to each agent node, or centralized on a puppet master server. All
-      puppet masters provide a filebucket service that agent nodes can access
+      A repository for storing and retrieving file content by cryptographic checksum. Can
+      be local to each agent node, or centralized on a primary Puppet server. All
+      puppet servers provide a filebucket service that agent nodes can access
       via HTTP, but you must declare a filebucket resource before any agents
       will do so.
 
@@ -17,27 +19,22 @@ module Puppet
         details. These backups can be used for manual recovery of content, but
         are more commonly used to display changes and differences in a tool like
         Puppet Dashboard.
-      - **Content distribution.** The optional static compiler populates the
-        puppet master's filebucket with the _desired_ content for each file,
-        then instructs the agent to retrieve the content for a specific
-        checksum. For more details,
-        [see the `static_compiler` section in the catalog indirection docs](http://docs.puppetlabs.com/references/latest/indirection.html#catalog).
 
       To use a central filebucket for backups, you will usually want to declare
       a filebucket resource and a resource default for the `backup` attribute
       in site.pp:
 
-          # /etc/puppet/manifests/site.pp
+          # /etc/puppetlabs/puppet/manifests/site.pp
           filebucket { 'main':
             path   => false,                # This is required for remote filebuckets.
-            server => 'puppet.example.com', # Optional; defaults to the configured puppet master.
+            server => 'puppet.example.com', # Optional; defaults to the configured primary server.
           }
 
           File { backup => main, }
 
-      Puppet master servers automatically provide the filebucket service, so
+      Puppet Servers automatically provide the filebucket service, so
       this will work in a default configuration. If you have a heavily
-      restricted `auth.conf` file, you may need to allow access to the
+      restricted Puppet Server `auth.conf` file, you may need to allow access to the
       `file_bucket_file` endpoint.
     EOT
 
@@ -47,19 +44,23 @@ module Puppet
     end
 
     newparam(:server) do
-      desc "The server providing the remote filebucket service. Defaults to the
-        value of the `server` setting (that is, the currently configured
-        puppet master server).
+      desc "The server providing the remote filebucket service.
 
-        This setting is _only_ consulted if the `path` attribute is set to `false`."
-      defaultto { Puppet[:server] }
+        This setting is _only_ consulted if the `path` attribute is set to `false`.
+
+        If this attribute is not specified, the first entry in the `server_list`
+        configuration setting is used, followed by the value of the `server` setting
+        if `server_list` is not set."
     end
 
     newparam(:port) do
-      desc "The port on which the remote server is listening. Defaults to the
-        value of the `masterport` setting, which is usually %s." % Puppet[:masterport]
+      desc "The port on which the remote server is listening.
 
-      defaultto { Puppet[:masterport] }
+        This setting is _only_ consulted if the `path` attribute is set to `false`.
+
+        If this attribute is not specified, the first entry in the `server_list`
+        configuration setting is used, followed by the value of the `serverport`
+        setting if `server_list` is not set."
     end
 
     newparam(:path) do
@@ -71,11 +72,11 @@ module Puppet
 
       validate do |value|
         if value.is_a? Array
-          raise ArgumentError, "You can only have one filebucket path"
+          raise ArgumentError, _("You can only have one filebucket path")
         end
 
         if value.is_a? String and not Puppet::Util.absolute_path?(value)
-          raise ArgumentError, "Filebucket paths must be absolute"
+          raise ArgumentError, _("Filebucket paths must be absolute")
         end
 
         true
@@ -111,7 +112,7 @@ module Puppet
       begin
         @bucket = Puppet::FileBucket::Dipper.new(args)
       rescue => detail
-        message = "Could not create #{type} filebucket: #{detail}"
+        message = _("Could not create %{type} filebucket: %{detail}") % { type: type, detail: detail }
         self.log_exception(detail, message)
         self.fail(message)
       end

@@ -1,5 +1,7 @@
-require 'puppet/provider/package'
-require 'puppet/util/windows'
+# frozen_string_literal: true
+
+require_relative '../../../../puppet/provider/package'
+require_relative '../../../../puppet/util/windows'
 
 class Puppet::Provider::Package::Windows
   class Package
@@ -11,6 +13,14 @@ class Puppet::Provider::Package::Windows
 
     attr_reader :name, :version
 
+    REG_DISPLAY_VALUE_NAMES = ['DisplayName', 'QuietDisplayName']
+
+    def self.reg_value_names_to_load
+      REG_DISPLAY_VALUE_NAMES |
+        MsiPackage::REG_VALUE_NAMES |
+        ExePackage::REG_VALUE_NAMES
+    end
+
     # Enumerate each package. The appropriate package subclass
     # will be yielded.
     def self.each(&block)
@@ -18,7 +28,8 @@ class Puppet::Provider::Package::Windows
         name = key.name.match(/^.+\\([^\\]+)$/).captures[0]
 
         [MsiPackage, ExePackage].find do |klass|
-          if pkg = klass.from_registry(name, values)
+          pkg = klass.from_registry(name, values)
+          if pkg
             yield pkg
           end
         end
@@ -34,10 +45,10 @@ class Puppet::Provider::Package::Windows
         [KEY64, KEY32].each do |mode|
           mode |= KEY_READ
           begin
-            open(hive, 'Software\Microsoft\Windows\CurrentVersion\Uninstall', mode) do |uninstall|
-              uninstall.each_key do |name, wtime|
-                open(hive, "#{uninstall.keyname}\\#{name}", mode) do |key|
-                  yield key, values(key)
+            self.open(hive, 'Software\Microsoft\Windows\CurrentVersion\Uninstall', mode) do |uninstall|
+              each_key(uninstall) do |name, _wtime|
+                self.open(hive, "#{uninstall.keyname}\\#{name}", mode) do |key|
+                  yield key, values_by_name(key, reg_value_names_to_load)
                 end
               end
             end
@@ -50,7 +61,7 @@ class Puppet::Provider::Package::Windows
 
     # Get the class that knows how to install this resource
     def self.installer_class(resource)
-      fail("The source parameter is required when using the Windows provider.") unless resource[:source]
+      fail(_("The source parameter is required when using the Windows provider.")) unless resource[:source]
 
       case resource[:source]
       when /\.msi"?\Z/i
@@ -58,10 +69,12 @@ class Puppet::Provider::Package::Windows
         # REMIND: what about msp, etc
         MsiPackage
       when /\.exe"?\Z/i
-        fail("The source does not exist: '#{resource[:source]}'") unless Puppet::FileSystem.exist?(resource[:source])
+        fail(_("The source does not exist: '%{source}'") % { source: resource[:source] }) unless
+          Puppet::FileSystem.exist?(resource[:source]) || resource[:source].start_with?('http://', 'https://')
+
         ExePackage
       else
-        fail("Don't know how to install '#{resource[:source]}'")
+        fail(_("Don't know how to install '%{source}'") % { source: resource[:source] })
       end
     end
 
@@ -71,7 +84,7 @@ class Puppet::Provider::Package::Windows
 
     def self.replace_forward_slashes(value)
       if value.include?('/')
-        value.gsub!('/', "\\") 
+        value = value.tr('/', "\\")
         Puppet.debug('Package source parameter contained /s - replaced with \\s')
       end
       value
@@ -81,6 +94,14 @@ class Puppet::Provider::Package::Windows
       value.include?(' ') ? %Q["#{value.gsub(/"/, '\"')}"] : value
     end
 
+    def self.get_display_name(values)
+      return if values.nil?
+      return values['DisplayName'] if values['DisplayName'] && values['DisplayName'].length > 0
+      return values['QuietDisplayName'] if values['QuietDisplayName'] && values['QuietDisplayName'].length > 0
+
+      ''
+    end
+
     def initialize(name, version)
       @name = name
       @version = version
@@ -88,5 +109,5 @@ class Puppet::Provider::Package::Windows
   end
 end
 
-require 'puppet/provider/package/windows/msi_package'
-require 'puppet/provider/package/windows/exe_package'
+require_relative '../../../../puppet/provider/package/windows/msi_package'
+require_relative '../../../../puppet/provider/package/windows/exe_package'

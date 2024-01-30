@@ -1,18 +1,19 @@
+# frozen_string_literal: true
+
 # HP-UX packaging.
 
-require 'puppet/provider/package'
+require_relative '../../../puppet/provider/package'
 
 Puppet::Type.type(:package).provide :hpux, :parent => Puppet::Provider::Package do
-
   desc "HP-UX's packaging system."
 
   commands :swinstall => "/usr/sbin/swinstall",
-    :swlist => "/usr/sbin/swlist",
-    :swremove => "/usr/sbin/swremove"
+           :swlist => "/usr/sbin/swlist",
+           :swremove => "/usr/sbin/swremove"
 
-  confine :operatingsystem => "hp-ux"
+  confine 'os.name' => "hp-ux"
 
-  defaultfor :operatingsystem => "hp-ux"
+  defaultfor 'os.name' => "hp-ux"
 
   def self.instances
     # TODO:  This is very hard on HP-UX!
@@ -21,16 +22,17 @@ Puppet::Type.type(:package).provide :hpux, :parent => Puppet::Provider::Package 
 
   # source and name are required
   def install
-    raise ArgumentError, "source must be provided to install HP-UX packages" unless resource[:source]
+    raise ArgumentError, _("source must be provided to install HP-UX packages") unless resource[:source]
+
     args = standard_args + ["-s", resource[:source], resource[:name]]
     swinstall(*args)
   end
 
   def query
     swlist resource[:name]
-    {:ensure => :present}
+    { :ensure => :present }
   rescue
-    {:ensure => :absent}
+    { :ensure => :absent }
   end
 
   def uninstall

@@ -1,11 +1,12 @@
+# frozen_string_literal: true
+
 require 'digest/md5'
-require 'puppet/network/format_support'
+require_relative '../../puppet/network/format_support'
 
 module Puppet::ModuleTool
-
   # = Checksums
   #
-  # This class proides methods for generating checksums for data and adding
+  # This class provides methods for generating checksums for data and adding
   # them to +Metadata+.
   class Checksums
     include Puppet::Network::FormatSupport

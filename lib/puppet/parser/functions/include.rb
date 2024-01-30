@@ -1,5 +1,7 @@
+# frozen_string_literal: true
+
 # Include the specified classes
-Puppet::Parser::Functions::newfunction(:include, :arity => -2, :doc =>
+Puppet::Parser::Functions.newfunction(:include, :arity => -2, :doc =>
 "Declares one or more classes, causing the resources in them to be
 evaluated and added to the catalog. Accepts a class name, an array of class
 names, or a comma-separated list of class names.
@@ -19,17 +21,16 @@ where they are declared. For that, see the `contain` function. It also
 does not create a dependency relationship between the declared class and the
 surrounding class; for that, see the `require` function.
 
-When the future parser is used, you must use the class's full name;
-relative names are no longer allowed. In addition to names in string form,
+You must use the class's full name;
+relative names are not allowed. In addition to names in string form,
 you may also directly use Class and Resource Type values that are produced by
 the future parser's resource and relationship expressions.
 
-") do |vals|
-
-  # Unify call patterns (if called with nested arrays), make names absolute if
-  # wanted and evaluate the classes
-  compiler.evaluate_classes(
-  transform_and_assert_classnames(
-      vals.is_a?(Array) ? vals.flatten : [vals]),
-      self, false)
+- Since < 3.0.0
+- Since 4.0.0 support for class and resource type values, absolute names
+- Since 4.7.0 returns an Array[Type[Class]] of all included classes
+") do |classes|
+  call_function('include', classes)
+  # TRANSLATORS "function_include", "Scope", and "Scope#call_function" refer to Puppet internals and should not be translated
+  Puppet.warn_once('deprecations', '3xfunction#include', _("Calling function_include via the Scope class is deprecated. Use Scope#call_function instead"))
 end

@@ -1,12 +1,14 @@
 # encoding: UTF-8
+# frozen_string_literal: true
+
 # Load standard libraries
 require 'pathname'
 require 'fileutils'
-require 'puppet/util/colors'
+require_relative '../puppet/util/colors'
 
 module Puppet
   module ModuleTool
-    require 'puppet/module_tool/tar'
+    require_relative 'module_tool/tar'
     extend Puppet::Util::Colors
 
     # Directory and names that should not be checksummed.
@@ -31,22 +33,22 @@ module Puppet
     # Return the +username+ and +modname+ for a given +full_module_name+, or raise an
     # ArgumentError if the argument isn't parseable.
     def self.username_and_modname_from(full_module_name)
-      if matcher = full_module_name.match(FULL_MODULE_NAME_PATTERN)
+      matcher = full_module_name.match(FULL_MODULE_NAME_PATTERN)
+      if matcher
         return matcher.captures
       else
-        raise ArgumentError, "Not a valid full name: #{full_module_name}"
+        raise ArgumentError, _("Not a valid full name: %{full_module_name}") % { full_module_name: full_module_name }
       end
     end
 
     # Find the module root when given a path by checking each directory up from
-    # its current location until it finds one that contains a file called
-    # 'Modulefile'.
+    # its current location until it finds one that satisfies is_module_root?
     #
     # @param path [Pathname, String] path to start from
     # @return [Pathname, nil] the root path of the module directory or nil if
     #   we cannot find one
     def self.find_module_root(path)
-      path = Pathname.new(path) if path.class == String
+      path = Pathname.new(path) if path.instance_of?(String)
 
       path.expand_path.ascend do |p|
         return p if is_module_root?(p)
@@ -56,20 +58,20 @@ module Puppet
     end
 
     # Analyse path to see if it is a module root directory by detecting a
-    # file named 'metadata.json' or 'Modulefile' in the directory.
+    # file named 'metadata.json'
     #
     # @param path [Pathname, String] path to analyse
     # @return [Boolean] true if the path is a module root, false otherwise
     def self.is_module_root?(path)
-      path = Pathname.new(path) if path.class == String
+      path = Pathname.new(path) if path.instance_of?(String)
 
-      FileTest.file?(path + 'metadata.json') || FileTest.file?(path + 'Modulefile')
+      FileTest.file?(path + 'metadata.json')
     end
 
     # Builds a formatted tree from a list of node hashes containing +:text+
     # and +:dependencies+ keys.
     def self.format_tree(nodes, level = 0)
-      str = ''
+      str = ''.dup
       nodes.each_with_index do |node, i|
         last_node = nodes.length - 1 == i
         deps = node[:dependencies] || []
@@ -101,7 +103,7 @@ module Puppet
         mod[:text] += " [#{mod[:path]}]" unless mod[:path].to_s == dir.to_s
 
         deps = (mod[:dependencies] || [])
-        deps.sort! { |a, b| a[:name] <=> b[:name] }
+        deps.sort_by! { |a| a[:name] }
         build_tree(deps, dir)
       end
     end
@@ -136,7 +138,7 @@ module Puppet
     # Given a hash of options, we should discover or create a
     # {Puppet::Node::Environment} instance that reflects the provided options.
     #
-    # Generally speaking, the `:modulepath` parameter should supercede all
+    # Generally speaking, the `:modulepath` parameter should supersede all
     # others, the `:environment` parameter should follow after that, and we
     # should default to Puppet's current environment.
     #
@@ -150,45 +152,44 @@ module Puppet
         options[:environment]
       elsif options[:environment]
         # This use of looking up an environment is correct since it honours
-        # a reguest to get a particular environment via environment name.
-        Puppet.lookup(:environments).get(options[:environment])
+        # a request to get a particular environment via environment name.
+        Puppet.lookup(:environments).get!(options[:environment])
       else
         Puppet.lookup(:current_environment)
       end
     end
 
     # Handles parsing of module dependency expressions into proper
-    # {Semantic::VersionRange}s, including reasonable error handling.
+    # {SemanticPuppet::VersionRange}s, including reasonable error handling.
     #
     # @param where [String] a description of the thing we're parsing the
     #        dependency expression for
     # @param dep [Hash] the dependency description to parse
-    # @return [Array(String, Semantic::VersionRange, String)] an tuple of the
+    # @return [Array(String, SemanticPuppet::VersionRange, String)] a tuple of the
     #         dependent module's name, the version range dependency, and the
     #         unparsed range expression.
     def self.parse_module_dependency(where, dep)
       dep_name = dep['name'].tr('/', '-')
-      range = dep['version_requirement'] || dep['versionRequirement'] || '>= 0.0.0'
+      range = dep['version_requirement'] || '>= 0.0.0'
 
       begin
-        parsed_range = Semantic::VersionRange.parse(range)
+        parsed_range = Module.parse_range(range)
       rescue ArgumentError => e
         Puppet.debug "Error in #{where} parsing dependency #{dep_name} (#{e.message}); using empty range."
-        parsed_range = Semantic::VersionRange::EMPTY_RANGE
+        parsed_range = SemanticPuppet::VersionRange::EMPTY_RANGE
       end
 
-      [ dep_name, parsed_range, range ]
+      [dep_name, parsed_range, range]
     end
   end
 end
 
 # Load remaining libraries
-require 'puppet/module_tool/errors'
-require 'puppet/module_tool/applications'
-require 'puppet/module_tool/checksums'
-require 'puppet/module_tool/contents_description'
-require 'puppet/module_tool/dependency'
-require 'puppet/module_tool/metadata'
-require 'puppet/module_tool/modulefile'
-require 'puppet/forge/cache'
-require 'puppet/forge'
+require_relative 'module_tool/errors'
+require_relative 'module_tool/applications'
+require_relative 'module_tool/checksums'
+require_relative 'module_tool/contents_description'
+require_relative 'module_tool/dependency'
+require_relative 'module_tool/metadata'
+require_relative '../puppet/forge/cache'
+require_relative '../puppet/forge'

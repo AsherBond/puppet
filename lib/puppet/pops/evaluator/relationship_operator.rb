@@ -1,3 +1,7 @@
+# frozen_string_literal: true
+
+module Puppet::Pops
+module Evaluator
 # The RelationshipOperator implements the semantics of the -> <- ~> <~ operators creating relationships or notification
 # relationships between the left and right hand side's references to resources.
 #
@@ -6,17 +10,15 @@
 # This is done to separate the concerns of the new evaluator from the 3x runtime; messy logic goes into the runtime support
 # module. Later when more is cleaned up this can be simplified further.
 #
-class Puppet::Pops::Evaluator::RelationshipOperator
-
+class RelationshipOperator
   # Provides access to the Puppet 3.x runtime (scope, etc.)
   # This separation has been made to make it easier to later migrate the evaluator to an improved runtime.
   #
-  include Puppet::Pops::Evaluator::Runtime3Support
-
-  Issues = Puppet::Pops::Issues
+  include Runtime3Support
 
   class IllegalRelationshipOperandError < RuntimeError
     attr_reader :operand
+
     def initialize operand
       @operand = operand
     end
@@ -24,17 +26,17 @@ class Puppet::Pops::Evaluator::RelationshipOperator
 
   class NotCatalogTypeError < RuntimeError
     attr_reader :type
+
     def initialize type
       @type = type
     end
   end
 
   def initialize
-    @type_transformer_visitor = Puppet::Pops::Visitor.new(self, "transform", 1, 1)
-    @type_calculator = Puppet::Pops::Types::TypeCalculator.new()
-    @type_parser = Puppet::Pops::Types::TypeParser.new()
+    @type_transformer_visitor = Visitor.new(self, "transform", 1, 1)
+    @type_calculator = Types::TypeCalculator.new()
 
-    tf = Puppet::Pops::Types::TypeFactory
+    tf = Types::TypeFactory
     @catalog_type = tf.variant(tf.catalog_entry, tf.type_type(tf.catalog_entry))
   end
 
@@ -48,16 +50,22 @@ class Puppet::Pops::Evaluator::RelationshipOperator
     raise IllegalRelationshipOperandError.new(o)
   end
 
+  # A Resource is by definition a Catalog type, but of 3.x type
+  # @api private
+  def transform_Resource(o, scope)
+    Types::TypeFactory.resource(o.type, o.title)
+  end
+
   # A string must be a type reference in string format
   # @api private
   def transform_String(o, scope)
-    assert_catalog_type(@type_parser.parse(o), scope)
+    assert_catalog_type(Types::TypeParser.singleton.parse(o), scope)
   end
 
   # A qualified name is short hand for a class with this name
   # @api private
   def transform_QualifiedName(o, scope)
-    Puppet::Pops::Types::TypeFactory.host_class(o.value)
+    Types::TypeFactory.host_class(o.value)
   end
 
   # Types are what they are, just check the type
@@ -76,32 +84,37 @@ class Puppet::Pops::Evaluator::RelationshipOperator
     o
   end
 
+  def transform_AbstractCollector(o, scope)
+    o
+  end
+
   # Array content needs to be transformed
   def transform_Array(o, scope)
-    o.map{|x| transform(x, scope) }
+    o.map { |x| transform(x, scope) }
   end
 
   # Asserts (and returns) the type if it is a PCatalogEntryType
-  # (A PCatalogEntryType is the base class of PHostClassType, and PResourceType).
+  # (A PCatalogEntryType is the base class of PClassType, and PResourceType).
   #
   def assert_catalog_type(o, scope)
     unless @type_calculator.assignable?(@catalog_type, o)
       raise NotCatalogTypeError.new(o)
     end
+
     # TODO must check if this is an abstract PResourceType (i.e. without a type_name) - which should fail ?
     # e.g. File -> File (and other similar constructs) - maybe the catalog protects against this since references
     # may be to future objects...
     o
   end
 
-  RELATIONSHIP_OPERATORS = [:'->', :'~>', :'<-', :'<~']
-  REVERSE_OPERATORS      = [:'<-', :'<~']
+  RELATIONSHIP_OPERATORS = ['->', '~>', '<-', '<~'].freeze
+  REVERSE_OPERATORS      = ['<-', '<~'].freeze
   RELATION_TYPE = {
-    :'->' => :relationship,
-    :'<-' => :relationship,
-    :'~>' => :subscription,
-    :'<~' => :subscription
-  }
+    '->' => :relationship,
+    '<-' => :relationship,
+    '~>' => :subscription,
+    '<~' => :subscription
+  }.freeze
 
   # Evaluate a relationship.
   # TODO: The error reporting is not fine grained since evaluation has already taken place
@@ -110,11 +123,11 @@ class Puppet::Pops::Evaluator::RelationshipOperator
   # To implement this, the general evaluator needs to be able to track each evaluation result and associate
   # it with a corresponding expression. This structure should then be passed to the relationship operator.
   #
-  def evaluate (left_right_evaluated, relationship_expression, scope)
+  def evaluate(left_right_evaluated, relationship_expression, scope)
     # assert operator (should have been validated, but this logic makes assumptions which would
     # screw things up royally). Better safe than sorry.
     unless RELATIONSHIP_OPERATORS.include?(relationship_expression.operator)
-      fail(Issues::UNSUPPORTED_OPERATOR, relationship_expression, {:operator => relationship_expression.operator})
+      fail(Issues::UNSUPPORTED_OPERATOR, relationship_expression, { :operator => relationship_expression.operator })
     end
 
     begin
@@ -130,7 +143,7 @@ class Puppet::Pops::Evaluator::RelationshipOperator
       # into an array, and thus the resulting left and right must be flattened individually
       # Once flattened, the operands should be sets (to remove duplicate entries)
       #
-      real = left_right_evaluated.collect {|x| [x].flatten.collect {|x| transform(x, scope) }}
+      real = left_right_evaluated.collect { |x| [x].flatten.collect { |y| transform(y, scope) } }
       real[0].flatten!
       real[1].flatten!
       real[0].uniq!
@@ -140,18 +153,36 @@ class Puppet::Pops::Evaluator::RelationshipOperator
       source, target = reverse_operator?(relationship_expression) ? real.reverse : real
 
       # Add the relationships to the catalog
-      source.each {|s| target.each {|t| add_relationship(s, t, RELATION_TYPE[relationship_expression.operator], scope) }}
+      source.each { |s| target.each { |t| add_relationship(s, t, RELATION_TYPE[relationship_expression.operator], scope) } }
 
-      # Produce the transformed source RHS (if this is a chain, this does not need to be done again)
-      real.slice(1)
+      # The result is the transformed source RHS unless it is empty, in which case the transformed LHS is returned.
+      # This closes the gap created by an empty set of references in a chain of relationship
+      # such that X -> [ ] -> Y results in  X -> Y.
+      # result = real[1].empty? ? real[0] : real[1]
+      if real[1].empty?
+        # right side empty, simply use the left (whatever it may be)
+        result = real[0]
+      else
+        right = real[1]
+        if right.size == 1 && right[0].is_a?(Puppet::Pops::Evaluator::Collectors::AbstractCollector)
+          # the collector when evaluated later may result in an empty set, if so, the
+          # lazy relationship forming logic needs to have access to the left value.
+          adapter = Puppet::Pops::Adapters::EmptyAlternativeAdapter.adapt(right[0])
+          adapter.empty_alternative = real[0]
+        end
+        result = right
+      end
+      result
     rescue NotCatalogTypeError => e
-      fail(Issues::ILLEGAL_RELATIONSHIP_OPERAND_TYPE, relationship_expression, {:type => @type_calculator.string(e.type)})
+      fail(Issues::NOT_CATALOG_TYPE, relationship_expression, { :type => @type_calculator.string(e.type) })
     rescue IllegalRelationshipOperandError => e
-      fail(Issues::ILLEGAL_RELATIONSHIP_OPERAND_TYPE, relationship_expression, {:operand => e.operand})
+      fail(Issues::ILLEGAL_RELATIONSHIP_OPERAND_TYPE, relationship_expression, { :operand => e.operand })
     end
   end
 
   def reverse_operator?(o)
     REVERSE_OPERATORS.include?(o.operator)
   end
+end
+end
 end

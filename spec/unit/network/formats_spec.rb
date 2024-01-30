@@ -1,51 +1,62 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/network/formats'
+require 'puppet/network/format_support'
 
-class PsonTest
+class FormatsTest
+  include Puppet::Network::FormatSupport
+
   attr_accessor :string
   def ==(other)
     string == other.string
   end
 
   def self.from_data_hash(data)
-    new(data)
+    new(data['string'])
   end
 
   def initialize(string)
     @string = string
   end
 
-  def to_pson(*args)
+  def to_data_hash(*args)
     {
-      'type' => self.class.name,
-      'data' => @string
-    }.to_pson(*args)
+      'string' => @string
+    }
+  end
+
+  def to_binary
+    string
+  end
+
+  def self.from_binary(data)
+    self.new(data)
   end
 end
 
 describe "Puppet Network Format" do
   it "should include a msgpack format", :if => Puppet.features.msgpack? do
-    Puppet::Network::FormatHandler.format(:msgpack).should_not be_nil
+    expect(Puppet::Network::FormatHandler.format(:msgpack)).not_to be_nil
   end
 
   describe "msgpack", :if => Puppet.features.msgpack? do
-    before do
-      @msgpack = Puppet::Network::FormatHandler.format(:msgpack)
-    end
+    let(:msgpack) { Puppet::Network::FormatHandler.format(:msgpack) }
 
     it "should have its mime type set to application/x-msgpack" do
-      @msgpack.mime.should == "application/x-msgpack"
+      expect(msgpack.mime).to eq("application/x-msgpack")
+    end
+
+    it "should have a nil charset" do
+      expect(msgpack.charset).to be_nil
     end
 
     it "should have a weight of 20" do
-      @msgpack.weight.should == 20
+      expect(msgpack.weight).to eq(20)
     end
 
     it "should fail when one element does not have a from_data_hash" do
       expect do
-        @msgpack.intern_multiple(Hash, MessagePack.pack(["foo"]))
+        msgpack.intern_multiple(Hash, MessagePack.pack(["foo"]))
       end.to raise_error(NoMethodError)
     end
 
@@ -53,7 +64,7 @@ describe "Puppet Network Format" do
       cat = Puppet::Resource::Catalog.new('foo', Puppet::Node::Environment.create(:testing, []))
       cat.add_resource(Puppet::Resource.new(:file, 'my_file'))
       catunpack = MessagePack.unpack(cat.to_msgpack)
-      catunpack.should include(
+      expect(catunpack).to include(
         "tags"=>[],
         "name"=>"foo",
         "version"=>nil,
@@ -61,339 +72,426 @@ describe "Puppet Network Format" do
         "edges"=>[],
         "classes"=>[]
       )
-      catunpack["resources"][0].should include(
+      expect(catunpack["resources"][0]).to include(
         "type"=>"File",
         "title"=>"my_file",
         "exported"=>false
       )
-      catunpack["resources"][0]["tags"].should include(
+      expect(catunpack["resources"][0]["tags"]).to include(
         "file",
         "my_file"
       )
     end
   end
 
-  it "should include a yaml format" do
-    Puppet::Network::FormatHandler.format(:yaml).should_not be_nil
-  end
-
   describe "yaml" do
-    before do
-      @yaml = Puppet::Network::FormatHandler.format(:yaml)
-    end
+    let(:yaml) { Puppet::Network::FormatHandler.format(:yaml) }
 
     it "should have its mime type set to text/yaml" do
-      @yaml.mime.should == "text/yaml"
+      expect(yaml.mime).to eq("text/yaml")
+    end
+
+    # we shouldn't be using yaml on the network
+    it "should have a nil charset" do
+      expect(yaml.charset).to be_nil
     end
 
     it "should be supported on Strings" do
-      @yaml.should be_supported(String)
+      expect(yaml).to be_supported(String)
     end
 
     it "should render by calling 'to_yaml' on the instance" do
-      instance = mock 'instance'
-      instance.expects(:to_yaml).returns "foo"
-      @yaml.render(instance).should == "foo"
+      instance = double('instance')
+      expect(instance).to receive(:to_yaml).and_return("foo")
+      expect(yaml.render(instance)).to eq("foo")
     end
 
     it "should render multiple instances by calling 'to_yaml' on the array" do
-      instances = [mock('instance')]
-      instances.expects(:to_yaml).returns "foo"
-      @yaml.render_multiple(instances).should == "foo"
+      instances = [double('instance')]
+      expect(instances).to receive(:to_yaml).and_return("foo")
+      expect(yaml.render_multiple(instances)).to eq("foo")
     end
 
     it "should deserialize YAML" do
-      @yaml.intern(String, YAML.dump("foo")).should == "foo"
+      expect(yaml.intern(String, YAML.dump("foo"))).to eq("foo")
     end
 
     it "should deserialize symbols as strings" do
-      @yaml.intern(String, YAML.dump(:foo)).should == "foo"
+      expect { yaml.intern(String, YAML.dump(:foo))}.to raise_error(Puppet::Network::FormatHandler::FormatError)
+    end
+
+    it "should skip data_to_hash if data is already an instance of the specified class" do
+      # The rest terminus for the report indirected type relies on this behavior
+      data = YAML.dump([1, 2])
+      instance = yaml.intern(Array, data)
+      expect(instance).to eq([1, 2])
     end
 
     it "should load from yaml when deserializing an array" do
       text = YAML.dump(["foo"])
-      @yaml.intern_multiple(String, text).should == ["foo"]
+      expect(yaml.intern_multiple(String, text)).to eq(["foo"])
     end
 
-    it "fails intelligibly instead of calling to_pson with something other than a hash" do
+    it "fails intelligibly instead of calling to_json with something other than a hash" do
       expect do
-        @yaml.intern(Puppet::Node, '')
+        yaml.intern(Puppet::Node, '')
       end.to raise_error(Puppet::Network::FormatHandler::FormatError, /did not contain a valid instance/)
     end
 
     it "fails intelligibly when intern_multiple is called and yaml doesn't decode to an array" do
       expect do
-        @yaml.intern_multiple(Puppet::Node, '')
+        yaml.intern_multiple(Puppet::Node, '')
       end.to raise_error(Puppet::Network::FormatHandler::FormatError, /did not contain a collection/)
     end
 
-    it "fails intelligibly instead of calling to_pson with something other than a hash when interning multiple" do
+    it "fails intelligibly instead of calling to_json with something other than a hash when interning multiple" do
       expect do
-        @yaml.intern_multiple(Puppet::Node, YAML.dump(["hello"]))
+        yaml.intern_multiple(Puppet::Node, YAML.dump(["hello"]))
       end.to raise_error(Puppet::Network::FormatHandler::FormatError, /did not contain a valid instance/)
     end
-  end
 
-  describe "base64 compressed yaml", :if => Puppet.features.zlib? do
-    before do
-      @yaml = Puppet::Network::FormatHandler.format(:b64_zlib_yaml)
+    it 'accepts indirected classes' do
+      [
+        Puppet::Node::Facts.new('foo', {}),
+        Puppet::Node.new('foo'),
+        Puppet::Resource.new('File', '/foo'),
+        Puppet::Transaction::Report.new('foo'),
+        Puppet::Resource::Catalog.new
+      ].each { |obj| yaml.intern(obj.class, YAML.dump(obj.to_data_hash)) }
     end
 
-    it "should have its mime type set to text/b64_zlib_yaml" do
-      @yaml.mime.should == "text/b64_zlib_yaml"
+    it 'raises when interning an instance of an unacceptable indirected type' do
+      obj = :something
+
+      expect {
+        yaml.intern(obj.class, YAML.dump(obj))
+      }.to raise_error(Puppet::Network::FormatHandler::FormatError, /Tried to load unspecified class: Symbol/)
     end
 
-    it "should render by calling 'to_yaml' on the instance" do
-      instance = mock 'instance'
-      instance.expects(:to_yaml).returns "foo"
-      @yaml.render(instance)
+    it 'raises when interning multple instances of an unacceptable indirected type' do
+      obj = :something
+
+      expect {
+        yaml.intern_multiple(obj.class, YAML.dump([obj]))
+      }.to raise_error(Puppet::Network::FormatHandler::FormatError, /Tried to load unspecified class: Symbol/)
     end
-
-    it "should encode generated yaml on render" do
-      instance = mock 'instance', :to_yaml => "foo"
-
-      @yaml.expects(:encode).with("foo").returns "bar"
-
-      @yaml.render(instance).should == "bar"
-    end
-
-    it "should render multiple instances by calling 'to_yaml' on the array" do
-      instances = [mock('instance')]
-      instances.expects(:to_yaml).returns "foo"
-      @yaml.render_multiple(instances)
-    end
-
-    it "should encode generated yaml on render" do
-      instances = [mock('instance')]
-      instances.stubs(:to_yaml).returns "foo"
-
-      @yaml.expects(:encode).with("foo").returns "bar"
-
-      @yaml.render(instances).should == "bar"
-    end
-
-    it "should round trip data" do
-      @yaml.intern(String, @yaml.encode("foo")).should == "foo"
-    end
-
-    it "should round trip multiple data elements" do
-      data = @yaml.render_multiple(["foo", "bar"])
-      @yaml.intern_multiple(String, data).should == ["foo", "bar"]
-    end
-
-    it "should intern by base64 decoding, uncompressing and safely Yaml loading" do
-      input = Base64.encode64(Zlib::Deflate.deflate(YAML.dump("data in")))
-
-      @yaml.intern(String, input).should == "data in"
-    end
-
-    it "should render by compressing and base64 encoding" do
-      output = @yaml.render("foo")
-
-      YAML.load(Zlib::Inflate.inflate(Base64.decode64(output))).should == "foo"
-    end
-
-    describe "when zlib is disabled" do
-      before do
-        Puppet[:zlib] = false
-      end
-
-      it "use_zlib? should return false" do
-        @yaml.use_zlib?.should == false
-      end
-
-      it "should refuse to encode" do
-        expect { @yaml.render("foo") }.to raise_error(Puppet::Error, /zlib library is not installed/)
-      end
-
-      it "should refuse to decode" do
-        expect { @yaml.intern(String, "foo") }.to raise_error(Puppet::Error, /zlib library is not installed/)
-      end
-    end
-
-    describe "when zlib is not installed" do
-      it "use_zlib? should return false" do
-        Puppet[:zlib] = true
-        Puppet.features.expects(:zlib?).returns(false)
-
-        @yaml.use_zlib?.should == false
-      end
-    end
-
   end
 
   describe "plaintext" do
-    before do
-      @text = Puppet::Network::FormatHandler.format(:s)
-    end
+    let(:text) { Puppet::Network::FormatHandler.format(:s) }
 
     it "should have its mimetype set to text/plain" do
-      @text.mime.should == "text/plain"
+      expect(text.mime).to eq("text/plain")
+    end
+
+    it "should use 'utf-8' charset" do
+      expect(text.charset).to eq(Encoding::UTF_8)
     end
 
     it "should use 'txt' as its extension" do
-      @text.extension.should == "txt"
+      expect(text.extension).to eq("txt")
     end
   end
 
   describe "dot" do
-    before do
-      @dot = Puppet::Network::FormatHandler.format(:dot)
-    end
+    let(:dot) { Puppet::Network::FormatHandler.format(:dot) }
 
     it "should have its mimetype set to text/dot" do
-      @dot.mime.should == "text/dot"
+      expect(dot.mime).to eq("text/dot")
     end
   end
 
-  describe Puppet::Network::FormatHandler.format(:raw) do
-    before do
-      @format = Puppet::Network::FormatHandler.format(:raw)
-    end
+  describe Puppet::Network::FormatHandler.format(:binary) do
+    let(:binary) { Puppet::Network::FormatHandler.format(:binary) }
 
     it "should exist" do
-      @format.should_not be_nil
+      expect(binary).not_to be_nil
     end
 
-    it "should have its mimetype set to application/x-raw" do
-      @format.mime.should == "application/x-raw"
+    it "should have its mimetype set to application/octet-stream" do
+      expect(binary.mime).to eq("application/octet-stream")
     end
 
-    it "should always be supported" do
-      @format.should be_supported(String)
+    it "should have a nil charset" do
+      expect(binary.charset).to be_nil
+    end
+
+    it "should not be supported by default" do
+      expect(binary).to_not be_supported(String)
+    end
+
+    it "should render an instance as binary" do
+      instance = FormatsTest.new("foo")
+      expect(binary.render(instance)).to eq("foo")
+    end
+
+    it "should intern an instance from a JSON hash" do
+      instance = binary.intern(FormatsTest, "foo")
+      expect(instance.string).to eq("foo")
     end
 
     it "should fail if its multiple_render method is used" do
-      lambda { @format.render_multiple("foo") }.should raise_error(NotImplementedError)
+      expect {
+        binary.render_multiple("foo")
+      }.to raise_error(NotImplementedError, /can not render multiple instances to application\/octet-stream/)
     end
 
     it "should fail if its multiple_intern method is used" do
-      lambda { @format.intern_multiple(String, "foo") }.should raise_error(NotImplementedError)
+      expect {
+        binary.intern_multiple(String, "foo")
+      }.to raise_error(NotImplementedError, /can not intern multiple instances from application\/octet-stream/)
     end
 
     it "should have a weight of 1" do
-      @format.weight.should == 1
+      expect(binary.weight).to eq(1)
     end
   end
 
-  it "should include a pson format" do
-    Puppet::Network::FormatHandler.format(:pson).should_not be_nil
-  end
+  describe "pson", :if => Puppet.features.pson? do
+    let(:pson) { Puppet::Network::FormatHandler.format(:pson) }
 
-  describe "pson" do
-    before do
-      @pson = Puppet::Network::FormatHandler.format(:pson)
+    it "should include a pson format" do
+      expect(pson).not_to be_nil
     end
 
     it "should have its mime type set to text/pson" do
-      Puppet::Network::FormatHandler.format(:pson).mime.should == "text/pson"
+      expect(pson.mime).to eq("text/pson")
+    end
+
+    it "should have a nil charset" do
+      expect(pson.charset).to be_nil
     end
 
     it "should require the :render_method" do
-      Puppet::Network::FormatHandler.format(:pson).required_methods.should be_include(:render_method)
+      expect(pson.required_methods).to be_include(:render_method)
     end
 
     it "should require the :intern_method" do
-      Puppet::Network::FormatHandler.format(:pson).required_methods.should be_include(:intern_method)
+      expect(pson.required_methods).to be_include(:intern_method)
     end
 
     it "should have a weight of 10" do
-      @pson.weight.should == 10
+      expect(pson.weight).to eq(10)
     end
 
-    describe "when supported" do
-      it "should render by calling 'to_pson' on the instance" do
-        instance = PsonTest.new("foo")
-        instance.expects(:to_pson).returns "foo"
-        @pson.render(instance).should == "foo"
-      end
+    it "should render an instance as pson" do
+      instance = FormatsTest.new("foo")
+      expect(pson.render(instance)).to eq({"string" => "foo"}.to_pson)
+    end
 
-      it "should render multiple instances by calling 'to_pson' on the array" do
-        instances = [mock('instance')]
+    it "should render multiple instances as pson" do
+      instances = [FormatsTest.new("foo")]
+      expect(pson.render_multiple(instances)).to eq([{"string" => "foo"}].to_pson)
+    end
 
-        instances.expects(:to_pson).returns "foo"
+    it "should intern an instance from a pson hash" do
+      text = PSON.dump({"string" => "parsed_pson"})
+      instance = pson.intern(FormatsTest, text)
+      expect(instance.string).to eq("parsed_pson")
+    end
 
-        @pson.render_multiple(instances).should == "foo"
-      end
+    it "should skip data_to_hash if data is already an instance of the specified class" do
+      # The rest terminus for the report indirected type relies on this behavior
+      data = PSON.dump([1, 2])
+      instance = pson.intern(Array, data)
+      expect(instance).to eq([1, 2])
+    end
 
-      it "should intern by calling 'PSON.parse' on the text and then using from_data_hash to convert the data into an instance" do
-        text = "foo"
-        PSON.expects(:parse).with("foo").returns("type" => "PsonTest", "data" => "foo")
-        PsonTest.expects(:from_data_hash).with("foo").returns "parsed_pson"
-        @pson.intern(PsonTest, text).should == "parsed_pson"
-      end
+    it "should intern multiple instances from a pson array" do
+      text = PSON.dump(
+        [
+          {
+            "string" => "BAR"
+          },
+          {
+            "string" => "BAZ"
+          }
+        ]
+      )
+      expect(pson.intern_multiple(FormatsTest, text)).to eq([FormatsTest.new('BAR'), FormatsTest.new('BAZ')])
+    end
 
-      it "should not render twice if 'PSON.parse' creates the appropriate instance" do
-        text = "foo"
-        instance = PsonTest.new("foo")
-        PSON.expects(:parse).with("foo").returns(instance)
-        PsonTest.expects(:from_data_hash).never
-        @pson.intern(PsonTest, text).should equal(instance)
-      end
+    it "should unwrap the data from legacy clients" do
+      text = PSON.dump(
+        {
+          "type" => "FormatsTest",
+          "data" => {
+            "string" => "parsed_json"
+          }
+        }
+      )
+      instance = pson.intern(FormatsTest, text)
+      expect(instance.string).to eq("parsed_json")
+    end
 
-      it "should intern by calling 'PSON.parse' on the text and then using from_data_hash to convert the actual into an instance if the pson has no class/data separation" do
-        text = "foo"
-        PSON.expects(:parse).with("foo").returns("foo")
-        PsonTest.expects(:from_data_hash).with("foo").returns "parsed_pson"
-        @pson.intern(PsonTest, text).should == "parsed_pson"
-      end
+    it "fails intelligibly when given invalid data" do
+      expect do
+        pson.intern(Puppet::Node, '')
+      end.to raise_error(PSON::ParserError, /source did not contain any PSON/)
+    end
+  end
 
-      it "should intern multiples by parsing the text and using 'class.intern' on each resulting data structure" do
-        text = "foo"
-        PSON.expects(:parse).with("foo").returns ["bar", "baz"]
-        PsonTest.expects(:from_data_hash).with("bar").returns "BAR"
-        PsonTest.expects(:from_data_hash).with("baz").returns "BAZ"
-        @pson.intern_multiple(PsonTest, text).should == %w{BAR BAZ}
-      end
+  describe "json" do
+    let(:json) { Puppet::Network::FormatHandler.format(:json) }
 
-      it "fails intelligibly when given invalid data" do
-        expect do
-          @pson.intern(Puppet::Node, '')
-        end.to raise_error(PSON::ParserError, /source did not contain any PSON/)
-      end
+    it "should include a json format" do
+      expect(json).not_to be_nil
+    end
+
+    it "should have its mime type set to application/json" do
+      expect(json.mime).to eq("application/json")
+    end
+
+    it "should use 'utf-8' charset" do
+      expect(json.charset).to eq(Encoding::UTF_8)
+    end
+
+    it "should require the :render_method" do
+      expect(json.required_methods).to be_include(:render_method)
+    end
+
+    it "should require the :intern_method" do
+      expect(json.required_methods).to be_include(:intern_method)
+    end
+
+    it "should have a weight of 15" do
+      expect(json.weight).to eq(15)
+    end
+
+    it "should render an instance as JSON" do
+      instance = FormatsTest.new("foo")
+      expect(json.render(instance)).to eq({"string" => "foo"}.to_json)
+    end
+
+    it "should render multiple instances as a JSON array of hashes" do
+      instances = [FormatsTest.new("foo")]
+      expect(json.render_multiple(instances)).to eq([{"string" => "foo"}].to_json)
+    end
+
+    it "should render multiple instances as a JSON array of hashes when multi_json is not present" do
+      hide_const("MultiJson") if defined?(MultiJson)
+      instances = [FormatsTest.new("foo")]
+      expect(json.render_multiple(instances)).to eq([{"string" => "foo"}].to_json)
+    end
+
+    it "should intern an instance from a JSON hash" do
+      text = Puppet::Util::Json.dump({"string" => "parsed_json"})
+      instance = json.intern(FormatsTest, text)
+      expect(instance.string).to eq("parsed_json")
+    end
+
+    it "should skip data_to_hash if data is already an instance of the specified class" do
+      # The rest terminus for the report indirected type relies on this behavior
+      data = Puppet::Util::Json.dump([1, 2])
+      instance = json.intern(Array, data)
+      expect(instance).to eq([1, 2])
+    end
+
+    it "should intern multiple instances from a JSON array of hashes" do
+      text = Puppet::Util::Json.dump(
+        [
+          {
+            "string" => "BAR"
+          },
+          {
+            "string" => "BAZ"
+          }
+        ]
+      )
+      expect(json.intern_multiple(FormatsTest, text)).to eq([FormatsTest.new('BAR'), FormatsTest.new('BAZ')])
+    end
+
+    it "should reject wrapped data from legacy clients as they've never supported JSON" do
+      text = Puppet::Util::Json.dump(
+        {
+          "type" => "FormatsTest",
+          "data" => {
+            "string" => "parsed_json"
+          }
+        }
+      )
+      instance = json.intern(FormatsTest, text)
+      expect(instance.string).to be_nil
+    end
+
+    it "fails intelligibly when given invalid data" do
+      expect do
+        json.intern(Puppet::Node, '')
+      end.to raise_error(Puppet::Util::Json::ParseError)
     end
   end
 
   describe ":console format" do
-    subject { Puppet::Network::FormatHandler.format(:console) }
-    it { should be_an_instance_of Puppet::Network::Format }
-    let :json do Puppet::Network::FormatHandler.format(:pson) end
+    let(:console) { Puppet::Network::FormatHandler.format(:console) }
+
+    it "should include a console format" do
+      expect(console).to be_an_instance_of Puppet::Network::Format
+    end
 
     [:intern, :intern_multiple].each do |method|
       it "should not implement #{method}" do
-        expect { subject.send(method, String, 'blah') }.to raise_error NotImplementedError
+        expect { console.send(method, String, 'blah') }.to raise_error NotImplementedError
       end
     end
 
-    ["hello", 1, 1.0].each do |input|
-      it "should just return a #{input.inspect}" do
-        subject.render(input).should == input
+    context "when rendering ruby types" do
+      ["hello", 1, 1.0].each do |input|
+        it "should just return a #{input.inspect}" do
+          expect(console.render(input)).to eq(input)
+        end
+      end
+
+      { true  => "true",
+        false => "false",
+        nil   => "null",
+      }.each_pair do |input, output|
+        it "renders #{input.class} as '#{output}'" do
+          expect(console.render(input)).to eq(output)
+        end
+      end
+
+      it "renders an Object as its quoted inspect value" do
+        obj = Object.new
+        expect(console.render(obj)).to eq("\"#{obj.inspect}\"")
       end
     end
 
-    [[1, 2], ["one"], [{ 1 => 1 }]].each do |input|
-      it "should render #{input.inspect} as one item per line" do
-        subject.render(input).should == input.collect { |item| item.to_s + "\n" }.join('')
+    context "when rendering arrays" do
+      {
+        []                => "",
+        [1, 2]            => "1\n2\n",
+        ["one"]           => "one\n",
+        [{1 => 1}]        => "{1=>1}\n",
+        [[1, 2], [3, 4]]  => "[1, 2]\n[3, 4]\n"
+      }.each_pair do |input, output|
+        it "should render #{input.inspect} as one item per line" do
+          expect(console.render(input)).to eq(output)
+        end
       end
     end
 
-    it "should render empty hashes as empty strings" do
-      subject.render({}).should == ''
-    end
+    context "when rendering hashes" do
+      {
+        {}                                   => "",
+        {1 => 2}                             => "1  2\n",
+        {"one" => "two"}                     => "one  \"two\"\n", # odd that two is quoted but one isn't
+        {[1,2] => 3, [2,3] => 5, [3,4] => 7} => "{\n  \"[1, 2]\": 3,\n  \"[2, 3]\": 5,\n  \"[3, 4]\": 7\n}",
+        {{1 => 2} => {3 => 4}}               => "{\n  \"{1=>2}\": {\n    \"3\": 4\n  }\n}"
+      }.each_pair do |input, output|
+        it "should render #{input.inspect}" do
+          expect(console.render(input)).to eq(output)
+        end
+      end
 
-    it "should render a non-trivially-keyed Hash as JSON" do
-      hash = { [1,2] => 3, [2,3] => 5, [3,4] => 7 }
-      subject.render(hash).should == json.render(hash).chomp
-    end
+      it "should render a {String,Numeric}-keyed Hash into a table" do
+        json = Puppet::Network::FormatHandler.format(:json)
+        object = Object.new
+        hash = { "one" => 1, "two" => [], "three" => {}, "four" => object, 5 => 5,
+                 6.0 => 6 }
 
-    it "should render a {String,Numeric}-keyed Hash into a table" do
-      object = Object.new
-      hash = { "one" => 1, "two" => [], "three" => {}, "four" => object,
-        5 => 5, 6.0 => 6 }
-
-      # Gotta love ASCII-betical sort order.  Hope your objects are better
-      # structured for display than my test one is. --daniel 2011-04-18
-      subject.render(hash).should == <<EOT
+        # Gotta love ASCII-betical sort order.  Hope your objects are better
+        # structured for display than my test one is. --daniel 2011-04-18
+        expect(console.render(hash)).to eq <<EOT
 5      5
 6.0    6
 four   #{json.render(object).chomp}
@@ -401,22 +499,86 @@ one    1
 three  {}
 two    []
 EOT
+      end
     end
 
-    it "should render a hash nicely with a multi-line value" do
-      pending "Moving to PSON rather than PP makes this unsupportable."
-      hash = {
-        "number" => { "1" => '1' * 40, "2" => '2' * 40, '3' => '3' * 40 },
-        "text"   => { "a" => 'a' * 40, 'b' => 'b' * 40, 'c' => 'c' * 40 }
+    context "when rendering face-related objects" do
+      it "pretty prints facts" do
+        tm = Time.new(2016, 1, 27, 19, 30, 0)
+        values = {
+          "architecture" =>  "x86_64",
+          "os" => {
+            "release" => {
+              "full" => "15.6.0"
+            }
+          },
+          "system_uptime" => {
+            "seconds" => 505532
+          }
+        }
+        facts = Puppet::Node::Facts.new("foo", values)
+        facts.timestamp = tm
+
+        # For some reason, render omits the last newline, seems like a bug
+        expect(console.render(facts)).to eq(<<EOT.chomp)
+{
+  "name": "foo",
+  "values": {
+    "architecture": "x86_64",
+    "os": {
+      "release": {
+        "full": "15.6.0"
       }
-      subject.render(hash).should == <<EOT
-number  {"1"=>"1111111111111111111111111111111111111111",
-         "2"=>"2222222222222222222222222222222222222222",
-         "3"=>"3333333333333333333333333333333333333333"}
-text    {"a"=>"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-         "b"=>"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-         "c"=>"cccccccccccccccccccccccccccccccccccccccc"}
+    },
+    "system_uptime": {
+      "seconds": 505532
+    }
+  },
+  "timestamp": "#{tm.iso8601(9)}"
+}
 EOT
+      end
+    end
+  end
+
+  describe ":flat format" do
+    let(:flat) { Puppet::Network::FormatHandler.format(:flat) }
+
+    it "should include a flat format" do
+      expect(flat).to be_an_instance_of Puppet::Network::Format
+    end
+
+    [:intern, :intern_multiple].each do |method|
+      it "should not implement #{method}" do
+        expect { flat.send(method, String, 'blah') }.to raise_error NotImplementedError
+      end
+    end
+
+    context "when rendering arrays" do
+      {
+          []                           => "",
+          [1, 2]                       => "0=1\n1=2\n",
+          ["one"]                      => "0=one\n",
+          [{"one" => 1}, {"two" => 2}] => "0.one=1\n1.two=2\n",
+          [['something', 'for'], ['the', 'test']]  => "0=[\"something\", \"for\"]\n1=[\"the\", \"test\"]\n"
+      }.each_pair do |input, output|
+        it "should render #{input.inspect} as one item per line" do
+          expect(flat.render(input)).to eq(output)
+        end
+      end
+    end
+
+    context "when rendering hashes" do
+      {
+          {}                                   => "",
+          {1 => 2}                             => "1=2\n",
+          {"one" => "two"}                     => "one=two\n",
+          {[1,2] => 3, [2,3] => 5, [3,4] => 7} => "[1, 2]=3\n[2, 3]=5\n[3, 4]=7\n",
+      }.each_pair do |input, output|
+        it "should render #{input.inspect}" do
+          expect(flat.render(input)).to eq(output)
+        end
+      end
     end
   end
 end

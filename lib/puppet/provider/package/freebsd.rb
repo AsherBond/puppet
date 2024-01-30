@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 Puppet::Type.type(:package).provide :freebsd, :parent => :openbsd do
   desc "The specific form of package management on FreeBSD.  This is an
     extremely quirky packaging system, in that it freely mixes between
@@ -6,10 +8,10 @@ Puppet::Type.type(:package).provide :freebsd, :parent => :openbsd do
     libraries."
 
   commands :pkginfo => "/usr/sbin/pkg_info",
-    :pkgadd => "/usr/sbin/pkg_add",
-    :pkgdelete => "/usr/sbin/pkg_delete"
+           :pkgadd => "/usr/sbin/pkg_add",
+           :pkgdelete => "/usr/sbin/pkg_delete"
 
-  confine :operatingsystem => :freebsd
+  confine 'os.name' => :freebsd
 
   def self.listcmd
     command(:pkginfo)
@@ -27,7 +29,7 @@ Puppet::Type.type(:package).provide :freebsd, :parent => :openbsd do
         end
       end
     else
-      Puppet.warning "source is defined but does not have trailing slash, ignoring #{@resource[:source]}" if @resource[:source]
+      Puppet.warning _("source is defined but does not have trailing slash, ignoring %{source}") % { source: @resource[:source] } if @resource[:source]
       pkgadd "-r", @resource[:name]
     end
   end

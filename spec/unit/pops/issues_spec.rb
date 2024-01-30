@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/pops'
 
@@ -7,21 +6,21 @@ describe "Puppet::Pops::Issues" do
 
   it "should have an issue called NAME_WITH_HYPHEN" do
     x = Puppet::Pops::Issues::NAME_WITH_HYPHEN
-    x.class.should == Puppet::Pops::Issues::Issue
-    x.issue_code.should == :NAME_WITH_HYPHEN
+    expect(x.class).to eq(Puppet::Pops::Issues::Issue)
+    expect(x.issue_code).to eq(:NAME_WITH_HYPHEN)
   end
 
   it "should should format a message that requires an argument" do
     x = Puppet::Pops::Issues::NAME_WITH_HYPHEN
-    x.format(:name => 'Boo-Hoo',
+    expect(x.format(:name => 'Boo-Hoo',
       :label => Puppet::Pops::Model::ModelLabelProvider.new,
       :semantic => "dummy"
-      ).should == "A String may not have a name containing a hyphen. The name 'Boo-Hoo' is not legal"
+      )).to eq("A String may not have a name containing a hyphen. The name 'Boo-Hoo' is not legal")
   end
 
   it "should should format a message that does not require an argument" do
     x = Puppet::Pops::Issues::NOT_TOP_LEVEL
-    x.format().should == "Classes, definitions, and nodes may only appear at toplevel or inside other classes"
+    expect(x.format()).to eq("Classes, definitions, and nodes may only appear at toplevel or inside other classes")
   end
 
 end
@@ -31,27 +30,28 @@ describe "Puppet::Pops::IssueReporter" do
   let(:acceptor) { Puppet::Pops::Validation::Acceptor.new }
 
   def fake_positioned(number)
-    stub("positioned_#{number}", :line => number, :pos => number)
+    double("positioned_#{number}", :line => number, :pos => number)
   end
 
-  def diagnostic(severity,  number)
+  def diagnostic(severity,  number, args)
     Puppet::Pops::Validation::Diagnostic.new(
       severity,
       Puppet::Pops::Issues::Issue.new(number) { "#{severity}#{number}" },
       "#{severity}file",
-      fake_positioned(number))
+      fake_positioned(number),
+      args)
   end
 
-  def warning(number)
-    diagnostic(:warning, number)
+  def warning(number, args = {})
+    diagnostic(:warning, number, args)
   end
 
-  def deprecation(number)
-    diagnostic(:deprecation, number)
+  def deprecation(number, args = {})
+    diagnostic(:deprecation, number, args)
   end
 
-  def error(number)
-    diagnostic(:error, number)
+  def error(number, args = {})
+    diagnostic(:error, number, args)
   end
 
   context "given warnings" do
@@ -62,19 +62,19 @@ describe "Puppet::Pops::IssueReporter" do
     end
 
     it "emits warnings if told to emit them" do
-      Puppet.expects(:warning).twice.with(regexp_matches(/warning1|deprecation1/))
+      expect(Puppet::Log).to receive(:create).twice.with(hash_including(:level => :warning, :message => match(/warning1|deprecation1/)))
       Puppet::Pops::IssueReporter.assert_and_report(acceptor, { :emit_warnings => true })
     end
 
     it "does not emit warnings if not told to emit them" do
-      Puppet.expects(:warning).never
+      expect(Puppet::Log).not_to receive(:create)
       Puppet::Pops::IssueReporter.assert_and_report(acceptor, {})
     end
 
     it "emits no warnings if :max_warnings is 0" do
       acceptor.accept( warning(2) )
       Puppet[:max_warnings] = 0
-      Puppet.expects(:warning).once.with(regexp_matches(/deprecation1/))
+      expect(Puppet::Log).to receive(:create).once.with(hash_including(:level => :warning, :message => match(/deprecation1/)))
       Puppet::Pops::IssueReporter.assert_and_report(acceptor, { :emit_warnings => true })
     end
 
@@ -82,20 +82,27 @@ describe "Puppet::Pops::IssueReporter" do
       acceptor.accept( warning(2) )
       acceptor.accept( warning(3) )
       Puppet[:max_warnings] = 1
-      Puppet.expects(:warning).twice.with(regexp_matches(/warning1|deprecation1/))
+      expect(Puppet::Log).to receive(:create).twice.with(hash_including(:level => :warning, :message => match(/warning1|deprecation1/)))
       Puppet::Pops::IssueReporter.assert_and_report(acceptor, { :emit_warnings => true })
     end
 
     it "does not emit more deprecations warnings than the max deprecation warnings" do
       acceptor.accept( deprecation(2) )
       Puppet[:max_deprecations] = 0
-      Puppet.expects(:warning).once.with(regexp_matches(/warning1/))
+      expect(Puppet::Log).to receive(:create).once.with(hash_including(:level => :warning, :message => match(/warning1/)))
       Puppet::Pops::IssueReporter.assert_and_report(acceptor, { :emit_warnings => true })
     end
 
     it "does not emit deprecation warnings, but does emit regular warnings if disable_warnings includes deprecations" do
       Puppet[:disable_warnings] = 'deprecations'
-      Puppet.expects(:warning).once.with(regexp_matches(/warning1/))
+      expect(Puppet::Log).to receive(:create).once.with(hash_including(:level => :warning, :message => match(/warning1/)))
+      Puppet::Pops::IssueReporter.assert_and_report(acceptor, { :emit_warnings => true })
+    end
+
+    it "includes diagnostic arguments in logged entry" do
+      acceptor.accept( warning(2, :n => 'a') )
+      expect(Puppet::Log).to receive(:create).twice.with(hash_including(:level => :warning, :message => match(/warning1|deprecation1/)))
+      expect(Puppet::Log).to receive(:create).once.with(hash_including(:level => :warning, :message => match(/warning2/), :arguments => {:n => 'a'}))
       Puppet::Pops::IssueReporter.assert_and_report(acceptor, { :emit_warnings => true })
     end
   end
@@ -103,7 +110,7 @@ describe "Puppet::Pops::IssueReporter" do
   context "given errors" do
     it "logs nothing, but raises the given :message if :emit_errors is repressing error logging" do
       acceptor.accept( error(1) )
-      Puppet.expects(:err).never
+      expect(Puppet::Log).not_to receive(:create)
       expect do
         Puppet::Pops::IssueReporter.assert_and_report(acceptor, { :emit_errors => false, :message => 'special'})
       end.to raise_error(Puppet::ParseError, 'special')
@@ -111,7 +118,7 @@ describe "Puppet::Pops::IssueReporter" do
 
     it "prefixes :message if a single error is raised" do
       acceptor.accept( error(1) )
-      Puppet.expects(:err).never
+      expect(Puppet::Log).not_to receive(:create)
       expect do
         Puppet::Pops::IssueReporter.assert_and_report(acceptor, { :message => 'special'})
       end.to raise_error(Puppet::ParseError, /special error1/)
@@ -119,7 +126,7 @@ describe "Puppet::Pops::IssueReporter" do
 
     it "logs nothing and raises immediately if there is only one error" do
       acceptor.accept( error(1) )
-      Puppet.expects(:err).never
+      expect(Puppet::Log).not_to receive(:create)
       expect do
         Puppet::Pops::IssueReporter.assert_and_report(acceptor, { })
       end.to raise_error(Puppet::ParseError, /error1/)
@@ -129,7 +136,7 @@ describe "Puppet::Pops::IssueReporter" do
       acceptor.accept( error(1) )
       acceptor.accept( error(2) )
       Puppet[:max_errors] = 0
-      Puppet.expects(:err).never
+      expect(Puppet::Log).not_to receive(:create)
       expect do
         Puppet::Pops::IssueReporter.assert_and_report(acceptor, { })
       end.to raise_error(Puppet::ParseError, /error1/)
@@ -138,7 +145,7 @@ describe "Puppet::Pops::IssueReporter" do
     it "logs the :message if there is more than one allowed error" do
       acceptor.accept( error(1) )
       acceptor.accept( error(2) )
-      Puppet.expects(:err).times(3).with(regexp_matches(/error1|error2|special/))
+      expect(Puppet::Log).to receive(:create).exactly(3).times.with(hash_including(:level => :err, :message => match(/error1|error2|special/)))
       expect do
         Puppet::Pops::IssueReporter.assert_and_report(acceptor, { :message => 'special'})
       end.to raise_error(Puppet::ParseError, /Giving up/)
@@ -149,7 +156,7 @@ describe "Puppet::Pops::IssueReporter" do
       acceptor.accept( error(2) )
       acceptor.accept( error(3) )
       Puppet[:max_errors] = 2
-      Puppet.expects(:err).times(2).with(regexp_matches(/error1|error2/))
+      expect(Puppet::Log).to receive(:create).twice.with(hash_including(:level => :err, :message => match(/error1|error2/)))
       expect do
         Puppet::Pops::IssueReporter.assert_and_report(acceptor, { })
       end.to raise_error(Puppet::ParseError, /3 errors.*Giving up/)
@@ -160,7 +167,7 @@ describe "Puppet::Pops::IssueReporter" do
       acceptor.accept( error(2) )
       acceptor.accept( error(3) )
       Puppet[:max_errors] = 4
-      Puppet.expects(:err).times(3).with(regexp_matches(/error[123]/))
+      expect(Puppet::Log).to receive(:create).exactly(3).times.with(hash_including(:level => :err, :message => match(/error[123]/)))
       expect do
         Puppet::Pops::IssueReporter.assert_and_report(acceptor, { })
       end.to raise_error(Puppet::ParseError, /3 errors.*Giving up/)
@@ -170,10 +177,17 @@ describe "Puppet::Pops::IssueReporter" do
       acceptor.accept( error(1) )
       acceptor.accept( error(2) )
       Puppet[:disable_warnings] = 'deprecations'
-      Puppet.expects(:err).times(2).with(regexp_matches(/error1|error2/))
+      expect(Puppet::Log).to receive(:create).twice.with(hash_including(:level => :err, :message => match(/error1|error2/)))
       expect do
         Puppet::Pops::IssueReporter.assert_and_report(acceptor, { })
       end.to raise_error(Puppet::ParseError, /Giving up/)
+    end
+
+    it "includes diagnostic arguments in raised error" do
+      acceptor.accept( error(1, :n => 'a') )
+      expect do
+        Puppet::Pops::IssueReporter.assert_and_report(acceptor, { })
+      end.to raise_error(Puppet::ParseErrorWithIssue, /error1/) { |ex| expect(ex.arguments).to eq(:n => 'a')}
     end
   end
 
@@ -186,8 +200,8 @@ describe "Puppet::Pops::IssueReporter" do
       acceptor.accept( error(3) )
       acceptor.accept( deprecation(1) )
       Puppet[:max_errors] = 2
-      Puppet.expects(:warning).twice.with(regexp_matches(/warning1|deprecation1/))
-      Puppet.expects(:err).times(2).with(regexp_matches(/error[123]/))
+      expect(Puppet::Log).to receive(:create).twice.with(hash_including(:level => :warning, :message => match(/warning1|deprecation1/)))
+      expect(Puppet::Log).to receive(:create).twice.with(hash_including(:level => :err, :message => match(/error[123]/)))
       expect do
         Puppet::Pops::IssueReporter.assert_and_report(acceptor, { :emit_warnings => true })
       end.to raise_error(Puppet::ParseError, /3 errors.*2 warnings.*Giving up/)

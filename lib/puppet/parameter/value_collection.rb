@@ -1,4 +1,6 @@
-require 'puppet/parameter/value'
+# frozen_string_literal: true
+
+require_relative '../../puppet/parameter/value'
 
 # A collection of values and regular expressions, used for specifying allowed values
 # in a given parameter.
@@ -11,16 +13,14 @@ require 'puppet/parameter/value'
 # @api private
 #
 class Puppet::Parameter::ValueCollection
-
   # Aliases the given existing _other_ value with the additional given _name_.
   # @return [void]
   # @api private
   #
   def aliasvalue(name, other)
     other = other.to_sym
-    unless value = match?(other)
-      raise Puppet::DevError, "Cannot alias nonexistent value #{other}"
-    end
+    value = match?(other)
+    raise Puppet::DevError, _("Cannot alias nonexistent value %{value}") % { value: other } unless value
 
     value.alias(name)
   end
@@ -31,11 +31,12 @@ class Puppet::Parameter::ValueCollection
   #
   def doc
     unless defined?(@doc)
-      @doc = ""
+      @doc = ''.dup
       unless values.empty?
         @doc << "Valid values are "
         @doc << @strings.collect do |value|
-          if aliases = value.aliases and ! aliases.empty?
+          aliases = value.aliases
+          if aliases && !aliases.empty?
             "`#{value.name}` (also called `#{aliases.join(", ")}`)"
           else
             "`#{value.name}`"
@@ -81,9 +82,8 @@ class Puppet::Parameter::ValueCollection
   #
   def match?(test_value)
     # First look for normal values
-    if value = @strings.find { |v| v.match?(test_value) }
-      return value
-    end
+    value = @strings.find { |v| v.match?(test_value) }
+    return value if value
 
     # Then look for a regex match
     @regexes.find { |v| v.match?(test_value) }
@@ -100,7 +100,8 @@ class Puppet::Parameter::ValueCollection
   def munge(value)
     return value if empty?
 
-    if instance = match?(value)
+    instance = match?(value)
+    if instance
       if instance.regex?
         return value
       else
@@ -120,11 +121,6 @@ class Puppet::Parameter::ValueCollection
   # @option options [Symbol] :event The event that should be emitted when this value is set.
   # @todo Option :event original comment says "event should be returned...", is "returned" the correct word
   #   to use?
-  # @option options [Symbol] :call When to call any associated block. The default value is `:instead` which
-  #   means that the block should be called instead of the provider. In earlier versions (before 20081031) it
-  #   was possible to specify a value of `:before` or `:after` for the purpose of calling
-  #   both the block and the provider. Use of these deprecated options will now raise an exception later
-  #   in the process when the _is_ value is set (see Puppet::Property#set).
   # @option options [Symbol] :invalidate_refreshes True if a change on this property should invalidate and
   #   remove any scheduled refreshes (from notify or subscribe) targeted at the same resource. For example, if
   #   a change in this property takes into account any changes that a scheduled refresh would have performed,
@@ -135,6 +131,16 @@ class Puppet::Parameter::ValueCollection
   # @api private
   #
   def newvalue(name, options = {}, &block)
+    call_opt = options[:call]
+    unless call_opt.nil?
+      devfail "Cannot use obsolete :call value '#{call_opt}' for property '#{self.class.name}'" unless call_opt == :none || call_opt == :instead
+      # TRANSLATORS ':call' is a property and should not be translated
+      message = _("Property option :call is deprecated and no longer used.")
+      message += ' ' + _("Please remove it.")
+      Puppet.deprecation_warning(message)
+      options = options.reject { |k, _v| k == :call }
+    end
+
     value = Puppet::Parameter::Value.new(name)
     @values[value.name] = value
     if value.regex?
@@ -145,13 +151,12 @@ class Puppet::Parameter::ValueCollection
 
     options.each { |opt, arg| value.send(opt.to_s + "=", arg) }
     if block_given?
+      devfail "Cannot use :call value ':none' in combination with a block for property '#{self.class.name}'" if call_opt == :none
       value.block = block
+      value.method ||= "set_#{value.name}" if !value.regex?
     else
-      value.call = options[:call] || :none
+      devfail "Cannot use :call value ':instead' without a block for property '#{self.class.name}'" if call_opt == :instead
     end
-
-    value.method ||= "set_#{value.name}" if block_given? and ! value.regex?
-
     value
   end
 
@@ -179,13 +184,10 @@ class Puppet::Parameter::ValueCollection
   def validate(value)
     return if empty?
 
-    unless @values.detect { |name, v| v.match?(value) }
-      str = "Invalid value #{value.inspect}. "
-
-      str += "Valid values are #{values.join(", ")}. " unless values.empty?
-
-      str += "Valid values match #{regexes.join(", ")}." unless regexes.empty?
-
+    unless @values.detect { |_name, v| v.match?(value) }
+      str = _("Invalid value %{value}.") % { value: value.inspect }
+      str += " " + _("Valid values are %{value_list}.") % { value_list: values.join(", ") } unless values.empty?
+      str += " " + _("Valid values match %{pattern}.") % { pattern: regexes.join(", ") } unless regexes.empty?
       raise ArgumentError, str
     end
   end
@@ -194,7 +196,7 @@ class Puppet::Parameter::ValueCollection
   # @todo This looks odd, asking for an instance that matches a symbol, or an instance that has
   #   a regexp. What is the intention here? Marking as api private...
   #
-  # @return [Puppet::Parameter::Value] a valid valud matcher
+  # @return [Puppet::Parameter::Value] a valid value matcher
   # @api private
   #
   def value(name)

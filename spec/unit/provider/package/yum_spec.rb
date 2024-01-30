@@ -1,308 +1,512 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
-provider_class = Puppet::Type.type(:package).provider(:yum)
+describe Puppet::Type.type(:package).provider(:yum) do
+  include PuppetSpec::Fixtures
 
-describe provider_class do
-  let(:name) { 'mypackage' }
+  let(:resource_name) { 'myresource' }
   let(:resource) do
     Puppet::Type.type(:package).new(
-      :name     => name,
+      :name     => resource_name,
       :ensure   => :installed,
       :provider => 'yum'
     )
   end
 
-  let(:provider) do
-    provider = provider_class.new
-    provider.resource = resource
-    provider
+  let(:provider) { Puppet::Type.type(:package).provider(:yum).new(resource) }
+
+  it_behaves_like 'RHEL package provider', described_class, 'yum'
+
+  it "should have lower specificity" do
+    allow(Facter).to receive(:value).with('os.family').and_return(:redhat)
+    allow(Facter).to receive(:value).with('os.name').and_return(:fedora)
+    allow(Facter).to receive(:value).with('os.release.major').and_return("22")
+    expect(described_class.specificity).to be < 200
   end
 
-  before do
-    provider.stubs(:yum).returns 'yum'
-    provider.stubs(:rpm).returns 'rpm'
-    provider.stubs(:get).with(:version).returns '1'
-    provider.stubs(:get).with(:release).returns '1'
-    provider.stubs(:get).with(:arch).returns 'i386'
+  describe "should have logical defaults" do
+    [2, 2018].each do |ver|
+      it "should be the default provider on Amazon Linux #{ver}" do
+        allow(Facter).to receive(:value).with('os.name').and_return('amazon')
+        allow(Facter).to receive(:value).with('os.family').and_return('redhat')
+        allow(Facter).to receive(:value).with('os.release.major').and_return(ver)
+        expect(described_class).to be_default
+      end
+    end
+
+    Array(4..7).each do |ver|
+      it "should be default for redhat #{ver}" do
+        allow(Facter).to receive(:value).with('os.name').and_return('redhat')
+        allow(Facter).to receive(:value).with('os.family').and_return('redhat')
+        allow(Facter).to receive(:value).with('os.release.major').and_return(ver.to_s)
+        expect(described_class).to be_default
+      end
+    end
+
+    it "should not be default for redhat 8" do
+      allow(Facter).to receive(:value).with('os.name').and_return('redhat')
+      allow(Facter).to receive(:value).with('os.family').and_return('redhat')
+      allow(Facter).to receive(:value).with('os.release.major').and_return('8')
+      expect(described_class).not_to be_default
+    end
+
+    it "should not be default for Ubuntu 16.04" do
+      allow(Facter).to receive(:value).with('os.name').and_return('ubuntu')
+      allow(Facter).to receive(:value).with('os.family').and_return('ubuntu')
+      allow(Facter).to receive(:value).with('os.release.major').and_return('16.04')
+      expect(described_class).not_to be_default
+    end
   end
+
+  describe "when supplied the source param" do
+    let(:name) { 'baz' }
+
+    let(:resource) do
+      Puppet::Type.type(:package).new(
+        :name => name,
+        :provider => 'yum',
+      )
+    end
+
+    let(:provider) do
+      provider = described_class.new
+      provider.resource = resource
+      provider
+    end
+
+    before { allow(described_class).to receive(:command).with(:cmd).and_return("/usr/bin/yum") }
 
   describe 'provider features' do
-    it { should be_versionable }
-    it { should be_install_options }
-    it { should be_virtual_packages }
+    it { is_expected.to be_versionable }
+    it { is_expected.to be_install_options }
+    it { is_expected.to be_virtual_packages }
+    it { is_expected.to be_install_only }
   end
 
-  # provider should repond to the following methods
-   [:install, :latest, :update, :purge, :install_options].each do |method|
-     it "should have a(n) #{method}" do
-       provider.should respond_to(method)
-    end
-  end
-
-  describe 'when installing' do
-    before(:each) do
-      Puppet::Util.stubs(:which).with("rpm").returns("/bin/rpm")
-      provider.stubs(:which).with("rpm").returns("/bin/rpm")
-      Puppet::Util::Execution.expects(:execute).with(["/bin/rpm", "--version"], {:combine => true, :custom_environment => {}, :failonfail => true}).returns("4.10.1\n").at_most_once
+    context "when installing" do
+      it "should use the supplied source as the explicit path to a package to install" do
+        resource[:ensure] = :present
+        resource[:source] = "/foo/bar/baz-1.1.0.rpm"
+        expect(provider).to receive(:execute) do |arr|
+          expect(arr[-2..-1]).to eq([:install, "/foo/bar/baz-1.1.0.rpm"])
+        end
+        provider.install
+      end
     end
 
-    it 'should call yum install for :installed' do
-      resource.stubs(:should).with(:ensure).returns :installed
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :list, name)
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :install, name)
-      provider.install
+    context "when ensuring a specific version" do
+      it "should use the suppplied source as the explicit path to the package to update" do
+        # The first query response informs yum provider that package 1.1.0 is
+        # already installed, and the second that it's been upgraded
+        expect(provider).to receive(:query).twice.and_return({:ensure => "1.1.0"}, {:ensure => "1.2.0"})
+        resource[:ensure] = "1.2.0"
+        resource[:source] = "http://foo.repo.com/baz-1.2.0.rpm"
+        expect(provider).to receive(:execute) do |arr|
+          expect(arr[-2..-1]).to eq(['update', "http://foo.repo.com/baz-1.2.0.rpm"])
+        end
+        provider.install
+      end
     end
 
-    it 'should use :install to update' do
-      provider.expects(:install)
-      provider.update
-    end
-
-    it 'should be able to set version' do
-      version = '1.2'
-      resource[:ensure] = version
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :list, name)
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :install, "#{name}-#{version}")
-      provider.stubs(:query).returns :ensure => version
-      provider.install
-    end
-
-    it 'should be able to downgrade' do
-      current_version = '1.2'
-      version = '1.0'
-      resource[:ensure] = '1.0'
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :downgrade, "#{name}-#{version}")
-      provider.stubs(:query).returns(:ensure => current_version).then.returns(:ensure => version)
-      provider.install
-    end
-
-    it 'should accept install options' do
-      resource[:ensure] = :installed
-      resource[:install_options] = ['-t', {'-x' => 'expackage'}]
-
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', ['-t', '-x=expackage'], :list, name)
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', ['-t', '-x=expackage'], :install, name)
-      provider.install
-    end
-
-    it 'allow virtual packages' do
-      resource[:ensure] = :installed
-      resource[:allow_virtual] = true
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :list, name).never
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :install, name)
-      provider.install
-    end
-  end
-
-  describe 'when uninstalling' do
-    it 'should use erase to purge' do
-      provider.expects(:yum).with('-y', :erase, name)
-      provider.purge
-    end
-  end
-
-  it 'should be versionable' do
-    provider.should be_versionable
-  end
-
-  describe 'determining the latest version available for a package' do
-
-    it "passes the value of enablerepo install_options when querying" do
-      resource[:install_options] = [
-        {'--enablerepo' => 'contrib'},
-        {'--enablerepo' => 'centosplus'},
-      ]
-      provider.stubs(:properties).returns({:ensure => '3.4.5'})
-
-      described_class.expects(:latest_package_version).with(name, ['contrib', 'centosplus'], [])
-      provider.latest
-    end
-
-    it "passes the value of disablerepo install_options when querying" do
-      resource[:install_options] = [
-        {'--disablerepo' => 'updates'},
-        {'--disablerepo' => 'centosplus'},
-      ]
-      provider.stubs(:properties).returns({:ensure => '3.4.5'})
-
-      described_class.expects(:latest_package_version).with(name, [], ['updates', 'centosplus'])
-      provider.latest
-    end
-
-    describe 'and a newer version is not available' do
-      before :each do
-        described_class.stubs(:latest_package_version).with(name, [], []).returns nil
+    describe 'with install_options' do
+      it 'can parse disable-repo with array of strings' do
+          resource[:install_options] = ['--disable-repo=dev*', '--disable-repo=prod*']
+          expect(provider).to receive(:execute) do | arr|
+            expect(arr[-3]).to eq(["--disable-repo=dev*", "--disable-repo=prod*"])
+          end
+          provider.install
       end
 
-      it 'raises an error the package is not installed' do
-        provider.stubs(:properties).returns({:ensure => :absent})
+      it 'can parse disable-repo with array of hashes' do
+        resource[:install_options] = [{'--disable-repo' => 'dev*'}, {'--disable-repo' => 'prod*'}]
+        expect(provider).to receive(:execute) do | arr|
+          expect(arr[-3]).to eq(["--disable-repo=dev*", "--disable-repo=prod*"])
+        end
+        provider.install
+      end
+
+      it 'can parse enable-repo with array of strings' do
+          resource[:install_options] = ['--enable-repo=dev*', '--enable-repo=prod*']
+          expect(provider).to receive(:execute) do | arr|
+            expect(arr[-3]).to eq(["--enable-repo=dev*", "--enable-repo=prod*"])
+          end
+          provider.install
+      end
+
+      it 'can parse enable-repo with array of hashes' do
+        resource[:install_options] = [{'--enable-repo' => 'dev*'}, {'--disable-repo' => 'prod*'}]
+        expect(provider).to receive(:execute) do | arr|
+          expect(arr[-3]).to eq(["--enable-repo=dev*", "--disable-repo=prod*"])
+        end
+        provider.install
+      end
+
+      it 'can parse enable-repo with single hash' do
+        resource[:install_options] = [{'--enable-repo' => 'dev*','--disable-repo' => 'prod*'}]
+        expect(provider).to receive(:execute) do | arr|
+          expect(arr[-3]).to eq(["--disable-repo=prod*", "--enable-repo=dev*"])
+        end
+        provider.install
+      end
+
+      it 'can parse enable-repo with empty array' do
+        resource[:install_options] = []
+        expect(provider).to receive(:execute) do | arr|
+          expect(arr[-3]).to eq([])
+        end
+        provider.install
+      end
+    end
+  end
+
+  context "latest" do
+    let(:name) { 'baz' }
+
+    let(:resource) do
+      Puppet::Type.type(:package).new(
+        :name => name,
+        :provider => 'yum',
+      )
+    end
+
+    let(:provider) do
+      provider = described_class.new
+      provider.resource = resource
+      provider
+    end
+
+    before {
+      allow(described_class).to receive(:command).with(:cmd).and_return("/usr/bin/yum")
+      Puppet[:log_level] = 'debug'
+    }
+
+    it "should print a debug message with the current version if newer package is not available" do
+      expect(provider).to receive(:query).and_return({:ensure => "1.2.3"})
+      expect(described_class).to receive(:latest_package_version).and_return(nil)
+      resource[:ensure] = :present
+
+      provider.latest
+      expect(@logs).to include(an_object_having_attributes(level: :debug, message: "Yum didn't find updates, current version (1.2.3) is the latest"))
+    end
+  end
+
+  context "parsing the output of check-update" do
+    context "with no multiline entries" do
+      let(:check_update) { File.read(my_fixture("yum-check-update-simple.txt")) }
+      let(:output) { described_class.parse_updates(check_update) }
+
+      it 'creates an entry for each package keyed on the package name' do
+        expect(output['curl']).to eq([{:name => 'curl', :epoch => '0', :version => '7.32.0', :release => '10.fc20', :arch => 'i686'}, {:name => 'curl', :epoch => '0', :version => '7.32.0', :release => '10.fc20', :arch => 'x86_64'}])
+        expect(output['gawk']).to eq([{:name => 'gawk', :epoch => '0', :version => '4.1.0', :release => '3.fc20', :arch => 'i686'}])
+        expect(output['dhclient']).to eq([{:name => 'dhclient', :epoch => '12', :version => '4.1.1', :release => '38.P1.fc20', :arch => 'i686'}])
+        expect(output['selinux-policy']).to eq([{:name => 'selinux-policy', :epoch => '0', :version => '3.12.1', :release => '163.fc20', :arch => 'noarch'}])
+      end
+
+      it 'creates an entry for each package keyed on the package name and package architecture' do
+        expect(output['curl.i686']).to eq([{:name => 'curl', :epoch => '0', :version => '7.32.0', :release => '10.fc20', :arch => 'i686'}])
+        expect(output['curl.x86_64']).to eq([{:name => 'curl', :epoch => '0', :version => '7.32.0', :release => '10.fc20', :arch => 'x86_64'}])
+        expect(output['gawk.i686']).to eq([{:name => 'gawk', :epoch => '0', :version => '4.1.0', :release => '3.fc20', :arch => 'i686'}])
+        expect(output['dhclient.i686']).to eq([{:name => 'dhclient', :epoch => '12', :version => '4.1.1', :release => '38.P1.fc20', :arch => 'i686'}])
+        expect(output['selinux-policy.noarch']).to eq([{:name => 'selinux-policy', :epoch => '0', :version => '3.12.1', :release => '163.fc20', :arch => 'noarch'}])
+        expect(output['java-1.8.0-openjdk.x86_64']).to eq([{:name => 'java-1.8.0-openjdk', :epoch => '1', :version => '1.8.0.131', :release => '2.b11.el7_3', :arch => 'x86_64'}])
+      end
+    end
+
+    context "with multiline entries" do
+      let(:check_update) { File.read(my_fixture("yum-check-update-multiline.txt")) }
+      let(:output) { described_class.parse_updates(check_update) }
+
+      it "parses multi-line values as a single package tuple" do
+        expect(output['libpcap']).to eq([{:name => 'libpcap', :epoch => '14', :version => '1.4.0', :release => '1.20130826git2dbcaa1.el6', :arch => 'x86_64'}])
+      end
+    end
+
+    context "with obsoleted packages" do
+      let(:check_update) { File.read(my_fixture("yum-check-update-obsoletes.txt")) }
+      let(:output) { described_class.parse_updates(check_update) }
+
+      it "ignores all entries including and after 'Obsoleting Packages'" do
+        expect(output).not_to include("Obsoleting")
+        expect(output).not_to include("NetworkManager-bluetooth.x86_64")
+        expect(output).not_to include("1:1.0.0-14.git20150121.b4ea599c.el7")
+      end
+    end
+
+    context "with security notifications" do
+      let(:check_update) { File.read(my_fixture("yum-check-update-security.txt")) }
+      let(:output) { described_class.parse_updates(check_update) }
+
+      it "ignores all entries including and after 'Security'" do
+        expect(output).not_to include("Security")
+      end
+
+      it "includes updates before 'Security'" do
+        expect(output).to include("yum-plugin-fastestmirror.noarch")
+      end
+    end
+
+    context "with broken update notices" do
+      let(:check_update) { File.read(my_fixture("yum-check-update-broken-notices.txt")) }
+      let(:output) { described_class.parse_updates(check_update) }
+
+      it "ignores all entries including and after 'Update'" do
+        expect(output).not_to include("Update")
+      end
+
+      it "includes updates before 'Update'" do
+        expect(output).to include("yum-plugin-fastestmirror.noarch")
+      end
+    end
+
+    context "with improper package names in output" do
+      it "raises an exception parsing package name" do
         expect {
-          provider.latest
-        }.to raise_error(Puppet::DevError, 'Tried to get latest on a missing package')
-      end
-
-      it 'returns version of the currently installed package' do
-        provider.stubs(:properties).returns({:ensure => '3.4.5'})
-        provider.latest.should == '3.4.5'
+          described_class.update_to_hash('badpackagename', '1')
+        }.to raise_exception(Exception, /Failed to parse/)
       end
     end
 
-    describe 'and a newer version is available' do
-      let(:latest_version) do
-        {
-          :name     => name,
-          :epoch    => '1',
-          :version  => '2.3.4',
-          :release  => '5',
-          :arch     => 'i686',
-        }
+    context "with trailing plugin output" do
+      let(:check_update) { File.read(my_fixture("yum-check-update-plugin-output.txt")) }
+      let(:output) { described_class.parse_updates(check_update) }
+
+      it "parses correctly formatted entries" do
+        expect(output['bash']).to eq([{:name => 'bash', :epoch => '0', :version => '4.2.46', :release => '12.el7', :arch => 'x86_64'}])
       end
 
-      it 'includes the epoch in the version string' do
-        described_class.stubs(:latest_package_version).with(name, [], []).returns(latest_version)
-        provider.latest.should == '1:2.3.4-5'
+      it "ignores all mentions of plugin output" do
+        expect(output).not_to include("Random plugin")
+      end
+    end
+
+    context "with subscription manager enabled " do
+      let(:check_update) { File.read(my_fixture("yum-check-update-subscription-manager.txt")) }
+      let(:output) { described_class.parse_updates(check_update) }
+
+      it "parses correctly formatted entries" do
+        expect(output['curl.x86_64']).to eq([{:name => 'curl', :epoch => '0', :version => '7.32.0', :release => '10.fc20', :arch => 'x86_64'}])
       end
     end
   end
 
-  describe "lazy loading of latest package versions" do
-    before { described_class.clear }
-    after { described_class.clear }
+  describe 'insync?' do
+    context 'when version is not a valid RPM version' do
+      let(:is) { '>===a:123' }
 
-    let(:mypackage_version) do
-      {
-        :name     => name,
-        :epoch    => '1',
-        :version  => '2.3.4',
-        :release  => '5',
-        :arch     => 'i686',
-      }
+      before do
+        resource[:ensure] = is
+      end
+
+      it 'logs a debug message' do
+        expect(Puppet).to receive(:debug).with("Cannot parse #{is} as a RPM version range")
+        provider.insync?(is)
+      end
     end
 
-    let(:mypackage_newerversion) do
-      {
-        :name     => name,
-        :epoch    => '1',
-        :version  => '4.5.6',
-        :release  => '7',
-        :arch     => 'i686',
-      }
-    end
+    context 'with valid semantic versions' do
+      let(:is) { '1:1.2.3.4-5.el4' }
 
-    let(:latest_versions) { {name => [mypackage_version]} }
-    let(:enabled_versions) { {name => [mypackage_newerversion]} }
+      it 'returns true if the current version matches the given semantic version' do
+        resource[:ensure] = is
+        expect(provider).to be_insync(is)
+      end
 
-    it "returns the version hash if the package was found" do
-      described_class.expects(:fetch_latest_versions).with([], []).once.returns(latest_versions)
-      version = described_class.latest_package_version(name, [], [])
-      expect(version).to eq(mypackage_version)
-    end
+      it 'returns false if the current version does not match the given semantic version' do
+        resource[:ensure] = '999r'
+        expect(provider).not_to be_insync(is)
+      end
 
-    it "is nil if the package was not found in the query" do
-      described_class.expects(:fetch_latest_versions).with([], []).once.returns(latest_versions)
-      version = described_class.latest_package_version('nopackage', [], [])
-      expect(version).to be_nil
-    end
+      it 'no debug logs if the current version matches the given semantic version' do
+        resource[:ensure] = is
+        expect(Puppet).not_to receive(:debug)
+        provider.insync?(is)
+      end
 
-    it "caches the package list and reuses that for subsequent queries" do
-      described_class.expects(:fetch_latest_versions).with([], []).once.returns(latest_versions)
+      it 'returns true if current version matches the greater or equal semantic version in ensure' do
+        resource[:ensure] = '<=1:1.2.3.4-5.el4'
+        expect(provider).to be_insync(is)
+      end
 
-      2.times {
-        version = described_class.latest_package_version(name, [], [])
-        expect(version).to eq mypackage_version
-      }
-    end
+      it 'returns true if current version matches the lesser semantic version in ensure' do
+        resource[:ensure] = '>1:1.0.0'
+        expect(provider).to be_insync(is)
+      end
 
-    it "caches separate lists for each combination of 'enablerepo' and 'disablerepo'" do
-      described_class.expects(:fetch_latest_versions).with([], []).once.returns(latest_versions)
-      described_class.expects(:fetch_latest_versions).with(['enabled'], ['disabled']).once.returns(enabled_versions)
+      it 'returns true if current version matches two semantic conditions' do
+        resource[:ensure] = '>1:1.1.3.4-5.el4 <1:1.3.3.6-5.el4'
+        expect(provider).to be_insync(is)
+      end
 
-      2.times {
-        version = described_class.latest_package_version(name, [], [])
-        expect(version).to eq mypackage_version
-      }
-
-      2.times {
-        version = described_class.latest_package_version(name, ['enabled'], ['disabled'])
-        expect(version).to eq(mypackage_newerversion)
-      }
+      it 'returns false if current version does not match matches two semantic conditions' do
+        resource[:ensure] = '<1:1.1.3.4-5.el4 <1:1.3.3.6-5.el4'
+        expect(provider).not_to be_insync(is)
+      end
     end
   end
 
-  describe "querying for the latest version of all packages" do
-    let(:yumhelper_single_arch) do
-      <<-YUMHELPER_OUTPUT
- * base: centos.tcpdiag.net
- * extras: centos.mirrors.hoobly.com
- * updates: mirrors.arsc.edu
-_pkg nss-tools 0 3.14.3 4.el6_4 x86_64
-_pkg pixman 0 0.26.2 5.el6_4 x86_64
-_pkg myresource 0 1.2.3.4 5.el4 noarch
-_pkg mysummaryless 0 1.2.3.4 5.el4 noarch
-     YUMHELPER_OUTPUT
+  describe 'install' do
+    before do
+      resource[:ensure] = ensure_value
+      allow(Facter).to receive(:value).with('os.release.major').and_return('7')
+      allow(described_class).to receive(:command).with(:cmd).and_return('/usr/bin/yum')
+      allow(provider).to receive(:query).twice.and_return(nil, ensure: '18.3.2')
+      allow(provider).to receive(:insync?).with('18.3.2').and_return(true)
     end
 
-    let(:yumhelper_multi_arch) do
-      yumhelper_single_arch + <<-YUMHELPER_OUTPUT
-_pkg nss-tools 0 3.14.3 4.el6_4 i386
-_pkg pixman 0 0.26.2 5.el6_4 i386
-      YUMHELPER_OUTPUT
+    context 'with version range' do
+      before do
+        allow(provider).to receive(:available_versions).and_return(available_versions)
+      end
+
+      context 'without epoch' do
+        let(:ensure_value) { '>18.1 <19' }
+        let(:available_versions) { ['17.5.2', '18.0', 'a:23', '18.3', '18.3.2', '19.0', '3:18.4'] }
+
+        it 'selects best_version' do
+          expect(provider).to receive(:execute).with(
+            ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, 'myresource-18.3.2']
+          )
+          provider.install
+        end
+
+        context 'when comparing with available packages that do not have epoch' do
+          let(:ensure_value) { '>18' }
+          let(:available_versions) { ['18.3.3', '3:18.3.2'] }
+
+          it 'treats no epoch as zero' do
+            expect(provider).to receive(:execute).with(
+              ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, 'myresource-18.3.2']
+              )
+            provider.install
+          end
+        end
+      end
+
+      context 'with epoch' do
+        let(:ensure_value) { '>18.1 <3:19' }
+        let(:available_versions) { ['3:17.5.2', '3:18.0', 'a:23', '18.3.3', '3:18.3.2', '3:19.0', '19.1'] }
+
+        it 'selects best_version and removes epoch' do
+          expect(provider).to receive(:execute).with(
+            ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, 'myresource-18.3.2']
+          )
+          provider.install
+        end
+      end
+
+      context 'when no suitable version in range' do
+        let(:ensure_value) { '>18.1 <19' }
+        let(:available_versions) { ['3:17.5.2', '3:18.0', 'a:23' '18.3', '3:18.3.2', '3:19.0', '19.1'] }
+
+        it 'uses requested version' do
+          expect(provider).to receive(:execute).with(
+            ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, "myresource->18.1 <19"]
+          )
+          provider.install
+        end
+
+        it 'logs a debug message' do
+          allow(provider).to receive(:execute).with(
+            ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, "myresource->18.1 <19"]
+          )
+
+          expect(Puppet).to receive(:debug).with(
+            "No available version for package myresource is included in range >18.1 <19"
+          )
+          provider.install
+        end
+      end
     end
 
+    context 'with fix version' do
+      let(:ensure_value) { '1:18.12' }
 
-    it "creates an entry for each line that's prefixed with '_pkg'" do
-      described_class.expects(:python).with([described_class::YUMHELPER]).returns(yumhelper_single_arch)
-      entries = described_class.fetch_latest_versions([], [])
-      expect(entries.keys).to include 'nss-tools'
-      expect(entries.keys).to include 'pixman'
-      expect(entries.keys).to include 'myresource'
-      expect(entries.keys).to include 'mysummaryless'
+      it 'passes the version to yum command' do
+        expect(provider).to receive(:execute).with(
+            ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, "myresource-1:18.12"]
+          )
+          provider.install
+      end
     end
 
-    it "creates an entry for each package name and architecture" do
-      described_class.expects(:python).with([described_class::YUMHELPER]).returns(yumhelper_single_arch)
-      entries = described_class.fetch_latest_versions([], [])
-      expect(entries.keys).to include 'nss-tools.x86_64'
-      expect(entries.keys).to include 'pixman.x86_64'
-      expect(entries.keys).to include 'myresource.noarch'
-      expect(entries.keys).to include 'mysummaryless.noarch'
+    context 'when upgrading' do
+      let(:ensure_value) { '>18.1 <19' }
+      let(:available_versions) { ['17.5.2', '18.0', 'a:23' '18.3', '18.3.2', '19.0', '3:18.4'] }
+
+      before do
+        allow(provider).to receive(:available_versions).and_return(available_versions)
+        allow(provider).to receive(:query).twice
+          .and_return({ ensure: '17.0' }, { ensure: '18.3.2' })
+      end
+
+      it 'adds update flag to install command' do
+        expect(provider).to receive(:execute).with(
+          ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', 'update', 'myresource-18.3.2']
+        )
+        provider.install
+      end
     end
 
-    it "stores multiple entries if a package is build for multiple architectures" do
-      described_class.expects(:python).with([described_class::YUMHELPER]).returns(yumhelper_multi_arch)
-      entries = described_class.fetch_latest_versions([], [])
-      expect(entries.keys).to include 'nss-tools.x86_64'
-      expect(entries.keys).to include 'pixman.x86_64'
-      expect(entries.keys).to include 'nss-tools.i386'
-      expect(entries.keys).to include 'pixman.i386'
+    context 'when dowgrading' do
+      let(:ensure_value) { '>18.1 <19' }
+      let(:available_versions) { ['17.5.2', '18.0', 'a:23' '18.3', '18.3.2', '19.0', '3:18.4'] }
 
-      expect(entries['nss-tools']).to have(2).items
-      expect(entries['pixman']).to have(2).items
+      before do
+        allow(provider).to receive(:available_versions).and_return(available_versions)
+        allow(provider).to receive(:query).twice
+          .and_return({ ensure: '19.0' }, { ensure: '18.3.2' })
+      end
+
+      it 'adds downgrade flag to install command' do
+        expect(provider).to receive(:execute).with(
+          ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :downgrade, 'myresource-18.3.2']
+        )
+        provider.install
+      end
     end
 
-    it "passes the repos to enable to the helper" do
-      described_class.expects(:python).with do |script, *args|
-        expect(script).to eq described_class::YUMHELPER
-        expect(args).to eq %w[-e updates -e centosplus]
-      end.returns('')
-      described_class.fetch_latest_versions(['updates', 'centosplus'], [])
-    end
+    context 'on failure' do
+      let(:ensure_value) { '20' }
 
-    it "passes the repos to disable to the helper" do
-      described_class.expects(:python).with do |script, *args|
-        expect(script).to eq described_class::YUMHELPER
-        expect(args).to eq %w[-d updates -d centosplus]
-      end.returns('')
-      described_class.fetch_latest_versions([], ['updates', 'centosplus'])
-    end
+      context 'when execute command fails' do
+        before do
+          allow(provider).to receive(:execute).with(
+            ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, "myresource-20"]
+          ).and_return('No package myresource-20 available.')
+        end
 
-    it 'passes a combination of repos to the helper' do
-      described_class.expects(:python).with do |script, *args|
-        expect(script).to eq described_class::YUMHELPER
-        expect(args).to eq %w[-e os -e contrib -d updates -d centosplus]
-      end.returns('')
-      described_class.fetch_latest_versions(['os', 'contrib'], ['updates', 'centosplus'])
+        it 'raises Puppet::Error' do
+          expect { provider.install }.to \
+            raise_error(Puppet::Error, 'Could not find package myresource-20')
+        end
+      end
+
+      context 'when package is not found' do
+        before do
+          allow(provider).to receive(:query)
+          allow(provider).to receive(:execute).with(
+            ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, "myresource-20"]
+          )
+        end
+
+        it 'raises Puppet::Error' do
+          expect { provider.install }.to \
+            raise_error(Puppet::Error, 'Could not find package myresource')
+        end
+      end
+
+      context 'when package is not installed' do
+        before do
+          allow(provider).to receive(:execute).with(
+            ['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, "myresource-20"]
+          )
+          allow(provider).to receive(:insync?).and_return(false)
+        end
+
+        it 'raises Puppet::Error' do
+          expect { provider.install }.to \
+            raise_error(Puppet::Error, 'Failed to update to version 20, got version 18.3.2 instead')
+        end
+      end
     end
   end
 end

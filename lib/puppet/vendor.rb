@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Puppet
   # Simple module to manage vendored code.
   #
@@ -31,13 +33,13 @@ module Puppet
 
       # @api private
       def load_entry(entry)
-        Puppet.debug("Loading vendored #{$1}")
+        Puppet.debug("Loading vendored #{entry}")
         load "#{vendor_dir}/#{entry}"
       end
 
       # @api private
       def require_libs
-        require 'puppet/vendor/require_vendored'
+        require_relative 'vendor/require_vendored'
       end
 
       # Configures the path for all vendored libraries and loads required libraries.
@@ -45,7 +47,7 @@ module Puppet
       #
       def load_vendored
         Dir.entries(vendor_dir).each do |entry|
-          if entry.match(/load_(\w+?)\.rb$/)
+          if entry =~ /load_(\w+?)\.rb$/
             load_entry entry
           end
         end

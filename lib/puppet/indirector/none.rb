@@ -1,4 +1,6 @@
-require 'puppet/indirector/terminus'
+# frozen_string_literal: true
+
+require_relative '../../puppet/indirector/terminus'
 
 # A none terminus type, meant to always return nil
 class Puppet::Indirector::None < Puppet::Indirector::Terminus
@@ -6,4 +8,3 @@ class Puppet::Indirector::None < Puppet::Indirector::Terminus
     return nil
   end
 end
-

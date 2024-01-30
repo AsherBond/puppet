@@ -1,9 +1,10 @@
+# frozen_string_literal: true
+
 require 'rdoc/generators/html_generator'
-require 'puppet/util/rdoc/code_objects'
+require_relative '../../../../puppet/util/rdoc/code_objects'
 require 'digest/md5'
 
 module Generators
-
   # This module holds all the classes needed to generate the HTML documentation
   # of a bunch of puppet manifests.
   #
@@ -36,11 +37,11 @@ module Generators
   module MarkUp
     alias :old_markup :markup
 
-    def new_markup(str, remove_para=false)
+    def new_markup(str, remove_para = false)
       first = @markup.nil?
       res = old_markup(str, remove_para)
       if first and not @markup.nil?
-        @markup.add_special(/\b([a-z]\w+(::\w+)*)/,:CROSSREF)
+        @markup.add_special(/\b([a-z]\w+(::\w+)*)/, :CROSSREF)
         # we need to call it again, since we added a rule
         res = old_markup(str, remove_para)
       end
@@ -51,10 +52,9 @@ module Generators
 
   # This is a specialized HTMLGenerator tailored to Puppet manifests
   class PuppetGenerator < HTMLGenerator
-
     def PuppetGenerator.for(options)
-      AllReferences::reset
-      HtmlMethod::reset
+      AllReferences.reset
+      HtmlMethod.reset
 
       if options.all_one_file
         PuppetGeneratorInOne.new(options)
@@ -63,18 +63,18 @@ module Generators
       end
     end
 
-    def initialize(options) #:not-new:
-      @options    = options
+    def initialize(options) # :not-new:
+      @options = options
       load_html_template
     end
 
     # loads our own html template file
     def load_html_template
-        require 'puppet/util/rdoc/generators/template/puppet/puppet'
-        extend RDoc::Page
+      require_relative '../../../../puppet/util/rdoc/generators/template/puppet/puppet'
+      extend RDoc::Page
     rescue LoadError
-        $stderr.puts "Could not find Puppet template '#{template}'"
-        exit 99
+      $stderr.puts "Could not find Puppet template '#{template}'"
+      exit 99
     end
 
     def gen_method_index
@@ -115,6 +115,7 @@ module Generators
       # build the modules, classes and per modules classes and define list
       @toplevels.each do |toplevel|
         next unless toplevel.document_self
+
         file = HtmlFile.new(toplevel, @options, FILE_DIR)
         classes = []
         methods = []
@@ -143,7 +144,7 @@ module Generators
         # generate nodes and plugins found
         classes.each do |k|
           if k.context.is_module?
-            k.context.each_node do |name,node|
+            k.context.each_node do |_name, node|
               nodes << HTMLPuppetNode.new(node, toplevel, NODE_DIR, @options)
               @nodes << nodes.last
             end
@@ -160,10 +161,12 @@ module Generators
         @allfiles << { "file" => file, "modules" => modules, "classes" => classes, "methods" => methods, "nodes" => nodes }
       end
 
-      # scan all classes to create the childs references
+      # scan all classes to create the child's references
       @allclasses.values.each do |klass|
-        if superklass = klass.context.superclass
-          if superklass = AllReferences[superklass] and (superklass.is_a?(HTMLPuppetClass) or superklass.is_a?(HTMLPuppetNode))
+        superklass = klass.context.superclass
+        if superklass
+          superklass = AllReferences[superklass]
+          if superklass && (superklass.is_a?(HTMLPuppetClass) || superklass.is_a?(HTMLPuppetNode))
             superklass.context.add_child(klass.context)
           end
         end
@@ -193,13 +196,13 @@ module Generators
 
     # generate all the subdirectories, modules, classes and files
     def gen_sub_directories
-        super
-        File.makedirs(MODULE_DIR)
-        File.makedirs(NODE_DIR)
-        File.makedirs(PLUGIN_DIR)
+      super
+      File.makedirs(MODULE_DIR)
+      File.makedirs(NODE_DIR)
+      File.makedirs(PLUGIN_DIR)
     rescue
-        $stderr.puts $ERROR_INFO.message
-        exit 1
+      $stderr.puts $ERROR_INFO.message
+      exit 1
     end
 
     # generate the index of modules
@@ -213,19 +216,19 @@ module Generators
       res = []
       collection.sort.each do |f|
         if f.document_self
-          res << { "classlist" => CGI.escapeHTML("#{MODULE_DIR}/fr_#{f.index_name}.html"), "module" => CGI.escapeHTML("#{CLASS_DIR}/#{f.index_name}.html"),"name" => CGI.escapeHTML(f.index_name) }
+          res << { "classlist" => CGI.escapeHTML("#{MODULE_DIR}/fr_#{f.index_name}.html"), "module" => CGI.escapeHTML("#{CLASS_DIR}/#{f.index_name}.html"), "name" => CGI.escapeHTML(f.index_name) }
         end
       end
 
       values = {
-        "entries"    => res,
+        "entries" => res,
         'list_title' => CGI.escapeHTML(title),
-        'index_url'  => main_url,
-        'charset'    => @options.charset,
-        'style_url'  => style_url('', @options.css),
+        'index_url' => main_url,
+        'charset' => @options.charset,
+        'style_url' => style_url('', @options.css),
       }
 
-      File.open(filename, "w") do |f|
+      Puppet::FileSystem.open(filename, nil, "w:UTF-8") do |f|
         template.write_html_on(f, values)
       end
     end
@@ -238,70 +241,70 @@ module Generators
 
           gen_composite_index(
             file,
-              RDoc::Page::COMBO_INDEX,
-
-              "#{MODULE_DIR}/fr_#{file["file"].context.module_name}.html")
+            RDoc::Page::COMBO_INDEX,
+            "#{MODULE_DIR}/fr_#{file["file"].context.module_name}.html"
+          )
         end
       end
     end
 
-    def gen_composite_index(collection, template, filename)\
+    def gen_composite_index(collection, template, filename)
       return if Puppet::FileSystem.exist?(filename)
 
       template = TemplatePage.new(RDoc::Page::FR_INDEX_BODY, template)
       res1 = []
       collection['classes'].sort.each do |f|
         if f.document_self
-          res1 << { "href" => "../"+CGI.escapeHTML(f.path), "name" => CGI.escapeHTML(f.index_name) } unless f.context.is_module?
+          res1 << { "href" => "../" + CGI.escapeHTML(f.path), "name" => CGI.escapeHTML(f.index_name) } unless f.context.is_module?
         end
       end
 
       res2 = []
       collection['methods'].sort.each do |f|
-        res2 << { "href" => "../#{f.path}", "name" => f.index_name.sub(/\(.*\)$/,'') } if f.document_self
+        res2 << { "href" => "../#{f.path}", "name" => f.index_name.sub(/\(.*\)$/, '') } if f.document_self
       end
 
       module_name = []
       res3 = []
       res4 = []
       collection['modules'].sort.each do |f|
-        module_name << { "href" => "../"+CGI.escapeHTML(f.path), "name" => CGI.escapeHTML(f.index_name) }
+        module_name << { "href" => "../" + CGI.escapeHTML(f.path), "name" => CGI.escapeHTML(f.index_name) }
         unless f.facts.nil?
           f.facts.each do |fact|
-            res3 << {"href" => "../"+CGI.escapeHTML(AllReferences["PLUGIN(#{fact.name})"].path), "name" => CGI.escapeHTML(fact.name)}
+            res3 << { "href" => "../" + CGI.escapeHTML(AllReferences["PLUGIN(#{fact.name})"].path), "name" => CGI.escapeHTML(fact.name) }
           end
         end
         unless f.plugins.nil?
           f.plugins.each do |plugin|
-            res4 << {"href" => "../"+CGI.escapeHTML(AllReferences["PLUGIN(#{plugin.name})"].path), "name" => CGI.escapeHTML(plugin.name)}
+            res4 << { "href" => "../" + CGI.escapeHTML(AllReferences["PLUGIN(#{plugin.name})"].path), "name" => CGI.escapeHTML(plugin.name) }
           end
         end
       end
 
       res5 = []
       collection['nodes'].sort.each do |f|
-        res5 << { "href" => "../"+CGI.escapeHTML(f.path), "name" => CGI.escapeHTML(f.name) } if f.document_self
+        res5 << { "href" => "../" + CGI.escapeHTML(f.path), "name" => CGI.escapeHTML(f.name) } if f.document_self
       end
 
       values = {
         "module" => module_name,
-        "classes"    => res1,
+        "classes" => res1,
         'classes_title' => CGI.escapeHTML("Classes"),
         'defines_title' => CGI.escapeHTML("Defines"),
         'facts_title' => CGI.escapeHTML("Custom Facts"),
         'plugins_title' => CGI.escapeHTML("Plugins"),
         'nodes_title' => CGI.escapeHTML("Nodes"),
-        'index_url'  => main_url,
-        'charset'    => @options.charset,
-        'style_url'  => style_url('', @options.css),
+        'index_url' => main_url,
+        'charset' => @options.charset,
+        'style_url' => style_url('', @options.css),
       }
 
-      values["defines"] = res2 if res2.size>0
-      values["facts"] = res3 if res3.size>0
-      values["plugins"] = res4 if res4.size>0
-      values["nodes"] = res5 if res5.size>0
+      values["defines"] = res2 if res2.size > 0
+      values["facts"] = res3 if res3.size > 0
+      values["plugins"] = res4 if res4.size > 0
+      values["nodes"] = res5 if res5.size > 0
 
-      File.open(filename, "w") do |f|
+      Puppet::FileSystem.open(filename, nil, "w:UTF-8") do |f|
         template.write_html_on(f, values)
       end
     end
@@ -345,7 +348,6 @@ module Generators
 
       ref
     end
-
   end
 
   # This module is used to generate a referenced full name list of ContextUser
@@ -373,17 +375,17 @@ module Generators
   module ResourceContainer
     def collect_resources
       list = @context.resource_list
-      @resources = list.collect {|m| HTMLPuppetResource.new(m, self, @options) }
+      @resources = list.collect { |m| HTMLPuppetResource.new(m, self, @options) }
     end
 
-    def build_resource_summary_list(path_prefix='')
+    def build_resource_summary_list(path_prefix = '')
       collect_resources unless @resources
       resources = @resources.sort
       res = []
       resources.each do |r|
         res << {
           "name" => CGI.escapeHTML(r.name),
-          "aref" => CGI.escape(path_prefix)+"\#"+CGI.escape(r.aref)
+          "aref" => Puppet::Util.uri_encode(path_prefix) + "\#" + Puppet::Util.uri_query_encode(r.aref)
         }
       end
       res
@@ -395,7 +397,7 @@ module Generators
       resources.each do |r|
         row = {}
         if r.section == section and r.document_self
-          row["name"]        = CGI.escapeHTML(r.name)
+          row["name"] = CGI.escapeHTML(r.name)
           desc = r.description.strip
           row["m_desc"]      = desc unless desc.empty?
           row["aref"]        = r.aref
@@ -416,7 +418,7 @@ module Generators
       @values["resources"] = rl unless rl.empty?
 
       @context.sections.each do |section|
-        secdata = @values["sections"].select { |secdata| secdata["secsequence"] == section.sequence }
+        secdata = @values["sections"].select { |s| s["secsequence"] == section.sequence }
         if secdata.size == 1
           secdata = secdata[0]
 
@@ -496,11 +498,11 @@ module Generators
     def write_on(f)
       value_hash
 
-        template = TemplatePage.new(
-          RDoc::Page::BODYINC,
-            RDoc::Page::NODE_PAGE,
-
-            RDoc::Page::METHOD_LIST)
+      template = TemplatePage.new(
+        RDoc::Page::BODYINC,
+        RDoc::Page::NODE_PAGE,
+        RDoc::Page::METHOD_LIST
+      )
       template.write_html_on(f, @values)
     end
 
@@ -533,7 +535,6 @@ module Generators
       @values["childs"] = cl unless cl.empty?
 
       @values["sections"] = @context.sections.map do |section|
-
         secdata = {
           "sectitle" => section.title,
           "secsequence" => section.sequence,
@@ -569,10 +570,11 @@ module Generators
       res = []
       atts.each do |att|
         next unless att.section == section
+
         if att.visibility == :public || att.visibility == :protected || @options.show_all
           entry = {
-            "name"   => CGI.escapeHTML(att.name),
-            "rw"     => att.rw,
+            "name" => CGI.escapeHTML(att.name),
+            "rw" => att.rw,
             "a_desc" => markup(att.comment, true)
           }
           unless att.visibility == :public || att.visibility == :protected
@@ -620,7 +622,7 @@ module Generators
         res["full_path"]     = full_path
         res["full_path_url"] = aref_to(f.viewer.path) if f.document_self
 
-        res["cvsurl"] = cvs_url( @options.webcvs, full_path ) if @options.webcvs
+        res["cvsurl"] = cvs_url(@options.webcvs, full_path) if @options.webcvs
 
         files << res
       end
@@ -646,11 +648,6 @@ module Generators
   end
 
   class HTMLPuppetModule < HtmlClass
-
-    def initialize(context, html_file, prefix, options)
-      super(context, html_file, prefix, options)
-    end
-
     def value_hash
       @values = super
 
@@ -673,21 +670,21 @@ module Generators
       context.nodes.sort.each do |node|
         if node.document_self
           res <<
-          prefix <<
-          "Node " <<
-          href(url(node.viewer.path), "link", node.full_name) <<
-          "<br />\n"
+            prefix <<
+            "Node " <<
+            href(url(node.viewer.path), "link", node.full_name) <<
+            "<br />\n"
         end
       end
       res
     end
 
     def build_facts_summary_list
-      potentially_referenced_list(context.facts) {|fn| ["PLUGIN(#{fn})"] }
+      potentially_referenced_list(context.facts) { |fn| ["PLUGIN(#{fn})"] }
     end
 
     def build_plugins_summary_list
-      potentially_referenced_list(context.plugins) {|fn| ["PLUGIN(#{fn})"] }
+      potentially_referenced_list(context.plugins) { |fn| ["PLUGIN(#{fn})"] }
     end
 
     def facts
@@ -697,7 +694,6 @@ module Generators
     def plugins
       @context.plugins
     end
-
   end
 
   class HTMLPuppetPlugin < ContextUser
@@ -744,11 +740,11 @@ module Generators
     def write_on(f)
       value_hash
 
-        template = TemplatePage.new(
-          RDoc::Page::BODYINC,
-            RDoc::Page::PLUGIN_PAGE,
-
-            RDoc::Page::PLUGIN_LIST)
+      template = TemplatePage.new(
+        RDoc::Page::BODYINC,
+        RDoc::Page::PLUGIN_PAGE,
+        RDoc::Page::PLUGIN_LIST
+      )
       template.write_html_on(f, @values)
     end
 
@@ -805,7 +801,7 @@ module Generators
         res["full_path"]     = full_path
         res["full_path_url"] = aref_to(f.viewer.path) if f.document_self
 
-        res["cvsurl"] = cvs_url( @options.webcvs, full_path ) if @options.webcvs
+        res["cvsurl"] = cvs_url(@options.webcvs, full_path) if @options.webcvs
 
         files << res
       end
@@ -816,7 +812,6 @@ module Generators
     def <=>(other)
       self.name <=> other.name
     end
-
   end
 
   class HTMLPuppetResource
@@ -894,11 +889,10 @@ module Generators
       @context.document_self
     end
 
-    def find_symbol(symbol, method=nil)
+    def find_symbol(symbol, method = nil)
       res = @context.parent.find_symbol(symbol, method)
-      res &&= res.viewer
+      res && res.viewer
     end
-
   end
 
   class PuppetGeneratorInOne < HTMLGeneratorInOne
@@ -906,5 +900,4 @@ module Generators
       gen_an_index(HtmlMethod.all_methods, 'Defines')
     end
   end
-
 end

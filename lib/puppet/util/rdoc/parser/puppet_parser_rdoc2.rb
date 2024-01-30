@@ -1,4 +1,6 @@
-require 'puppet/util/rdoc/parser/puppet_parser_core.rb'
+# frozen_string_literal: true
+
+require_relative '../../../../puppet/util/rdoc/parser/puppet_parser_core.rb'
 
 module RDoc
   PUPPET_RDOC_VERSION = 2
@@ -8,7 +10,7 @@ module RDoc
     include PuppetParserCore
 
     def create_rdoc_preprocess
-      preprocess = Markup::PreProcess.new(@input_file_name, @options.rdoc_include)
+      Markup::PreProcess.new(@input_file_name, @options.rdoc_include)
     end
   end
 end

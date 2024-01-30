@@ -2,7 +2,7 @@ require 'spec_helper'
 require 'puppet/module_tool/applications'
 require 'puppet_spec/module_tool/shared_functions'
 require 'puppet_spec/module_tool/stub_source'
-require 'semver'
+require 'tmpdir'
 
 describe Puppet::ModuleTool::Applications::Upgrader do
   include PuppetSpec::ModuleTool::SharedFunctions
@@ -26,9 +26,15 @@ describe Puppet::ModuleTool::Applications::Upgrader do
   end
 
   before do
-    Semantic::Dependency.clear_sources
-    installer = Puppet::ModuleTool::Applications::Upgrader.any_instance
-    installer.stubs(:module_repository).returns(remote_source)
+    SemanticPuppet::Dependency.clear_sources
+    allow_any_instance_of(Puppet::ModuleTool::Applications::Upgrader).to receive(:module_repository).and_return(remote_source)
+  end
+
+  if Puppet::Util::Platform.windows?
+    before :each do
+      allow(Puppet.settings).to receive(:[])
+      allow(Puppet.settings).to receive(:[]).with(:module_working_dir).and_return(Dir.mktmpdir('upgradertmp'))
+    end
   end
 
   def upgrader(name, options = {})
@@ -47,8 +53,8 @@ describe Puppet::ModuleTool::Applications::Upgrader do
     subject { application.run }
 
     it 'fails if the module is not already installed' do
-      subject.should include :result => :failure
-      subject[:error].should include :oneline => "Could not upgrade '#{self.module}'; module is not installed"
+      expect(subject).to include :result => :failure
+      expect(subject[:error]).to include :oneline => "Could not upgrade '#{self.module}'; module is not installed"
     end
 
     context 'for an installed module' do
@@ -57,8 +63,8 @@ describe Puppet::ModuleTool::Applications::Upgrader do
         let(:module) { 'puppetlabs-oneversion' }
 
         it 'declines to upgrade' do
-          subject.should include :result => :noop
-          subject[:error][:multiline].should =~ /already the latest version/
+          expect(subject).to include :result => :noop
+          expect(subject[:error][:multiline]).to match(/already the latest version/)
         end
       end
 
@@ -67,7 +73,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
 
         context 'without options' do
           it 'properly upgrades the module to the greatest version' do
-            subject.should include :result => :success
+            expect(subject).to include :result => :success
             graph_should_include 'pmtacceptance-stdlib', v('1.0.0') => v('4.1.0')
           end
         end
@@ -79,7 +85,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
 
           context 'not matching the installed version' do
             it 'properly upgrades the module to the greatest version within that range' do
-              subject.should include :result => :success
+              expect(subject).to include :result => :success
               graph_should_include 'pmtacceptance-stdlib', v('1.0.0') => v('3.2.0')
             end
           end
@@ -89,7 +95,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
               before { preinstall('pmtacceptance-stdlib', '3.0.0')}
 
               it 'properly upgrades the module to the greatest version within that range' do
-                subject.should include :result => :success
+                expect(subject).to include :result => :success
                 graph_should_include 'pmtacceptance-stdlib', v('3.0.0') => v('3.2.0')
               end
             end
@@ -99,8 +105,8 @@ describe Puppet::ModuleTool::Applications::Upgrader do
 
               context 'without options' do
                 it 'declines to upgrade' do
-                  subject.should include :result => :noop
-                  subject[:error][:multiline].should =~ /already the latest version/
+                  expect(subject).to include :result => :noop
+                  expect(subject[:error][:multiline]).to match(/already the latest version/)
                 end
               end
 
@@ -110,7 +116,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
                 end
 
                 it 'overwrites the installed module with the greatest version matching that range' do
-                  subject.should include :result => :success
+                  expect(subject).to include :result => :success
                   graph_should_include 'pmtacceptance-stdlib', v('3.2.0') => v('3.2.0')
                 end
               end
@@ -130,14 +136,14 @@ describe Puppet::ModuleTool::Applications::Upgrader do
           before { preinstall('pmtacceptance-mysql', '0.8.0') }
 
           it 'properly upgrades to the greatest version matching the dependency' do
-            subject.should include :result => :success
+            expect(subject).to include :result => :success
             graph_should_include 'pmtacceptance-mysql', v('0.8.0') => v('0.9.0')
           end
         end
 
         context 'and up to date' do
           it 'declines to upgrade' do
-            subject.should include :result => :failure
+            expect(subject).to include :result => :failure
           end
         end
 
@@ -148,8 +154,8 @@ describe Puppet::ModuleTool::Applications::Upgrader do
 
           it 'fails to upgrade the module' do
             # TODO: More helpful error message?
-            subject.should include :result => :failure
-            subject[:error].should include :oneline => "Could not upgrade '#{self.module}' (v0.9.0 -> v2.1.0); no version satisfies all dependencies"
+            expect(subject).to include :result => :failure
+            expect(subject[:error]).to include :oneline => "Could not upgrade '#{self.module}' (v0.9.0 -> v2.1.0); no version satisfies all dependencies"
           end
 
           context 'using --force' do
@@ -158,7 +164,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
             end
 
             it 'overwrites the installed module with the specified version' do
-              subject.should include :result => :success
+              expect(subject).to include :result => :success
               graph_should_include 'pmtacceptance-mysql', v('0.9.0') => v('2.1.0')
             end
           end
@@ -173,8 +179,8 @@ describe Puppet::ModuleTool::Applications::Upgrader do
         end
 
         it 'fails to upgrade' do
-          subject.should include :result => :failure
-          subject[:error].should include :oneline => "Could not upgrade '#{self.module}'; module has had changes made locally"
+          expect(subject).to include :result => :failure
+          expect(subject[:error]).to include :oneline => "Could not upgrade '#{self.module}'; module has had changes made locally"
         end
 
         context 'with --ignore-changes' do
@@ -183,7 +189,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
           end
 
           it 'overwrites the installed module with the greatest version matching that range' do
-            subject.should include :result => :success
+            expect(subject).to include :result => :success
             graph_should_include 'pmtacceptance-stdlib', v('1.0.0') => v('4.1.0')
           end
         end
@@ -199,7 +205,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
           let(:module) { 'pmtacceptance-apache' }
 
           it 'upgrades the module and installs the missing dependencies' do
-            subject.should include :result => :success
+            expect(subject).to include :result => :success
             graph_should_include 'pmtacceptance-apache', v('0.0.3') => v('0.1.1')
             graph_should_include 'pmtacceptance-stdlib', nil => v('4.1.0'), :action => :install
           end
@@ -213,7 +219,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
           let(:module) { 'pmtacceptance-apache' }
 
           it 'refuses to upgrade the installed dependency to a new major version, but upgrades the module to the greatest compatible version' do
-            subject.should include :result => :success
+            expect(subject).to include :result => :success
             graph_should_include 'pmtacceptance-apache', v('0.0.3') => v('0.0.4')
           end
 
@@ -223,7 +229,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
             end
 
             it 'upgrades the module to the greatest available version' do
-              subject.should include :result => :success
+              expect(subject).to include :result => :success
               graph_should_include 'pmtacceptance-apache', v('0.0.3') => v('0.10.0')
             end
           end
@@ -235,7 +241,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
           let(:module) { 'pmtacceptance-apache' }
 
           it 'upgrades the module and its dependencies to their greatest compatible versions' do
-            subject.should include :result => :success
+            expect(subject).to include :result => :success
             graph_should_include 'pmtacceptance-apache', v('0.0.3') => v('0.10.0')
             graph_should_include 'pmtacceptance-stdlib', v('2.0.0') => v('2.6.0')
           end
@@ -247,7 +253,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
           let(:module) { 'pmtacceptance-apache' }
 
           it 'upgrades the module to the greatest available version' do
-            subject.should include :result => :success
+            expect(subject).to include :result => :success
             graph_should_include 'pmtacceptance-apache', v('0.0.3') => v('0.10.0')
             graph_should_include 'pmtacceptance-stdlib', nil
           end
@@ -259,7 +265,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
           let(:module) { 'pmtacceptance-apache' }
 
           it 'upgrades the module to the greatest available version' do
-            subject.should include :result => :success
+            expect(subject).to include :result => :success
             graph_should_include 'pmtacceptance-apache', v('0.0.3') => v('0.10.0')
             graph_should_include 'pmtacceptance-stdlib', nil
           end
@@ -279,7 +285,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
           let(:module) { 'pmtacceptance-bacula' }
 
           it 'upgrades the module to the greatest version compatible with all other installed modules' do
-            subject.should include :result => :success
+            expect(subject).to include :result => :success
             graph_should_include 'pmtacceptance-bacula', v('0.0.1') => v('0.0.2')
           end
 
@@ -289,7 +295,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
             end
 
             it 'upgrades the module to the greatest version available' do
-              subject.should include :result => :success
+              expect(subject).to include :result => :success
               graph_should_include 'pmtacceptance-bacula', v('0.0.1') => v('0.0.3')
             end
           end
@@ -302,7 +308,7 @@ describe Puppet::ModuleTool::Applications::Upgrader do
 
           context 'with older major versions' do
             it 'upgrades the module to the greatest version compatible with the installed modules' do
-              subject.should include :result => :success
+              expect(subject).to include :result => :success
               graph_should_include 'pmtacceptance-apache', v('0.0.3') => v('0.0.4')
               graph_should_include 'pmtacceptance-stdlib', nil
             end
@@ -312,13 +318,20 @@ describe Puppet::ModuleTool::Applications::Upgrader do
             before { preinstall('pmtacceptance-stdlib', '2.0.0', :into => secondary_dir) }
 
             it 'upgrades the module and its dependencies to their greatest compatible versions, in-place' do
-              subject.should include :result => :success
+              expect(subject).to include :result => :success
               graph_should_include 'pmtacceptance-apache', v('0.0.3') => v('0.10.0')
               graph_should_include 'pmtacceptance-stdlib', v('2.0.0') => v('2.6.0'), :path => secondary_dir
             end
           end
         end
       end
+    end
+
+    context 'when in FIPS mode...' do
+      it 'module unpgrader refuses to run' do
+        allow(Facter).to receive(:value).with(:fips_enabled).and_return(true)
+        expect { application.run }.to raise_error(/Module upgrade is prohibited in FIPS mode/)
+      end 
     end
   end
 end

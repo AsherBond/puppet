@@ -1,90 +1,93 @@
 # encoding: UTF-8
-require 'puppet/forge'
-require 'puppet/module_tool/install_directory'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/forge'
+require_relative '../../../puppet/module_tool/install_directory'
 require 'pathname'
 
 Puppet::Face.define(:module, '1.0.0') do
   action(:install) do
-    summary "Install a module from the Puppet Forge or a release archive."
+    summary _("Install a module from the Puppet Forge or a release archive.")
     description <<-EOT
       Installs a module from the Puppet Forge or from a release archive file.
+      Note: Module install uses MD5 checksums, which are prohibited on FIPS enabled systems.
 
       The specified module will be installed into the directory
       specified with the `--target-dir` option, which defaults to the first
       directory in the modulepath.
     EOT
 
-    returns "Pathname object representing the path to the installed module."
+    returns _("Pathname object representing the path to the installed module.")
 
     examples <<-'EOT'
       Install a module:
 
       $ puppet module install puppetlabs-vcsrepo
-      Preparing to install into /etc/puppet/modules ...
-      Downloading from http://forgeapi.puppetlabs.com ...
+      Preparing to install into /etc/puppetlabs/code/modules ...
+      Downloading from https://forgeapi.puppet.com ...
       Installing -- do not interrupt ...
-      /etc/puppet/modules
+      /etc/puppetlabs/code/modules
       └── puppetlabs-vcsrepo (v0.0.4)
 
       Install a module to a specific environment:
 
       $ puppet module install puppetlabs-vcsrepo --environment development
-      Preparing to install into /etc/puppet/environments/development/modules ...
-      Downloading from http://forgeapi.puppetlabs.com ...
+      Preparing to install into /etc/puppetlabs/code/environments/development/modules ...
+      Downloading from https://forgeapi.puppet.com ...
       Installing -- do not interrupt ...
-      /etc/puppet/environments/development/modules
+      /etc/puppetlabs/code/environments/development/modules
       └── puppetlabs-vcsrepo (v0.0.4)
 
       Install a specific module version:
 
       $ puppet module install puppetlabs-vcsrepo -v 0.0.4
-      Preparing to install into /etc/puppet/modules ...
-      Downloading from http://forgeapi.puppetlabs.com ...
+      Preparing to install into /etc/puppetlabs/modules ...
+      Downloading from https://forgeapi.puppet.com ...
       Installing -- do not interrupt ...
-      /etc/puppet/modules
+      /etc/puppetlabs/code/modules
       └── puppetlabs-vcsrepo (v0.0.4)
 
       Install a module into a specific directory:
 
-      $ puppet module install puppetlabs-vcsrepo --target-dir=/usr/share/puppet/modules
-      Preparing to install into /usr/share/puppet/modules ...
-      Downloading from http://forgeapi.puppetlabs.com ...
+      $ puppet module install puppetlabs-vcsrepo --target-dir=/opt/puppetlabs/puppet/modules
+      Preparing to install into /opt/puppetlabs/puppet/modules ...
+      Downloading from https://forgeapi.puppet.com ...
       Installing -- do not interrupt ...
-      /usr/share/puppet/modules
+      /opt/puppetlabs/puppet/modules
       └── puppetlabs-vcsrepo (v0.0.4)
 
       Install a module into a specific directory and check for dependencies in other directories:
 
-      $ puppet module install puppetlabs-vcsrepo --target-dir=/usr/share/puppet/modules --modulepath /etc/puppet/modules
-      Preparing to install into /usr/share/puppet/modules ...
-      Downloading from http://forgeapi.puppetlabs.com ...
+      $ puppet module install puppetlabs-vcsrepo --target-dir=/opt/puppetlabs/puppet/modules --modulepath /etc/puppetlabs/code/modules
+      Preparing to install into /opt/puppetlabs/puppet/modules ...
+      Downloading from https://forgeapi.puppet.com ...
       Installing -- do not interrupt ...
-      /usr/share/puppet/modules
+      /opt/puppetlabs/puppet/modules
       └── puppetlabs-vcsrepo (v0.0.4)
 
       Install a module from a release archive:
 
       $ puppet module install puppetlabs-vcsrepo-0.0.4.tar.gz
-      Preparing to install into /etc/puppet/modules ...
-      Downloading from http://forgeapi.puppetlabs.com ...
+      Preparing to install into /etc/puppetlabs/code/modules ...
+      Downloading from https://forgeapi.puppet.com ...
       Installing -- do not interrupt ...
-      /etc/puppet/modules
+      /etc/puppetlabs/code/modules
       └── puppetlabs-vcsrepo (v0.0.4)
 
       Install a module from a release archive and ignore dependencies:
 
       $ puppet module install puppetlabs-vcsrepo-0.0.4.tar.gz --ignore-dependencies
-      Preparing to install into /etc/puppet/modules ...
+      Preparing to install into /etc/puppetlabs/code/modules ...
       Installing -- do not interrupt ...
-      /etc/puppet/modules
+      /etc/puppetlabs/code/modules
       └── puppetlabs-vcsrepo (v0.0.4)
 
     EOT
 
-    arguments "<name>"
+    arguments _("<name>")
 
     option "--force", "-f" do
-      summary "Force overwrite of existing module, if any. (Implies --ignore-dependencies.)"
+      summary _("Force overwrite of existing module, if any. (Implies --ignore-dependencies.)")
       description <<-EOT
         Force overwrite of existing module, if any.
         Implies --ignore-dependencies.
@@ -92,7 +95,7 @@ Puppet::Face.define(:module, '1.0.0') do
     end
 
     option "--target-dir DIR", "-i DIR" do
-      summary "The directory into which modules are installed."
+      summary _("The directory into which modules are installed.")
       description <<-EOT
         The directory into which modules are installed; defaults to the first
         directory in the modulepath.
@@ -105,14 +108,14 @@ Puppet::Face.define(:module, '1.0.0') do
     end
 
     option "--ignore-dependencies" do
-      summary "Do not attempt to install dependencies. (Implied by --force.)"
+      summary _("Do not attempt to install dependencies. (Implied by --force.)")
       description <<-EOT
         Do not attempt to install dependencies. Implied by --force.
       EOT
     end
 
     option "--version VER", "-v VER" do
-      summary "Module version to install."
+      summary _("Module version to install.")
       description <<-EOT
         Module version to install; can be an exact version or a requirement string,
         eg '>= 1.0.3'. Defaults to latest version.
@@ -121,24 +124,25 @@ Puppet::Face.define(:module, '1.0.0') do
 
     when_invoked do |name, options|
       Puppet::ModuleTool.set_option_defaults options
-      Puppet.notice "Preparing to install into #{options[:target_dir]} ..."
+      Puppet.notice _("Preparing to install into %{dir} ...") % { dir: options[:target_dir] }
 
       install_dir = Puppet::ModuleTool::InstallDirectory.new(Pathname.new(options[:target_dir]))
       Puppet::ModuleTool::Applications::Installer.run(name, install_dir, options)
     end
 
-    when_rendering :console do |return_value, name, options|
-      if return_value[:result] == :noop
-        Puppet.notice "Module #{name} #{return_value[:version]} is already installed."
+    when_rendering :console do |return_value, name, _options|
+      case return_value[:result]
+      when :noop
+        Puppet.notice _("Module %{name} %{version} is already installed.") % { name: name, version: return_value[:version] }
         exit 0
-      elsif return_value[:result] == :failure
+      when :failure
         Puppet.err(return_value[:error][:multiline])
         exit 1
       else
         tree = Puppet::ModuleTool.build_tree(return_value[:graph], return_value[:install_dir])
 
         "#{return_value[:install_dir]}\n" +
-        Puppet::ModuleTool.format_tree(tree)
+          Puppet::ModuleTool.format_tree(tree)
       end
     end
   end

@@ -1,10 +1,12 @@
+# frozen_string_literal: true
+
 class Puppet::Confine::Any < Puppet::Confine
   def self.summarize(confines)
     confines.inject(0) { |count, confine| count + confine.summary }
   end
 
   def pass?(value)
-    !! value
+    !!value
   end
 
   def message(value)
@@ -19,7 +21,7 @@ class Puppet::Confine::Any < Puppet::Confine
     if @values.any? { |value| pass?(value) }
       true
     else
-      Puppet.debug("#{label}: #{message(@values)}")
+      Puppet.debug { "#{label}: #{message(@values)}" }
       false
     end
   end

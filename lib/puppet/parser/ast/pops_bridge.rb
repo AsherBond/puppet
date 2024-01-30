@@ -1,30 +1,32 @@
-require 'puppet/parser/ast/top_level_construct'
-require 'puppet/pops'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/parser/ast/top_level_construct'
+require_relative '../../../puppet/pops'
 
 # The AST::Bridge contains classes that bridges between the new Pops based model
 # and the 3.x AST. This is required to be able to reuse the Puppet::Resource::Type which is
 # fundamental for the rest of the logic.
 #
 class Puppet::Parser::AST::PopsBridge
-
   # Bridges to one Pops Model Expression
   # The @value is the expression
   # This is used to represent the body of a class, definition, or node, and for each parameter's default value
   # expression.
   #
   class Expression < Puppet::Parser::AST::Leaf
-
-    def initialize args
-      super
-      @@evaluator ||= Puppet::Pops::Parser::EvaluatingParser.new()
-    end
-
     def to_s
       Puppet::Pops::Model::ModelTreeDumper.new.dump(@value)
     end
 
+    def source_text
+      source_adapter = Puppet::Pops::Utils.find_closest_positioned(@value)
+      source_adapter ? source_adapter.extract_text() : nil
+    end
+
     def evaluate(scope)
-      @@evaluator.evaluate(scope, @value)
+      evaluator = Puppet::Pops::Parser::EvaluatingParser.singleton
+      object = evaluator.evaluate(scope, @value)
+      evaluator.convert_to_3x(object, scope)
     end
 
     # Adapts to 3x where top level constructs needs to have each to iterate over children. Short circuit this
@@ -55,10 +57,13 @@ class Puppet::Parser::AST::PopsBridge
     end
   end
 
-  class NilAsUndefExpression < Expression
+  class ExpressionSupportingReturn < Expression
     def evaluate(scope)
-      result = super
-      result.nil? ? :undef : result
+      return catch(:return) do
+        return catch(:next) do
+          return super(scope)
+        end
+      end
     end
   end
 
@@ -75,7 +80,6 @@ class Puppet::Parser::AST::PopsBridge
       @program_model = program_model
       @context = context
       @ast_transformer ||= Puppet::Pops::Model::AstTransformer.new(@context[:file])
-      @@evaluator ||= Puppet::Pops::Parser::EvaluatingParser.new()
     end
 
     # This is the 3x API, the 3x AST searches through all code to find the instructions that can be instantiated.
@@ -83,7 +87,7 @@ class Puppet::Parser::AST::PopsBridge
     # efficient as it avoids one full scan of all logic via recursive enumeration/yield)
     #
     def instantiate(modname)
-      @program_model.definitions.collect do |d|
+      @program_model.definitions.map do |d|
         case d
         when Puppet::Pops::Model::HostClassDefinition
           instantiate_HostClassDefinition(d, modname)
@@ -92,14 +96,18 @@ class Puppet::Parser::AST::PopsBridge
         when Puppet::Pops::Model::NodeDefinition
           instantiate_NodeDefinition(d, modname)
         else
-          raise Puppet::ParseError, "Internal Error: Unknown type of definition - got '#{d.class}'"
+          loaders = Puppet::Pops::Loaders.loaders
+          loaders.instantiate_definition(d, loaders.find_loader(modname))
+
+          # The 3x logic calling this will not know what to do with the result, it is compacted away at the end
+          nil
         end
       end.flatten().compact() # flatten since node definition may have returned an array
-                              # Compact since functions are not understood by compiler
+      # Compact since 4x definitions are not understood by compiler
     end
 
     def evaluate(scope)
-      @@evaluator.evaluate(scope, program_model)
+      Puppet::Pops::Parser::EvaluatingParser.singleton.evaluate(scope, program_model)
     end
 
     # Adapts to 3x where top level constructs needs to have each to iterate over children. Short circuit this
@@ -109,15 +117,30 @@ class Puppet::Parser::AST::PopsBridge
       yield self
     end
 
+    # Returns true if this Program only contains definitions
+    def is_definitions_only?
+      is_definition?(program_model)
+    end
+
     private
+
+    def is_definition?(o)
+      case o
+      when Puppet::Pops::Model::Program
+        is_definition?(o.body)
+      when Puppet::Pops::Model::BlockExpression
+        o.statements.all { |s| is_definition?(s) }
+      when Puppet::Pops::Model::Definition
+        true
+      else
+        false
+      end
+    end
 
     def instantiate_Parameter(o)
       # 3x needs parameters as an array of `[name]` or `[name, value_expr]`
-      # One problem is that the parameter evaluation takes place in the wrong context in 3x (the caller's and
-      # can thus reference all sorts of information. Here the value expression is wrapped in an AST Bridge to a Pops
-      # expression since the Pops side can not control the evaluation
       if o.value
-        [o.name, NilAsUndefExpression.new(:value => o.value)]
+        [o.name, Expression.new(:value => o.value)]
       else
         [o.name]
       end
@@ -129,7 +152,7 @@ class Puppet::Parser::AST::PopsBridge
       return result unless definition.parameters.size > 0
 
       # No need to do anything if there are no typed parameters
-      typed_parameters = definition.parameters.select {|p| p.type_expr }
+      typed_parameters = definition.parameters.select { |p| p.type_expr }
       return result if typed_parameters.empty?
 
       # If there are typed parameters, they need to be evaluated to produce the corresponding type
@@ -138,9 +161,11 @@ class Puppet::Parser::AST::PopsBridge
       # reused and we may reenter without a scope (which is fine). A debug message is then output in case
       # there is the need to track down the odd corner case. See {#obtain_scope}.
       #
-      if scope = obtain_scope
+      scope = obtain_scope
+      if scope
+        evaluator = Puppet::Pops::Parser::EvaluatingParser.singleton
         typed_parameters.each do |p|
-          result[p.name] =  @@evaluator.evaluate(scope, p.type_expr)
+          result[p.name] = evaluator.evaluate(scope, p.type_expr)
         end
       end
       result
@@ -153,33 +178,35 @@ class Puppet::Parser::AST::PopsBridge
         # when running tests that run a partial setup.
         # This is bad if the logic is trying to compile, but a warning can not be issues since it is a normal
         # use case that there is no scope when requesting the type in order to just get the parameters.
-        Puppet.debug("Instantiating Resource with type checked parameters - scope is missing, skipping type checking.")
+        Puppet.debug { _("Instantiating Resource with type checked parameters - scope is missing, skipping type checking.") }
         nil
       end
       scope
     end
 
     # Produces a hash with data for Definition and HostClass
-    def args_from_definition(o, modname)
+    def args_from_definition(o, modname, expr_class = Expression)
       args = {
-       :arguments => o.parameters.collect {|p| instantiate_Parameter(p) },
-       :argument_types => create_type_map(o),
-       :module_name => modname
+        :arguments => o.parameters.collect { |p| instantiate_Parameter(p) },
+        :argument_types => create_type_map(o),
+        :module_name => modname
       }
       unless is_nop?(o.body)
-        args[:code] = Expression.new(:value => o.body)
+        args[:code] = expr_class.new(:value => o.body)
       end
       @ast_transformer.merge_location(args, o)
     end
 
     def instantiate_HostClassDefinition(o, modname)
-      args = args_from_definition(o, modname)
+      args = args_from_definition(o, modname, ExpressionSupportingReturn)
       args[:parent] = absolute_reference(o.parent_class)
       Puppet::Resource::Type.new(:hostclass, o.name, @context.merge(args))
     end
 
     def instantiate_ResourceTypeDefinition(o, modname)
-      Puppet::Resource::Type.new(:definition, o.name, @context.merge(args_from_definition(o, modname)))
+      instance = Puppet::Resource::Type.new(:definition, o.name, @context.merge(args_from_definition(o, modname, ExpressionSupportingReturn)))
+      Puppet::Pops::Loaders.register_runtime3_type(instance.name, o.locator.to_uri(o))
+      instance
     end
 
     def instantiate_NodeDefinition(o, modname)
@@ -192,48 +219,15 @@ class Puppet::Parser::AST::PopsBridge
       unless is_nop?(o.parent)
         args[:parent] = @ast_transformer.hostname(o.parent)
       end
+      args = @ast_transformer.merge_location(args, o)
 
       host_matches = @ast_transformer.hostname(o.host_matches)
-      @ast_transformer.merge_location(args, o)
       host_matches.collect do |name|
         Puppet::Resource::Type.new(:node, name, @context.merge(args))
       end
     end
 
-    # Propagates a found Function to the appropriate loader.
-    # This is for 4x future-evaluator/loader
-    #
-    def instantiate_FunctionDefinition(function_definition, modname)
-      loaders = (Puppet.lookup(:loaders) { nil })
-      unless loaders
-        raise Puppet::ParseError, "Internal Error: Puppet Context ':loaders' missing - cannot define any functions"
-      end
-      loader =
-      if modname.nil? || modname == ""
-        # TODO : Later when functions can be private, a decision is needed regarding what that means.
-        #        A private environment loader could be used for logic outside of modules, then only that logic
-        #        would see the function.
-        #
-        # Use the private loader, this function may see the environment's dependencies (currently, all modules)
-        loaders.private_environment_loader()
-      else
-        # TODO : Later check if function is private, and then add it to
-        #        private_loader_for_module
-        #
-        loaders.public_loader_for_module(modname)
-      end
-      unless loader
-        raise Puppet::ParseError, "Internal Error: did not find public loader for module: '#{modname}'"
-      end
-
-      # Instantiate Function, and store it in the environment loader
-      typed_name, f = Puppet::Pops::Loader::PuppetFunctionInstantiator.create_from_model(function_definition, loader)
-      loader.set_entry(typed_name, f, Puppet::Pops::Adapters::SourcePosAdapter.adapt(function_definition).to_uri)
-
-      nil # do not want the function to inadvertently leak into 3x
-    end
-
-    def code()
+    def code
       Expression.new(:value => @value)
     end
 

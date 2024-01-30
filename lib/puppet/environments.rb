@@ -1,6 +1,9 @@
+# frozen_string_literal: true
+
+require_relative '../puppet/concurrent/synchronized'
+
 # @api private
 module Puppet::Environments
-
   class EnvironmentNotFound < Puppet::Error
     def initialize(environment_name, original = nil)
       environmentpath = Puppet[:environmentpath]
@@ -23,6 +26,36 @@ module Puppet::Environments
                                        module_path.split(File::PATH_SEPARATOR),
                                        manifest)
     end
+  end
+
+  # Provide any common methods that loaders should have. It requires that any
+  # classes that include this module implement get
+  # @api private
+  module EnvironmentLoader
+    # @!macro loader_get_or_fail
+    def get!(name)
+      environment = get(name)
+      if environment
+        environment
+      else
+        raise EnvironmentNotFound, name
+      end
+    end
+
+    def clear_all
+      root = Puppet.lookup(:root_environment) { nil }
+      unless root.nil?
+        root.instance_variable_set(:@static_catalogs, nil)
+        root.instance_variable_set(:@rich_data, nil)
+      end
+    end
+
+    # The base implementation is a noop, because `get` returns a new environment
+    # each time.
+    #
+    # @see Puppet::Environments::Cached#guard
+    def guard(name); end
+    def unguard(name); end
   end
 
   # @!macro [new] loader_search_paths
@@ -48,12 +81,21 @@ module Puppet::Environments
   #     we are looking up
   #   @return [Puppet::Setting::EnvironmentConf, nil] the configuration for the
   #     requested environment, or nil if not found or no configuration is available
+  #
+  # @!macro [new] loader_get_or_fail
+  #   Find a named environment or raise
+  #   Puppet::Environments::EnvironmentNotFound when the named environment is
+  #   does not exist.
+  #
+  #   @param name [String,Symbol] The name of environment to find
+  #   @return [Puppet::Node::Environment] the requested environment
 
   # A source of pre-defined environments.
   #
   # @api private
   class Static
     include EnvironmentCreator
+    include EnvironmentLoader
 
     def initialize(*environments)
       @environments = environments
@@ -83,7 +125,7 @@ module Puppet::Environments
     def get_conf(name)
       env = get(name)
       if env
-        Puppet::Settings::EnvironmentConf.static_for(env)
+        Puppet::Settings::EnvironmentConf.static_for(env, Puppet[:environment_timeout], Puppet[:static_catalogs], Puppet[:rich_data])
       else
         nil
       end
@@ -97,7 +139,6 @@ module Puppet::Environments
   #
   # @api private
   class StaticPrivate < Static
-
     # Unlisted
     #
     # @!macro loader_list
@@ -106,65 +147,39 @@ module Puppet::Environments
     end
   end
 
-  # Old-style environments that come either from explicit stanzas in
-  # puppet.conf or from dynamic environments created from use of `$environment`
-  # in puppet.conf.
-  #
-  # @example Explicit Stanza
-  #   [environment_name]
-  #   modulepath=/var/my_env/modules
-  #
-  # @example Dynamic Environments
-  #   [master]
-  #   modulepath=/var/$environment/modules
-  #
-  # @api private
-  class Legacy
-    include EnvironmentCreator
-
-    # @!macro loader_search_paths
-    def search_paths
-      ["file://#{Puppet[:config]}"]
+  class StaticDirectory < Static
+    # Accepts a single environment in the given directory having the given name (not required to be reflected as the name
+    # of the directory)
+    def initialize(env_name, env_dir, environment)
+      super(environment)
+      @env_dir = env_dir
+      @env_name = env_name.intern
     end
 
-    # @note The list of environments for the Legacy environments is always
-    #   empty.
-    #
-    # @!macro loader_list
-    def list
-      []
-    end
-
-    # @note Because the Legacy system cannot list out all of its environments,
-    #   get is able to return environments that are not returned by a call to
-    #   {#list}.
-    #
-    # @!macro loader_get
-    def get(name)
-      Puppet::Node::Environment.new(name)
-    end
-
-    # @note we could return something here, but since legacy environments
-    #   are deprecated, there is no point.
-    #
     # @!macro loader_get_conf
     def get_conf(name)
-      nil
+      return nil unless name.intern == @env_name
+
+      Puppet::Settings::EnvironmentConf.load_from(@env_dir, [])
     end
   end
 
   # Reads environments from a directory on disk. Each environment is
   # represented as a sub-directory. The environment's manifest setting is the
   # `manifest` directory of the environment directory. The environment's
-  # modulepath setting is the global modulepath (from the `[master]` section
-  # for the master) prepended with the `modules` directory of the environment
+  # modulepath setting is the global modulepath (from the `[server]` section
+  # for the server) prepended with the `modules` directory of the environment
   # directory.
   #
   # @api private
   class Directories
+    include EnvironmentLoader
+
     def initialize(environment_dir, global_module_path)
-      @environment_dir = environment_dir
-      @global_module_path = global_module_path
+      @environment_dir =  Puppet::FileSystem.expand_path(environment_dir)
+      @global_module_path = global_module_path ?
+        global_module_path.map { |p| Puppet::FileSystem.expand_path(p) } :
+        nil
     end
 
     # Generate an array of directory loaders from a path string.
@@ -179,6 +194,13 @@ module Puppet::Environments
       end
     end
 
+    def self.real_path(dir)
+      if Puppet::FileSystem.symlink?(dir) && Puppet[:versioned_environment_dirs]
+        dir = Pathname.new Puppet::FileSystem.expand_path(Puppet::FileSystem.readlink(dir))
+      end
+      return dir
+    end
+
     # @!macro loader_search_paths
     def search_paths
       ["file://#{@environment_dir}"]
@@ -186,48 +208,69 @@ module Puppet::Environments
 
     # @!macro loader_list
     def list
-      valid_directories.collect do |envdir|
-        name = Puppet::FileSystem.basename_string(envdir)
-
-        setting_values = Puppet.settings.values(name, Puppet.settings.preferred_run_mode)
-        env = Puppet::Node::Environment.create(
-          name.intern,
-          Puppet::Node::Environment.split_path(setting_values.interpolate(:modulepath)),
-          setting_values.interpolate(:manifest),
-          setting_values.interpolate(:config_version)
-        )
-        env.watching = false
-        env
+      valid_environment_names.collect do |name|
+        create_environment(name)
       end
     end
 
     # @!macro loader_get
     def get(name)
-      list.find { |env| env.name == name.intern }
+      if validated_directory(File.join(@environment_dir, name.to_s))
+        create_environment(name)
+      end
     end
 
     # @!macro loader_get_conf
     def get_conf(name)
-      valid_directories.each do |envdir|
-        envname = Puppet::FileSystem.basename_string(envdir)
-        if envname == name.to_s
-          return Puppet::Settings::EnvironmentConf.load_from(envdir, @global_module_path)
-        end
+      envdir = validated_directory(File.join(@environment_dir, name.to_s))
+      if envdir
+        Puppet::Settings::EnvironmentConf.load_from(envdir, @global_module_path)
+      else
+        nil
       end
-      nil
     end
 
     private
 
-    def valid_directories
-      if Puppet::FileSystem.directory?(@environment_dir)
-        Puppet::FileSystem.children(@environment_dir).select do |child|
-          name = Puppet::FileSystem.basename_string(child)
-          Puppet::FileSystem.directory?(child) &&
-             Puppet::Node::Environment.valid_name?(name)
-        end
+    def create_environment(name)
+      # interpolated modulepaths may be cached from prior environment instances
+      Puppet.settings.clear_environment_settings(name)
+
+      env_symbol = name.intern
+      setting_values = Puppet.settings.values(env_symbol, Puppet.settings.preferred_run_mode)
+      env = Puppet::Node::Environment.create(
+        env_symbol,
+        Puppet::Node::Environment.split_path(setting_values.interpolate(:modulepath)),
+        setting_values.interpolate(:manifest),
+        setting_values.interpolate(:config_version)
+      )
+
+      configured_path = File.join(@environment_dir, name.to_s)
+      env.configured_path = configured_path
+      if Puppet.settings[:report_configured_environmentpath]
+        env.resolved_path = validated_directory(configured_path)
       else
-        []
+        env.resolved_path = configured_path
+      end
+
+      env
+    end
+
+    def validated_directory(envdir)
+      env_name = Puppet::FileSystem.basename_string(envdir)
+      envdir = Puppet::Environments::Directories.real_path(envdir).to_s
+      if Puppet::FileSystem.directory?(envdir) && Puppet::Node::Environment.valid_name?(env_name)
+        envdir
+      else
+        nil
+      end
+    end
+
+    def valid_environment_names
+      return [] unless Puppet::FileSystem.directory?(@environment_dir)
+
+      Puppet::FileSystem.children(@environment_dir).filter_map do |child|
+        Puppet::FileSystem.basename_string(child).intern if validated_directory(child)
       end
     end
   end
@@ -235,6 +278,8 @@ module Puppet::Environments
   # Combine together multiple loaders to act as one.
   # @api private
   class Combined
+    include EnvironmentLoader
+
     def initialize(*loaders)
       @loaders = loaders
     end
@@ -252,7 +297,8 @@ module Puppet::Environments
     # @!macro loader_get
     def get(name)
       @loaders.each do |loader|
-        if env = loader.get(name)
+        env = loader.get(name)
+        if env
           return env
         end
       end
@@ -262,73 +308,226 @@ module Puppet::Environments
     # @!macro loader_get_conf
     def get_conf(name)
       @loaders.each do |loader|
-        if conf = loader.get_conf(name)
+        conf = loader.get_conf(name)
+        if conf
           return conf
         end
       end
       nil
     end
 
+    def clear_all
+      @loaders.each { |loader| loader.clear_all }
+    end
   end
 
-  class Cached < Combined
-    INFINITY = 1.0 / 0.0
+  class Cached
+    include EnvironmentLoader
+    include Puppet::Concurrent::Synchronized
 
-    def initialize(*loaders)
-      super
+    class DefaultCacheExpirationService
+      # Called when the environment is created.
+      #
+      # @param [Puppet::Node::Environment] env
+      def created(env)
+      end
+
+      # Is the environment with this name expired?
+      #
+      # @param [Symbol] env_name The symbolic environment name
+      # @return [Boolean]
+      def expired?(env_name)
+        false
+      end
+
+      # The environment with this name was evicted.
+      #
+      # @param [Symbol] env_name The symbolic environment name
+      def evicted(env_name)
+      end
+    end
+
+    def self.cache_expiration_service=(service)
+      @cache_expiration_service_singleton = service
+    end
+
+    def self.cache_expiration_service
+      @cache_expiration_service_singleton || DefaultCacheExpirationService.new
+    end
+
+    def initialize(loader)
+      @loader = loader
+      @cache_expiration_service = Puppet::Environments::Cached.cache_expiration_service
       @cache = {}
     end
 
-    def get(name)
-      evict_if_expired(name)
-      if result = @cache[name]
-        return result.value
-      elsif (result = super(name))
-        @cache[name] = entry(result)
-        result
+    # @!macro loader_list
+    def list
+      # Evict all that have expired, in the same way as `get`
+      clear_all_expired
+
+      # Evict all that was removed from disk
+      cached_envs = @cache.keys.map!(&:to_sym)
+      loader_envs = @loader.list.map!(&:name)
+      removed_envs = cached_envs - loader_envs
+
+      removed_envs.each do |env_name|
+        Puppet.debug { "Environment no longer exists '#{env_name}'" }
+        clear(env_name)
+      end
+
+      @loader.list.map do |env|
+        name = env.name
+        old_entry = @cache[name]
+        if old_entry
+          old_entry.value
+        else
+          add_entry(name, entry(env))
+          env
+        end
       end
     end
+
+    # @!macro loader_search_paths
+    def search_paths
+      @loader.search_paths
+    end
+
+    # @!macro loader_get
+    def get(name)
+      entry = get_entry(name)
+      entry ? entry.value : nil
+    end
+
+    # Get a cache entry for an envionment. It returns nil if the
+    # environment doesn't exist.
+    def get_entry(name, check_expired = true)
+      # Aggressively evict all that has expired
+      # This strategy favors smaller memory footprint over environment
+      # retrieval time.
+      clear_all_expired if check_expired
+      name = name.to_sym
+      entry = @cache[name]
+      if entry
+        Puppet.debug { "Found in cache #{name.inspect} #{entry.label}" }
+        # found in cache
+        entry.touch
+      elsif (env = @loader.get(name))
+        # environment loaded, cache it
+        entry = entry(env)
+        add_entry(name, entry)
+      end
+      entry
+    end
+    private :get_entry
+
+    # Adds a cache entry to the cache
+    def add_entry(name, cache_entry)
+      Puppet.debug { "Caching environment #{name.inspect} #{cache_entry.label}" }
+      @cache[name] = cache_entry
+      @cache_expiration_service.created(cache_entry.value)
+    end
+    private :add_entry
+
+    def clear_entry(name, entry)
+      @cache.delete(name)
+      Puppet.debug { "Evicting cache entry for environment #{name.inspect}" }
+      @cache_expiration_service.evicted(name.to_sym)
+      Puppet::GettextConfig.delete_text_domain(name)
+      Puppet.settings.clear_environment_settings(name)
+    end
+    private :clear_entry
 
     # Clears the cache of the environment with the given name.
     # (The intention is that this could be used from a MANUAL cache eviction command (TBD)
     def clear(name)
-      @cache.delete(name)
+      name = name.to_sym
+      entry = @cache[name]
+      clear_entry(name, entry) if entry
     end
 
     # Clears all cached environments.
     # (The intention is that this could be used from a MANUAL cache eviction command (TBD)
-    def clear_all()
+    def clear_all
+      super
+
+      @cache.each_pair do |name, entry|
+        clear_entry(name, entry)
+      end
+
       @cache = {}
+      Puppet::GettextConfig.delete_environment_text_domains
     end
 
-    # This implementation evicts the cache, and always gets the current configuration of the environment
-    # TODO: While this is wasteful since it needs to go on a search for the conf, it is too disruptive to optimize
+    # Clears all environments that have expired, either by exceeding their time to live, or
+    # through an explicit eviction determined by the cache expiration service.
+    #
+    def clear_all_expired
+      t = Time.now
+
+      @cache.each_pair do |name, entry|
+        clear_if_expired(name, entry, t)
+      end
+    end
+    private :clear_all_expired
+
+    # Clear an environment if it is expired, either by exceeding its time to live, or
+    # through an explicit eviction determined by the cache expiration service.
+    #
+    def clear_if_expired(name, entry, t = Time.now)
+      return unless entry
+      return if entry.guarded?
+
+      if entry.expired?(t) || @cache_expiration_service.expired?(name.to_sym)
+        clear_entry(name, entry)
+      end
+    end
+    private :clear_if_expired
+
+    # This implementation evicts the cache, and always gets the current
+    # configuration of the environment
+    #
+    # TODO: While this is wasteful since it
+    # needs to go on a search for the conf, it is too disruptive to optimize
     # this.
     #
+    # @!macro loader_get_conf
     def get_conf(name)
-      evict_if_expired(name)
-      super name
+      name = name.to_sym
+      clear_if_expired(name, @cache[name])
+      @loader.get_conf(name)
+    end
+
+    # Guard an environment so it can't be evicted while it's in use. The method
+    # may be called multiple times, provided it is unguarded the same number of
+    # times. If you call this method, you must call `unguard` in an ensure block.
+    def guard(name)
+      entry = get_entry(name, false)
+      entry.guard if entry
+    end
+
+    # Unguard an environment.
+    def unguard(name)
+      entry = get_entry(name, false)
+      entry.unguard if entry
     end
 
     # Creates a suitable cache entry given the time to live for one environment
     #
     def entry(env)
-      ttl = (conf = get_conf(env.name)) ? conf.environment_timeout : Puppet.settings.value(:environment_timeout)
+      ttl = if (conf = get_conf(env.name))
+              conf.environment_timeout
+            else
+              Puppet[:environment_timeout]
+            end
+
       case ttl
       when 0
         NotCachedEntry.new(env)     # Entry that is always expired (avoids syscall to get time)
-      when INFINITY
+      when Float::INFINITY
         Entry.new(env)              # Entry that never expires (avoids syscall to get time)
       else
-        TTLEntry.new(env, ttl)
-      end
-    end
-
-    # Evicts the entry if it has expired
-    #
-    def evict_if_expired(name)
-      if (result = @cache[name]) && result.expired?
-        @cache.delete(name)
+        MRUEntry.new(env, ttl)      # Entry that expires in ttl from when it was last touched
       end
     end
 
@@ -338,29 +537,66 @@ module Puppet::Environments
 
       def initialize(value)
         @value = value
+        @guards = 0
       end
 
-      def expired?
+      def touch
+      end
+
+      def expired?(now)
         false
+      end
+
+      def label
+        ""
+      end
+
+      # These are not protected with a lock, because all of the Cached
+      # methods are protected.
+      def guarded?
+        @guards > 0
+      end
+
+      def guard
+        @guards += 1
+      end
+
+      def unguard
+        @guards -= 1
       end
     end
 
     # Always evicting entry
     class NotCachedEntry < Entry
-      def expired?
+      def expired?(now)
         true
+      end
+
+      def label
+        "(ttl = 0 sec)"
       end
     end
 
-    # Time to Live eviction policy entry
-    class TTLEntry < Entry
+    # Policy that expires if it hasn't been touched within ttl_seconds
+    class MRUEntry < Entry
       def initialize(value, ttl_seconds)
-        super value
+        super(value)
         @ttl = Time.now + ttl_seconds
+        @ttl_seconds = ttl_seconds
+
+        touch
       end
 
-      def expired?
-        Time.now > @ttl
+      def touch
+        @ttl = Time.now + @ttl_seconds
+      end
+
+      def expired?(now)
+        now > @ttl
+      end
+
+      def label
+        "(ttl = #{@ttl_seconds} sec)"
       end
     end
   end

@@ -1,8 +1,10 @@
+# frozen_string_literal: true
+
 # Windows Access Control List
 #
 # Represents a list of access control entries (ACEs).
 #
-# @see http://msdn.microsoft.com/en-us/library/windows/desktop/aa374872(v=vs.85).aspx
+# @see https://msdn.microsoft.com/en-us/library/windows/desktop/aa374872(v=vs.85).aspx
 # @api private
 class Puppet::Util::Windows::AccessControlList
   include Enumerable
@@ -25,7 +27,7 @@ class Puppet::Util::Windows::AccessControlList
   #
   # @yieldparam ace [Hash] the ace
   def each
-    @aces.each {|ace| yield ace}
+    @aces.each { |ace| yield ace }
   end
 
   # Allow the +sid+ to access a resource with the specified access +mask+.
@@ -69,14 +71,14 @@ class Puppet::Util::Windows::AccessControlList
           # flags except those affecting inheritance of the
           # ACE we're creating.
           inherit_mask = Puppet::Util::Windows::AccessControlEntry::CONTAINER_INHERIT_ACE |
-            Puppet::Util::Windows::AccessControlEntry::OBJECT_INHERIT_ACE |
-            Puppet::Util::Windows::AccessControlEntry::INHERIT_ONLY_ACE
+                         Puppet::Util::Windows::AccessControlEntry::OBJECT_INHERIT_ACE |
+                         Puppet::Util::Windows::AccessControlEntry::INHERIT_ONLY_ACE
           explicit_ace = Puppet::Util::Windows::AccessControlEntry.new(new_sid, ace.mask, ace.flags & inherit_mask, ace.type)
           aces_to_prepend << explicit_ace
         else
           new_ace.sid = new_sid
 
-          prepend_needed = old_sid == Win32::Security::SID::LocalSystem
+          prepend_needed = old_sid == Puppet::Util::Windows::SID::LocalSystem
         end
       end
       new_aces << new_ace
@@ -87,8 +89,9 @@ class Puppet::Util::Windows::AccessControlList
     if prepend_needed
       mask = Puppet::Util::Windows::File::STANDARD_RIGHTS_ALL | Puppet::Util::Windows::File::SPECIFIC_RIGHTS_ALL
       ace = Puppet::Util::Windows::AccessControlEntry.new(
-              Win32::Security::SID::LocalSystem,
-              mask)
+        Puppet::Util::Windows::SID::LocalSystem,
+        mask
+      )
       @aces << ace
     end
 
@@ -97,7 +100,7 @@ class Puppet::Util::Windows::AccessControlList
   end
 
   def inspect
-    str = ""
+    str = ''.dup
     @aces.each do |ace|
       str << "  #{ace.inspect}\n"
     end

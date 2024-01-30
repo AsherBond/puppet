@@ -1,5 +1,9 @@
 test_name "the pluginsync functionality should sync app definitions, and they should be runnable afterwards"
 
+tag 'audit:high',
+    'audit:integration',
+    'server'
+
 #
 # This test is intended to ensure that pluginsync syncs face definitions to the agents.
 # Further, the face should be runnable on the agent after the sync has occurred.
@@ -21,15 +25,13 @@ all_tests_passed = false
 ###############################################################################
 
 # create some vars to point to the directories that we're going to point the master/agents at
-master_module_dir = "master_modules"
+environments_dir = "environments"
+master_module_dir = "#{environments_dir}/production/modules"
 agent_lib_dir = "agent_lib"
 
 app_name = "superbogus"
 app_desc = "a simple %1$s for testing %1$s delivery via plugin sync"
 app_output = "Hello from the #{app_name} %s"
-
-master_module_file_content = {}
-
 
 master_module_face_content = <<-HERE
 Puppet::Face.define(:#{app_name}, '0.0.1') do
@@ -86,9 +88,8 @@ begin
   end
 
   master_opts = {
-    'master' => {
-      'modulepath' => "#{get_test_file_path(master, master_module_dir)}",
-      'node_terminus' => 'plain',
+    'main' => {
+      'environmentpath' => "#{get_test_file_path(master, environments_dir)}",
     }
   }
 
@@ -111,7 +112,7 @@ begin
         agents.each do |agent|
           on(agent, puppet('agent',
                            "--libdir=\"#{get_test_file_path(agent, agent_lib_dir)}\" ",
-                           "--trace --test --server #{master}")
+                           "--trace --test")
           )
         end
       end

@@ -1,9 +1,10 @@
-require 'puppet/provider/exec'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/provider/exec'
 
 Puppet::Type.type(:exec).provide :windows, :parent => Puppet::Provider::Exec do
-
-  confine    :operatingsystem => :windows
-  defaultfor :operatingsystem => :windows
+  confine    'os.name' => :windows
+  defaultfor 'os.name' => :windows
 
   desc <<-'EOT'
     Execute external binaries on Windows systems. As with the `posix`
@@ -37,19 +38,20 @@ Puppet::Type.type(:exec).provide :windows, :parent => Puppet::Provider::Exec do
 
     if absolute_path?(exe)
       if !Puppet::FileSystem.exist?(exe)
-        raise ArgumentError, "Could not find command '#{exe}'"
+        raise ArgumentError, _("Could not find command '%{exe}'") % { exe: exe }
       elsif !File.file?(exe)
-        raise ArgumentError, "'#{exe}' is a #{File.ftype(exe)}, not a file"
+        raise ArgumentError, _("'%{exe}' is a %{klass}, not a file") % { exe: exe, klass: File.ftype(exe) }
       end
+
       return
     end
 
     if resource[:path]
-      Puppet::Util.withenv :PATH => resource[:path].join(File::PATH_SEPARATOR) do
+      Puppet::Util.withenv('PATH' => resource[:path].join(File::PATH_SEPARATOR)) do
         return if which(exe)
       end
     end
 
-    raise ArgumentError, "Could not find command '#{exe}'"
+    raise ArgumentError, _("Could not find command '%{exe}'") % { exe: exe }
   end
 end

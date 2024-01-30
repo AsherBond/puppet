@@ -2,18 +2,24 @@ Certificate Revocation List
 ===========================
 
 The `certificate_revocation_list` endpoint retrieves a Certificate Revocation List (CRL)
-from the master.  The master must be configured to be a CA.  The returned
+from the master. The master must be configured to be a CA. The returned
 CRL is always in the `.pem` format.
 
-In all requests the `:environment` and `:nodename` must be given, but neither has any bearing on the request.
+Under Puppet Server's CA service, the `environment` parameter is ignored and can
+be omitted. Under a Rack or WEBrick Puppet master, `environment` is required and
+must be a valid environment, but it has no effect on the response.
+
+The `:nodename` should always be `ca`, due to Puppet Server's default
+`auth.conf`. (You can use a different `:nodename` if you change the auth rules,
+but it will have no effect on the response.)
 
 Find
 ----
 
 Get the submitted CRL
 
-    GET /:environment/certificate_revocation_list/:nodename
-    Accept: s
+    GET /puppet-ca/v1/certificate_revocation_list/:nodename?environment=:environment
+    Accept: text/plain
 
 ### Supported HTTP Methods
 
@@ -21,7 +27,7 @@ GET
 
 ### Supported Response Formats
 
-s (denotes a string of text)
+`text/plain`
 
 The returned CRL is always in the `.pem` format.
 
@@ -36,7 +42,7 @@ decoding of the CRL PEM file.
 
 #### Empty revocation list
 
-    GET /env/certificate_revocation_list/ca
+    GET /puppet-ca/v1/certificate_revocation_list/ca?environment=env
 
     HTTP/1.1 200 OK
     Content-Type: text/plain
@@ -102,7 +108,7 @@ decoding of the CRL PEM file.
 
 #### One-item revocation list
 
-    GET /env/certificate_revocation_list/ca
+    GET /puppet-ca/v1/certificate_revocation_list/ca?environment=env
 
     HTTP/1.1 200 OK
     Content-Type: text/plain
@@ -173,12 +179,12 @@ decoding of the CRL PEM file.
 
 #### No node name given
 
-    GET /env/certificate_revocation_list
+    GET /puppet-ca/v1/certificate_revocation_list?environment=env
 
     HTTP/1.1 400 Bad Request
     Content-Type: text/plain
 
-    No request key specified in /env/certificate_revocation_list
+    No request key specified in /puppet-ca/v1/certificate_revocation_list
 
 Schema
 ------

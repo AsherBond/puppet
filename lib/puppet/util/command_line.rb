@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Bundler and rubygems maintain a set of directories from which to
 # load gems. If Bundler is loaded, let it determine what can be
 # loaded. If it's not loaded, then use rubygems. But do this before
@@ -9,12 +11,12 @@ if not defined? ::Bundler
   end
 end
 
-require 'puppet'
-require 'puppet/util'
-require "puppet/util/plugins"
-require "puppet/util/rubygems"
-require "puppet/util/limits"
-require 'puppet/util/colors'
+require_relative '../../puppet'
+require_relative '../../puppet/util'
+require_relative '../../puppet/util/rubygems'
+require_relative '../../puppet/util/limits'
+require_relative '../../puppet/util/colors'
+require_relative '../../puppet/gettext/module_translations'
 
 module Puppet
   module Util
@@ -24,7 +26,7 @@ module Puppet
     class CommandLine
       include Puppet::Util::Limits
 
-      OPTION_OR_MANIFEST_FILE = /^-|\.pp$|\.rb$/
+      OPTION_OR_MANIFEST_FILE = /^-|\.pp$/
 
       # @param zero [String] the name of the executable
       # @param argv [Array<String>] the arguments passed on the command line
@@ -32,7 +34,6 @@ module Puppet
       def initialize(zero = $0, argv = ARGV, stdin = STDIN)
         @command = File.basename(zero, '.rb')
         @argv = argv
-        Puppet::Plugins.on_commandline_initialization(:command_line_object => self)
       end
 
       # @return [String] name of the subcommand is being executed
@@ -59,32 +60,18 @@ module Puppet
         end
       end
 
-      # @api private
-      # @deprecated
-      def self.available_subcommands
-        Puppet.deprecation_warning('Puppet::Util::CommandLine.available_subcommands is deprecated; please use Puppet::Application.available_application_names instead.')
-        Puppet::Application.available_application_names
-      end
-
-      # available_subcommands was previously an instance method, not a class
-      # method, and we have an unknown number of user-implemented applications
-      # that depend on that behaviour.  Forwarding allows us to preserve a
-      # backward compatible API. --daniel 2011-04-11
-      # @api private
-      # @deprecated
-      def available_subcommands
-        Puppet.deprecation_warning('Puppet::Util::CommandLine#available_subcommands is deprecated; please use Puppet::Application.available_application_names instead.')
-        Puppet::Application.available_application_names
-      end
-
       # Run the puppet subcommand. If the subcommand is determined to be an
       # external executable, this method will never return and the current
       # process will be replaced via {Kernel#exec}.
       #
       # @return [void]
       def execute
-        Puppet::Util.exit_on_fail("initialize global default settings") do
-          Puppet.initialize_settings(args)
+        require_config = true
+        if @argv.first =~ /help|-h|--help|-V|--version/
+          require_config = false
+        end
+        Puppet::Util.exit_on_fail(_("Could not initialize global default settings")) do
+          Puppet.initialize_settings(args, require_config)
         end
 
         setpriority(Puppet[:priority])
@@ -101,13 +88,20 @@ module Puppet
 
       def find_subcommand
         if subcommand_name.nil?
-          NilSubcommand.new(self)
+          if args.include?("--help") || args.include?("-h")
+            ApplicationSubcommand.new("help", CommandLine.new("puppet", ["help"]))
+          else
+            NilSubcommand.new(self)
+          end
         elsif Puppet::Application.available_application_names.include?(subcommand_name)
           ApplicationSubcommand.new(subcommand_name, self)
-        elsif path_to_subcommand = external_subcommand
-          ExternalSubcommand.new(path_to_subcommand, self)
         else
-          UnknownSubcommand.new(subcommand_name, self)
+          path_to_subcommand = external_subcommand
+          if path_to_subcommand
+            ExternalSubcommand.new(path_to_subcommand, self)
+          else
+            UnknownSubcommand.new(subcommand_name, self)
+          end
         end
       end
 
@@ -121,8 +115,8 @@ module Puppet
         def run
           # For most applications, we want to be able to load code from the modulepath,
           # such as apply, describe, resource, and faces.
-          # For agent, we only want to load pluginsync'ed code from libdir.
-          # For master, we shouldn't ever be loading per-enviroment code into the master's
+          # For agent and device in agent mode, we only want to load pluginsync'ed code from libdir.
+          # For master, we shouldn't ever be loading per-environment code into the master's
           # ruby process, but that requires fixing (#17210, #12173, #8750). So for now
           # we try to restrict to only code that can be autoloaded from the node's
           # environment.
@@ -131,18 +125,23 @@ module Puppet
           # have an appropriate application-wide current_environment set.
           # If we cannot find the configured environment, which may not exist,
           # we do not attempt to add plugin directories to the load path.
-          #
-          if @subcommand_name != 'master' and @subcommand_name != 'agent'
-            if configured_environment = Puppet.lookup(:environments).get(Puppet[:environment])
+          unless @subcommand_name == 'master' || @subcommand_name == 'agent' || (@subcommand_name == 'device' && (['--apply', '--facts', '--resource'] - @command_line.args).empty?)
+            configured_environment = Puppet.lookup(:environments).get(Puppet[:environment])
+            if configured_environment
               configured_environment.each_plugin_directory do |dir|
                 $LOAD_PATH << dir unless $LOAD_PATH.include?(dir)
               end
+
+              Puppet::ModuleTranslations.load_from_modulepath(configured_environment.modules)
+              Puppet::ModuleTranslations.load_from_vardir(Puppet[:vardir])
+
+              # Puppet requires Facter, which initializes its lookup paths. Reset Facter to
+              # pickup the new $LOAD_PATH.
+              Puppet.runtime[:facter].reset
             end
           end
 
           app = Puppet::Application.find(@subcommand_name).new(@command_line)
-          Puppet::Plugins.on_application_initialization(:application_object => @command_line)
-
           app.run
         end
       end
@@ -173,10 +172,10 @@ module Puppet
             puts Puppet.version
           elsif @command_line.subcommand_name.nil? && args.count > 0
             # If the subcommand is truly nil and there is an arg, it's an option; print out the invalid option message
-            puts colorize(:hred, "Error: Could not parse application options: invalid option: #{args[0]}")
+            puts colorize(:hred, _("Error: Could not parse application options: invalid option: %{opt}") % { opt: args[0] })
             exit 1
           else
-            puts "See 'puppet help' for help on available puppet subcommands"
+            puts _("See 'puppet help' for help on available puppet subcommands")
           end
         end
       end
@@ -189,7 +188,7 @@ module Puppet
         end
 
         def run
-          puts colorize(:hred, "Error: Unknown Puppet subcommand '#{@subcommand_name}'")
+          puts colorize(:hred, _("Error: Unknown Puppet subcommand '%{cmd}'") % { cmd: @subcommand_name })
           super
           exit 1
         end

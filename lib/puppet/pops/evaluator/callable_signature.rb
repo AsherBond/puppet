@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # CallableSignature
 # ===
 # A CallableSignature describes how something callable expects to be called.
@@ -6,7 +8,6 @@
 # @api public
 #
 class Puppet::Pops::Evaluator::CallableSignature
-
   # Returns the names of the parameters as an array of strings. This does not include the name
   # of an optional block parameter.
   #
@@ -68,7 +69,7 @@ class Puppet::Pops::Evaluator::CallableSignature
   end
 
   # Returns the range of required/optional argument values as an array of [min, max], where an infinite
-  # end is given as INFINITY. To test against infinity, use the infinity? method.
+  # end is given as Float::INFINITY. To test against infinity, use the infinity? method.
   #
   # @return [Array[Integer, Numeric]] - an Array with [min, max]
   #
@@ -95,6 +96,13 @@ class Puppet::Pops::Evaluator::CallableSignature
   # @api public
   #
   def infinity?(x)
-    x == Puppet::Pops::Types::INFINITY
+    x == Float::INFINITY
+  end
+
+  # @return [Boolean] true if this signature represents an argument mismatch, false otherwise
+  #
+  # @api private
+  def argument_mismatch_handler?
+    false
   end
 end

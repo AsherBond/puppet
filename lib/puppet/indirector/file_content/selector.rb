@@ -1,7 +1,9 @@
-require 'puppet/file_serving/content'
-require 'puppet/indirector/file_content'
-require 'puppet/indirector/code'
-require 'puppet/file_serving/terminus_selector'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/file_serving/content'
+require_relative '../../../puppet/indirector/file_content'
+require_relative '../../../puppet/indirector/code'
+require_relative '../../../puppet/file_serving/terminus_selector'
 
 class Puppet::Indirector::FileContent::Selector < Puppet::Indirector::Code
   desc "Select the terminus based on the request"

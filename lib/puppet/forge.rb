@@ -1,21 +1,26 @@
-require 'puppet/vendor'
+# frozen_string_literal: true
+
+require_relative '../puppet/vendor'
 Puppet::Vendor.load_vendored
 
 require 'net/http'
 require 'tempfile'
 require 'uri'
 require 'pathname'
-require 'json'
-require 'semantic'
+require_relative '../puppet/util/json'
+require 'semantic_puppet'
 
-class Puppet::Forge < Semantic::Dependency::Source
-  require 'puppet/forge/cache'
-  require 'puppet/forge/repository'
-  require 'puppet/forge/errors'
+class Puppet::Forge < SemanticPuppet::Dependency::Source
+  require_relative 'forge/cache'
+  require_relative 'forge/repository'
+  require_relative 'forge/errors'
 
   include Puppet::Forge::Errors
 
-  USER_AGENT = "PMT/1.1.1 (v3; Net::HTTP)".freeze
+  USER_AGENT = "PMT/1.1.1 (v3; Net::HTTP)"
+
+  # From https://forgeapi.puppet.com/#!/release/getReleases
+  MODULE_RELEASE_EXCLUSIONS = %w[readme changelog license uri module tags supported file_size downloads created_at updated_at deleted_at].join(',').freeze
 
   attr_reader :host, :repository
 
@@ -38,7 +43,7 @@ class Puppet::Forge < Semantic::Dependency::Source
   #     "releases"    => [{"version"=>"0.0.1"}, {"version"=>"0.0.2"}],
   #     "full_name"   => "puppetlabs/bacula",
   #     "version"     => "0.0.2",
-  #     "project_url" => "http://github.com/puppetlabs/puppetlabs-bacula",
+  #     "project_url" => "https://github.com/puppetlabs/puppetlabs-bacula",
   #     "desc"        => "bacula"
   #   }
   # ]
@@ -53,20 +58,21 @@ class Puppet::Forge < Semantic::Dependency::Source
   #   bad HTTP response
   def search(term)
     matches = []
-    uri = "/v3/modules?query=#{URI.escape(term)}"
+    uri = "/v3/modules?query=#{term}"
     if Puppet[:module_groups]
-      uri += "&module_groups=#{Puppet[:module_groups]}"
+      uri += "&module_groups=#{Puppet[:module_groups].tr('+', ' ')}"
     end
 
     while uri
+      # make_http_request URI encodes parameters
       response = make_http_request(uri)
 
-      if response.code == '200'
-        result = JSON.parse(response.body)
-        uri = result['pagination']['next']
+      if response.code == 200
+        result = Puppet::Util::Json.load(response.body)
+        uri = decode_uri(result['pagination']['next'])
         matches.concat result['results']
       else
-        raise ResponseError.new(:uri => URI.parse(@host).merge(uri), :response => response)
+        raise ResponseError.new(:uri => response.url, :response => response)
       end
     end
 
@@ -83,28 +89,29 @@ class Puppet::Forge < Semantic::Dependency::Source
   # Fetches {ModuleRelease} entries for each release of the named module.
   #
   # @param input [String] the module name to look up
-  # @return [Array<Semantic::Dependency::ModuleRelease>] a list of releases for
+  # @return [Array<SemanticPuppet::Dependency::ModuleRelease>] a list of releases for
   #         the given name
-  # @see Semantic::Dependency::Source#fetch
+  # @see SemanticPuppet::Dependency::Source#fetch
   def fetch(input)
     name = input.tr('/', '-')
-    uri = "/v3/releases?module=#{name}"
+    uri = "/v3/releases?module=#{name}&sort_by=version&exclude_fields=#{MODULE_RELEASE_EXCLUSIONS}"
     if Puppet[:module_groups]
-      uri += "&module_groups=#{Puppet[:module_groups]}"
+      uri += "&module_groups=#{Puppet[:module_groups].tr('+', ' ')}"
     end
     releases = []
 
     while uri
+      # make_http_request URI encodes parameters
       response = make_http_request(uri)
 
-      if response.code == '200'
-        response = JSON.parse(response.body)
+      if response.code == 200
+        response = Puppet::Util::Json.load(response.body)
       else
-        raise ResponseError.new(:uri => URI.parse(@host).merge(uri), :response => response)
+        raise ResponseError.new(:uri => response.url, :response => response)
       end
 
       releases.concat(process(response['results']))
-      uri = response['pagination']['next']
+      uri = decode_uri(response['pagination']['next'])
     end
 
     return releases
@@ -114,7 +121,7 @@ class Puppet::Forge < Semantic::Dependency::Source
     @repository.make_http_request(*args)
   end
 
-  class ModuleRelease < Semantic::Dependency::ModuleRelease
+  class ModuleRelease < SemanticPuppet::Dependency::ModuleRelease
     attr_reader :install_dir, :metadata
 
     def initialize(source, data)
@@ -122,7 +129,7 @@ class Puppet::Forge < Semantic::Dependency::Source
       @metadata = meta = data['metadata']
 
       name = meta['name'].tr('/', '-')
-      version = Semantic::Version.parse(meta['version'])
+      version = SemanticPuppet::Version.parse(meta['version'])
       release = "#{name}@#{version}"
 
       if meta['dependencies']
@@ -131,7 +138,8 @@ class Puppet::Forge < Semantic::Dependency::Source
             Puppet::ModuleTool::Metadata.new.add_dependency(dep['name'], dep['version_requirement'], dep['repository'])
             Puppet::ModuleTool.parse_module_dependency(release, dep)[0..1]
           rescue ArgumentError => e
-            raise ArgumentError, "Malformed dependency: #{dep['name']}. Exception was: #{e}"
+            raise ArgumentError, _("Malformed dependency: %{name}.") % { name: dep['name'] } +
+                                 ' ' + _("Exception was: %{detail}") % { detail: e }
           end
         end
       else
@@ -163,8 +171,21 @@ class Puppet::Forge < Semantic::Dependency::Source
     def prepare
       return @unpacked_into if @unpacked_into
 
+      Puppet.warning "#{@metadata['name']} has been deprecated by its author! View module on Puppet Forge for more info." if deprecated?
+
       download(@data['file_uri'], tmpfile)
-      validate_checksum(tmpfile, @data['file_md5'])
+      checksum = @data['file_sha256']
+      if checksum
+        validate_checksum(tmpfile, checksum, Digest::SHA256)
+      else
+        checksum = @data['file_md5']
+        if checksum
+          validate_checksum(tmpfile, checksum, Digest::MD5)
+        else
+          raise _("Forge module is missing SHA256 and MD5 checksums")
+        end
+      end
+
       unpack(tmpfile, tmpdir)
 
       @unpacked_into = Pathname.new(tmpdir)
@@ -175,6 +196,7 @@ class Puppet::Forge < Semantic::Dependency::Source
     # Obtain a suitable temporary path for unpacking tarballs
     #
     # @return [Pathname] path to temporary unpacking location
+    # rubocop:disable Naming/MemoizedInstanceVariableName
     def tmpdir
       @dir ||= Dir.mktmpdir(name, Puppet::Forge::Cache.base_path)
     end
@@ -184,18 +206,23 @@ class Puppet::Forge < Semantic::Dependency::Source
         f.binmode
       end
     end
+    # rubocop:enable Naming/MemoizedInstanceVariableName
 
     def download(uri, destination)
       response = @source.make_http_request(uri, destination)
       destination.flush and destination.close
-      unless response.code == '200'
-        raise Puppet::Forge::Errors::ResponseError.new(:uri => uri, :response => response)
+      unless response.code == 200
+        raise Puppet::Forge::Errors::ResponseError.new(:uri => response.url, :response => response)
       end
     end
 
-    def validate_checksum(file, checksum)
-      if Digest::MD5.file(file.path).hexdigest != checksum
-        raise RuntimeError, "Downloaded release for #{name} did not match expected checksum"
+    def validate_checksum(file, checksum, digest_class)
+      if Puppet.runtime[:facter].value(:fips_enabled) && digest_class == Digest::MD5
+        raise _("Module install using MD5 is prohibited in FIPS mode.")
+      end
+
+      if digest_class.file(file.path).hexdigest != checksum
+        raise RuntimeError, _("Downloaded release for %{name} did not match expected checksum %{checksum}") % { name: name, checksum: checksum }
       end
     end
 
@@ -203,8 +230,12 @@ class Puppet::Forge < Semantic::Dependency::Source
       begin
         Puppet::ModuleTool::Applications::Unpacker.unpack(file.path, destination)
       rescue Puppet::ExecutionFailure => e
-        raise RuntimeError, "Could not extract contents of module archive: #{e.message}"
+        raise RuntimeError, _("Could not extract contents of module archive: %{message}") % { message: e.message }
       end
+    end
+
+    def deprecated?
+      @data['module'] && (@data['module']['deprecated_at'] != nil)
     end
   end
 
@@ -216,11 +247,17 @@ class Puppet::Forge < Semantic::Dependency::Source
       begin
         ModuleRelease.new(self, release)
       rescue ArgumentError => e
-        Puppet.warning "Cannot consider release #{metadata['name']}-#{metadata['version']}: #{e}"
+        Puppet.warning _("Cannot consider release %{name}-%{version}: %{error}") % { name: metadata['name'], version: metadata['version'], error: e }
         false
       end
     end
 
     l.select { |r| r }
+  end
+
+  def decode_uri(uri)
+    return if uri.nil?
+
+    Puppet::Util.uri_unescape(uri.tr('+', ' '))
   end
 end

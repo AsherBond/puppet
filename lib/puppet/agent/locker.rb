@@ -1,4 +1,7 @@
-require 'puppet/util/pidlock'
+# frozen_string_literal: true
+
+require_relative '../../puppet/util/pidlock'
+require_relative '../../puppet/error'
 
 # This module is responsible for encapsulating the logic for "locking" the
 # puppet agent during a catalog run; in other words, keeping track of enough
@@ -10,10 +13,10 @@ require 'puppet/util/pidlock'
 # Puppet API because it used by external tools such as mcollective.
 #
 # For more information, please see docs on the website.
-#  http://links.puppetlabs.com/agent_lockfiles
+#  http://links.puppet.com/agent_lockfiles
 module Puppet::Agent::Locker
-  # Yield if we get a lock, else do nothing.  Return
-  # true/false depending on whether we get the lock.
+  # Yield if we get a lock, else raise Puppet::LockError. Return
+  # value of block yielded.
   def lock
     if lockfile.lock
       begin
@@ -21,6 +24,8 @@ module Puppet::Agent::Locker
       ensure
         lockfile.unlock
       end
+    else
+      fail Puppet::LockError, _('Failed to acquire lock')
     end
   end
 
@@ -38,6 +43,4 @@ module Puppet::Agent::Locker
     @lockfile
   end
   private :lockfile
-
-
 end

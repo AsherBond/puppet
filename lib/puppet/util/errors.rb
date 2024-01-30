@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Some helper methods for throwing and populating errors.
 #
 # @api public
@@ -14,7 +16,7 @@ module Puppet::Util::Errors
   # Add line and file info to the supplied exception if info is available from
   # this object, is appropriately populated and the supplied exception supports
   # it.  When other is supplied, the backtrace will be copied to the error
-  # object.
+  # object and the 'original' will be dropped from the error.
   #
   # @param error [Exception] exception that is populated with info
   # @param other [Exception] original exception, source of backtrace info
@@ -25,24 +27,77 @@ module Puppet::Util::Errors
     error.original ||= other if error.respond_to?(:original=)
 
     error.set_backtrace(other.backtrace) if other and other.respond_to?(:backtrace)
-
+    # It is not meaningful to keep the wrapped exception since its backtrace has already
+    # been adopted by the error. (The instance variable is private for good reasons).
+    error.instance_variable_set(:@original, nil)
     error
+  end
+
+  # Return a human-readable string of this object's file, line, and pos attributes,
+  # if set.
+  #
+  # @param file [String] the file path for the error (nil or "", for not known)
+  # @param line [String] the line number for the error (nil or "", for not known)
+  # @param column [String] the column number for the error (nil or "",  for not known)
+  # @return [String] description of file, line, and column
+  #
+  def self.error_location(file, line = nil, column = nil)
+    file = nil if (file.is_a?(String) && file.empty?)
+    line = nil if (line.is_a?(String) && line.empty?)
+    column = nil if (column.is_a?(String) && column.empty?)
+    if file and line and column
+      _("(file: %{file}, line: %{line}, column: %{column})") % { file: file, line: line, column: column }
+    elsif file and line
+      _("(file: %{file}, line: %{line})") % { file: file, line: line }
+    elsif line and column
+      _("(line: %{line}, column: %{column})") % { line: line, column: column }
+    elsif line
+      _("(line: %{line})") % { line: line }
+    elsif file
+      _("(file: %{file})") % { file: file }
+    else
+      ''
+    end
+  end
+
+  # Return a human-readable string of this object's file, line, and pos attributes,
+  # with a proceeding space in the output
+  # if set.
+  #
+  # @param file [String] the file path for the error (nil or "", for not known)
+  # @param line [String] the line number for the error (nil or "", for not known)
+  # @param column [String] the column number for the error (nil or "",  for not known)
+  # @return [String] description of file, line, and column
+  #
+  def self.error_location_with_space(file, line = nil, column = nil)
+    error_location_str = error_location(file, line, column)
+    if error_location_str.empty?
+      ''
+    else
+      ' ' + error_location_str
+    end
+  end
+
+  # Return a human-readable string of this object's file and line
+  # where unknown entries are listed as 'unknown'
+  #
+  # @param file [String] the file path for the error (nil or "", for not known)
+  # @param line [String] the line number for the error (nil or "", for not known)
+  # @return [String] description of file, and line
+  def self.error_location_with_unknowns(file, line)
+    file = nil if (file.is_a?(String) && file.empty?)
+    line = nil if (line.is_a?(String) && line.empty?)
+    file = _('unknown') unless file
+    line = _('unknown') unless line
+    error_location(file, line)
   end
 
   # Return a human-readable string of this object's file and line attributes,
   # if set.
   #
-  # @return [String] description of file and line
+  # @return [String] description of file and line with a leading space
   def error_context
-    if file and line
-      " at #{file}:#{line}"
-    elsif line
-      " at line #{line}"
-    elsif file
-      " in #{file}"
-    else
-      ""
-    end
+    Puppet::Util::Errors.error_location_with_space(file, line)
   end
 
   # Wrap a call in such a way that we always throw the right exception and keep
@@ -63,7 +118,7 @@ module Puppet::Util::Errors
     rescue Puppet::Error => detail
       raise adderrorcontext(detail)
     rescue => detail
-      message = options[:message] || "#{self.class} failed with error #{detail.class}: #{detail}"
+      message = options[:message] || _("%{klass} failed with error %{error_type}: %{detail}") % { klass: self.class, error_type: detail.class, detail: detail }
 
       error = options[:type].new(message)
       # We can't use self.fail here because it always expects strings,

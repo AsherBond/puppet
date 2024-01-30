@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 Puppet::Type.type(:file).provide :posix do
   desc "Uses POSIX functionality to manage file ownership and permissions."
 
@@ -8,6 +10,11 @@ Puppet::Type.type(:file).provide :posix do
   include Puppet::Util::Warnings
 
   require 'etc'
+  require_relative '../../../puppet/util/selinux'
+
+  def self.post_resource_eval
+    Selinux.matchpathcon_fini if Puppet::Util::SELinux.selinux_support?
+  end
 
   def uid2name(id)
     return id.to_s if id.is_a?(Symbol) or id.is_a?(String)
@@ -53,7 +60,8 @@ Puppet::Type.type(:file).provide :posix do
   end
 
   def owner
-    unless stat = resource.stat
+    stat = resource.stat
+    unless stat
       return :absent
     end
 
@@ -63,7 +71,7 @@ Puppet::Type.type(:file).provide :posix do
     # large UIDs instead of negative ones.  This isn't a Ruby bug,
     # it's an OS X bug, since it shows up in perl, too.
     if currentvalue > Puppet[:maximum_uid].to_i
-      self.warning "Apparently using negative UID (#{currentvalue}) on a platform that does not consistently handle them"
+      self.warning _("Apparently using negative UID (%{currentvalue}) on a platform that does not consistently handle them") % { currentvalue: currentvalue }
       currentvalue = :silly
     end
 
@@ -81,12 +89,13 @@ Puppet::Type.type(:file).provide :posix do
     begin
       File.send(method, should, nil, resource[:path])
     rescue => detail
-      raise Puppet::Error, "Failed to set owner to '#{should}': #{detail}", detail.backtrace
+      raise Puppet::Error, _("Failed to set owner to '%{should}': %{detail}") % { should: should, detail: detail }, detail.backtrace
     end
   end
 
   def group
-    return :absent unless stat = resource.stat
+    stat = resource.stat
+    return :absent unless stat
 
     currentvalue = stat.gid
 
@@ -94,7 +103,7 @@ Puppet::Type.type(:file).provide :posix do
     # large GIDs instead of negative ones.  This isn't a Ruby bug,
     # it's an OS X bug, since it shows up in perl, too.
     if currentvalue > Puppet[:maximum_uid].to_i
-      self.warning "Apparently using negative GID (#{currentvalue}) on a platform that does not consistently handle them"
+      self.warning _("Apparently using negative GID (%{currentvalue}) on a platform that does not consistently handle them") % { currentvalue: currentvalue }
       currentvalue = :silly
     end
 
@@ -112,13 +121,14 @@ Puppet::Type.type(:file).provide :posix do
     begin
       File.send(method, nil, should, resource[:path])
     rescue => detail
-      raise Puppet::Error, "Failed to set group to '#{should}': #{detail}", detail.backtrace
+      raise Puppet::Error, _("Failed to set group to '%{should}': %{detail}") % { should: should, detail: detail }, detail.backtrace
     end
   end
 
   def mode
-    if stat = resource.stat
-      return (stat.mode & 007777).to_s(8)
+    stat = resource.stat
+    if stat
+      return (stat.mode & 007777).to_s(8).rjust(4, '0')
     else
       return :absent
     end
@@ -128,7 +138,7 @@ Puppet::Type.type(:file).provide :posix do
     begin
       File.chmod(value.to_i(8), resource[:path])
     rescue => detail
-      error = Puppet::Error.new("failed to set mode #{mode} on #{resource[:path]}: #{detail.message}")
+      error = Puppet::Error.new(_("failed to set mode %{mode} on %{path}: %{message}") % { mode: mode, path: resource[:path], message: detail.message })
       error.set_backtrace detail.backtrace
       raise error
     end

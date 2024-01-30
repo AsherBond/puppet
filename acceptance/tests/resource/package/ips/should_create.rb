@@ -1,5 +1,11 @@
 test_name "Package:IPS basic tests"
-confine :to, :platform => 'solaris'
+confine :to, :platform => 'solaris-11'
+
+tag 'audit:medium',
+    'audit:refactor',  # Use block style `test_name`
+    'audit:acceptance' # Could be done at the integration (or unit) layer though
+                       # actual changing of resources could irreparably damage a
+                       # host running this, or require special permissions.
 
 require 'puppet/acceptance/solaris_util'
 extend Puppet::Acceptance::IPSUtils
@@ -25,8 +31,8 @@ agents.each do |agent|
     assert_match( /ensure: created/, result.stdout, "err: #{agent}")
   end
   step "IPS: check it was created"
-  on agent, "puppet resource package mypkg" do
-    assert_match( /ensure => '0.0.1'/, result.stdout, "err: #{agent}")
+  on(agent, puppet("resource package mypkg")) do
+    assert_match( /ensure\s+=> '0\.0\.1[,:]?.*'/, result.stdout, "err: #{agent}")
   end
   on agent, "pkg list -v mypkg" do
     assert_match( /mypkg@0.0.1/, result.stdout, "err: #{agent}")

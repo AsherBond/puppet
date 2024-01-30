@@ -1,5 +1,8 @@
-require 'puppet/parser/files'
+# frozen_string_literal: true
+
+require_relative '../../puppet/parser/files'
 require 'erb'
+require_relative '../../puppet/file_system'
 
 # A simple wrapper for templates, so they don't have full access to
 # the scope objects.
@@ -30,7 +33,7 @@ class Puppet::Parser::TemplateWrapper
   # @api private
   def script_line
     identifier = Regexp.escape(@__file__ || "(erb)")
-    (caller.find { |l| l =~ /#{identifier}:/ }||"")[/:(\d+):/,1]
+    (caller.find { |l| l =~ /#{identifier}:/ } || "")[/:(\d+):/, 1]
   end
   private :script_line
 
@@ -49,7 +52,7 @@ class Puppet::Parser::TemplateWrapper
   # @return [Array<String>] The tags defined in the current scope
   # @api public
   def tags
-    scope.tags
+    raise NotImplementedError, "Call 'all_tags' instead."
   end
 
   # @return [Array<String>] All the defined tags
@@ -58,38 +61,12 @@ class Puppet::Parser::TemplateWrapper
     scope.catalog.tags
   end
 
-  # Ruby treats variables like methods, so we used to expose variables
-  # within scope to the ERB code via method_missing.  As per RedMine #1427,
-  # though, this means that conflicts between methods in our inheritance
-  # tree (Kernel#fork) and variable names (fork => "yes/no") could arise.
-  #
-  # Worse, /new/ conflicts could pop up when a new kernel or object method
-  # was added to Ruby, causing templates to suddenly fail mysteriously when
-  # Ruby was upgraded.
-  #
-  # To ensure that legacy templates using unqualified names work we retain
-  # the missing_method definition here until we declare the syntax finally
-  # dead.
-  def method_missing(name, *args)
-    line_number = script_line
-    if scope.include?(name.to_s)
-      Puppet.deprecation_warning("Variable access via '#{name}' is deprecated. Use '@#{name}' instead. #{to_s}:#{line_number}")
-      return scope[name.to_s, { :file => @__file__, :line => line_number }]
-    else
-      # Just throw an error immediately, instead of searching for
-      # other missingmethod things or whatever.
-      raise Puppet::ParseError.new("Could not find value for '#{name}'", @__file__, line_number)
-    end
-  end
-
   # @api private
   def file=(filename)
-    unless @__file__ = Puppet::Parser::Files.find_template(filename, scope.compiler.environment)
-      raise Puppet::ParseError, "Could not find template '#{filename}'"
+    @__file__ = Puppet::Parser::Files.find_template(filename, scope.compiler.environment)
+    unless @__file__
+      raise Puppet::ParseError, _("Could not find template '%{filename}'") % { filename: filename }
     end
-
-    # We'll only ever not have a parser in testing, but, eh.
-    scope.known_resource_types.watch_file(@__file__)
   end
 
   # @api private
@@ -97,14 +74,15 @@ class Puppet::Parser::TemplateWrapper
     if string
       template_source = "inline template"
     else
-      string = File.read(@__file__)
+      string = Puppet::FileSystem.read_preserve_line_endings(@__file__)
       template_source = @__file__
     end
 
     # Expose all the variables in our scope as instance variables of the
     # current object, making it possible to access them without conflict
     # to the regular methods.
-    benchmark(:debug, "Bound template variables for #{template_source}") do
+    escaped_template_source = template_source.gsub(/%/, '%%')
+    benchmark(:debug, _("Bound template variables for %{template_source} in %%{seconds} seconds") % { template_source: escaped_template_source }) do
       scope.to_hash.each do |name, value|
         realname = name.gsub(/[^\w]/, "_")
         instance_variable_set("@#{realname}", value)
@@ -112,8 +90,8 @@ class Puppet::Parser::TemplateWrapper
     end
 
     result = nil
-    benchmark(:debug, "Interpolated template #{template_source}") do
-      template = ERB.new(string, 0, "-")
+    benchmark(:debug, _("Interpolated template %{template_source} in %%{seconds} seconds") % { template_source: escaped_template_source }) do
+      template = Puppet::Util.create_erb(string)
       template.filename = @__file__
       result = template.result(binding)
     end

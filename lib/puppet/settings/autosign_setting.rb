@@ -1,4 +1,6 @@
-require 'puppet/settings/base_setting'
+# frozen_string_literal: true
+
+require_relative '../../puppet/settings/base_setting'
 
 # A specialization of the file setting to allow boolean values.
 #
@@ -7,7 +9,6 @@ require 'puppet/settings/base_setting'
 #
 # @api private
 class Puppet::Settings::AutosignSetting < Puppet::Settings::FileSetting
-
   def munge(value)
     if ['true', true].include? value
       true
@@ -16,7 +17,7 @@ class Puppet::Settings::AutosignSetting < Puppet::Settings::FileSetting
     elsif Puppet::Util.absolute_path?(value)
       value
     else
-      raise Puppet::Settings::ValidationError, "Invalid autosign value #{value}: must be 'true'/'false' or an absolute path"
+      raise Puppet::Settings::ValidationError, _("Invalid autosign value %{value}: must be 'true'/'false' or an absolute path") % { value: value }
     end
   end
 end

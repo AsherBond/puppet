@@ -2,6 +2,35 @@ module Puppet
   module Acceptance
     module ModuleUtils
 
+      # Return an array of module paths for a given host.
+      #
+      # Example return value:
+      #
+      # [
+      #   "/etc/puppetlabs/code/environments/production/modules",
+      #   "/etc/puppetlabs/code/modules",
+      #   "/opt/puppet/share/puppet/modules",
+      # ]
+      #
+      # @param host [String] hostname
+      # @return [Array] paths for found modulepath
+      def get_modulepaths_for_host(host)
+        environment = on(host, puppet("config print environment")).stdout.chomp
+        on(host, puppet("config print modulepath --environment #{environment}")).stdout.chomp.split(host['pathseparator'])
+      end
+
+      # Return a string of the default (first) path in modulepath for a given host.
+      #
+      # Example return value:
+      #
+      #   "/etc/puppetlabs/code/environments/production/modules"
+      #
+      # @param host [String] hostname
+      # @return [String] first path for found modulepath
+      def get_default_modulepath_for_host(host)
+        get_modulepaths_for_host(host)[0]
+      end
+
       # Return an array of paths to installed modules for a given host.
       #
       # Example return value:
@@ -14,8 +43,8 @@ module Puppet
       #
       # @param host [String] hostname
       # @return [Array] paths for found modules
-      def get_installed_modules_for_host (host)
-        on host, puppet("module list --render-as pson")
+      def get_installed_modules_for_host(host)
+        on host, puppet("module list --render-as json")
         str  = stdout.lines.to_a.last
         pat = /\(([^()]+)\)/
         mods =  str.scan(pat).flatten
@@ -45,7 +74,7 @@ module Puppet
       #
       # @param hosts [Array] hostnames
       # @return [Hash] paths for found modules indexed by hostname
-      def get_installed_modules_for_hosts (hosts)
+      def get_installed_modules_for_hosts(hosts)
         mods  = {}
         hosts.each do |host|
           mods[host] = get_installed_modules_for_host host
@@ -73,11 +102,11 @@ module Puppet
       #   by hostname. Taken in the setup stage of a test.
       # @param ending_hash [Hash] paths for found modules indexed
       #   by hostname. Taken in the teardown stage of a test.
-      def rm_installed_modules_from_hosts (beginning_hash, ending_hash)
+      def rm_installed_modules_from_hosts(beginning_hash, ending_hash)
         ending_hash.each do |host, mod_array|
           mod_array.each do |mod|
             if ! beginning_hash[host].include? mod
-              on host, "rm -rf #{mod}"
+              on host, "rm -rf '#{mod}'"
             end
           end
         end
@@ -90,7 +119,7 @@ module Puppet
       #   10242
       #
       # @param semver [String] semantic version number
-      def semver_to_i ( semver )
+      def semver_to_i( semver )
         # semver assumed to be in format <major>.<minor>.<patch>
         # calculation assumes that each segment is < 100
         tmp = semver.split('.')
@@ -104,7 +133,7 @@ module Puppet
       #   a value greater than 0 indicates that the semver1 is greater than semver2
       #   a value less than 0 indicates that the semver1 is less than semver2
       #
-      def semver_cmp ( semver1, semver2 )
+      def semver_cmp( semver1, semver2 )
         semver_to_i(semver1) - semver_to_i(semver2)
       end
 
@@ -122,7 +151,7 @@ module Puppet
       #     installed version
       # @param compare_op [String] the operator for comparing the verions of
       #     the installed module
-      def assert_module_installed_ui ( stdout, module_author, module_name, module_version = nil, compare_op = nil )
+      def assert_module_installed_ui( stdout, module_author, module_name, module_version = nil, compare_op = nil )
         valid_compare_ops = {'==' => 'equal to', '>' => 'greater than', '<' => 'less than'}
         assert_match(/#{module_author}-#{module_name}/, stdout,
               "Notice that module '#{module_author}-#{module_name}' was installed was not displayed")
@@ -139,11 +168,21 @@ module Puppet
       # Assert that a module is installed on disk.
       #
       # @param host [HOST] the host object to make the remote call on
-      # @param moduledir [String] the path where the module should be
       # @param module_name [String] the name portion of a module name
-      def assert_module_installed_on_disk ( host, moduledir, module_name )
-        # module directory should exist
-        on host, %Q{[ -d "#{moduledir}/#{module_name}" ]}
+      # @param optional moduledir [String, Array] the path where the module should be, will
+      #        iterate over components of the modulepath by default.
+      def assert_module_installed_on_disk(host, module_name, moduledir=nil)
+        moduledir ||= get_modulepaths_for_host(host)
+        modulepath = moduledir.is_a?(Array) ? moduledir : [moduledir]
+        moduledir= nil
+
+        modulepath.each do |i|
+          # module directory should exist
+          if on(host, %Q{[ -d "#{i}/#{module_name}" ]}, :acceptable_exit_codes => (0..255)).exit_code == 0
+            moduledir = i
+          end
+        end
+        fail_test('module directory not found') unless moduledir
 
         owner = ''
         group = ''
@@ -154,7 +193,7 @@ module Puppet
         end
 
         # A module's files should have:
-        #     * a mode of 444 (755, if they're a directory)
+        #     * a mode of 644 (755, if they're a directory)
         #     * owner == owner of moduledir
         #     * group == group of moduledir
         on host, %Q{ls -alR "#{moduledir}/#{module_name}"} do
@@ -163,63 +202,100 @@ module Puppet
           listings = listings.reject { |l| l =~ /\.\.$/ }
 
           listings.each do |line|
-            assert_match /(drwxr-xr-x|[^d]r--r--r--)[^\d]+\d+\s+#{owner}\s+#{group}/, line,
-              "bad permissions for '#{line[/\S+$/]}' - expected 444/755, #{owner}, #{group}"
+            fileinfo = parse_ls(line)
+            assert_equal owner, fileinfo[:owner]
+            assert_equal group, fileinfo[:group]
+
+            if fileinfo[:filetype] == 'd'
+              assert_equal 'rwx', fileinfo[:perms][:user]
+              assert_equal 'r-x', fileinfo[:perms][:group]
+              assert_equal 'r-x', fileinfo[:perms][:other]
+            else
+              assert_equal 'rw-', fileinfo[:perms][:user]
+              assert_equal 'r--', fileinfo[:perms][:group]
+              assert_equal 'r--', fileinfo[:perms][:other]
+            end
           end
         end
       end
 
+      LS_REGEX = %r[(.)(...)(...)(...).?[[:space:]]+\d+[[:space:]]+([[:word:]]+)[[:space:]]+([[:word:]]+).*[[:space:]]+([[:graph:]]+)$]
+
+      def parse_ls(line)
+        match = line.match(LS_REGEX)
+        if match.nil?
+          fail_test "#{line.inspect} doesn't match ls output regular expression"
+        end
+
+        captures = match.captures
+
+        {
+          :filetype => captures[0],
+          :perms => {
+            :user => captures[1],
+            :group => captures[2],
+            :other => captures[3],
+          },
+          :owner => captures[4],
+          :group => captures[5],
+          :file  => captures[6]
+        }
+      end
+      private :parse_ls
+
       # Assert that a module is not installed on disk.
       #
       # @param host [HOST] the host object to make the remote call on
-      # @param moduledir [String] the path where the module should be
       # @param module_name [String] the name portion of a module name
-      def assert_module_not_installed_on_disk ( host, moduledir, module_name )
-        on host, %Q{[ ! -d "#{moduledir}/#{module_name}" ]}
+      # @param optional moduledir [String, Array] the path where the module should be, will
+      #        iterate over components of the modulepath by default.
+      def assert_module_not_installed_on_disk(host, module_name, moduledir=nil)
+        moduledir ||= get_modulepaths_for_host(host)
+        modulepath = moduledir.is_a?(Array) ? moduledir : [moduledir]
+        moduledir= nil
+
+        modulepath.each do |i|
+          # module directory should not exist
+          on host, %Q{[ ! -d "#{i}/#{module_name}" ]}
+        end
       end
 
-      # Create a simple legacy and directory environment at :path_to_environments.
+      # Create a simple directory environment and puppet.conf at :tmpdir.
       #
       # @note Also registers a teardown block to remove generated files.
       #
-      # @param path_to_environments [String] directory to contain all the
+      # @param tmpdir [String] directory to contain all the
       #   generated environment files
       # @return [String] path to the new puppet configuration file defining the
       #   environments
-      def generate_base_legacy_and_directory_environments(path_to_environments)
-        puppet_conf = "#{path_to_environments}/puppet2.conf"
-        legacy_env = "#{path_to_environments}/legacyenv"
-        dir_envs = "#{path_to_environments}/environments"
+      def generate_base_directory_environments(tmpdir)
+        puppet_conf = "#{tmpdir}/puppet2.conf"
+        dir_envs = "#{tmpdir}/environments"
 
-        step "ensure we don't have left over bad state from another, possibly failed run"
-        on master, "rm -rf #{legacy_env} #{dir_envs} #{puppet_conf}"
-
-        # and register to clean up afterwords
-        teardown do
-          on master, "rm -rf #{legacy_env} #{dir_envs} #{puppet_conf}"
-        end
-
-        step 'Configure a non-default legacy and directory environment'
+        step 'Configure a the direnv directory environment'
         apply_manifest_on master, %Q{
+          File {
+            ensure => directory,
+            owner => #{master.puppet['user']},
+            group => #{master.puppet['group']},
+            mode => "0750",
+          }
           file {
             [
-              '#{legacy_env}',
-              '#{legacy_env}/modules',
               '#{dir_envs}',
               '#{dir_envs}/direnv',
             ]:
-              ensure => directory,
           }
+
           file {
             '#{puppet_conf}':
-              source => $settings::config,
+              ensure => file,
+              content => "
+                [main]
+                environmentpath=#{dir_envs}
+              "
           }
         }
-
-        on master, puppet("config", "set",
-                          "modulepath", "#{legacy_env}/modules",
-                          "--section", "legacyenv",
-                          "--config", puppet_conf)
 
         return puppet_conf
       end

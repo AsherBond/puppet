@@ -36,19 +36,19 @@ throwaway systems.
 All of the acceptance tests for Puppet are kept in the acceptance/tests/
 directory. Running the acceptance tests is much more involved than running the
 spec tests. Information about how to run them can be found in the [acceptance
-testing documentation](acceptance_tests.md)
+testing documentation](https://github.com/puppetlabs/puppet/blob/master/acceptance/README.md).
 
 ## Testing dependency version requirements
 
-Puppet is only compatible with certain versions of RSpec and Mocha. If you are
-not using Bundler to install the required test libraries you must ensure that
-you are using the right library versions. Using unsupported versions of Mocha
-and RSpec will probably display many spurious failures. The supported versions
-of RSpec and Mocha can be found in the project Gemfile.
+Puppet is only compatible with a specific version of RSpec. If you are not
+using Bundler to install the required test libraries you must ensure that you
+are using the right library version. Using an unsupported version of RSpec will
+probably display many spurious failures. The supported version of RSpec can be
+found in the project Gemfile.
 
 ## Puppet Continuous integration
 
-  * Travis-ci (spec tests only): https://travis-ci.org/puppetlabs/puppet/
+  * GitHub Actions (spec tests only): https://github.com/puppetlabs/puppet/actions
   * Jenkins (spec and acceptance tests): https://jenkins.puppetlabs.com/view/Puppet%20FOSS/
 
 ## RSpec
@@ -70,14 +70,13 @@ behavior (which are done with expectations)
 ```ruby
 # This is an example; it sets the test name and defines the test to run
 specify "one equals one" do
-  # 'should' is an expectation; it adds a check to make sure that the left argument
-  # matches the right argument
-  1.should == 1
+  # add an expectation that left and right arguments are equal
+  expect(1).to eq(1)
 end
 
 # Examples can be declared with either 'it' or 'specify'
 it "one doesn't equal two" do
-  1.should_not == 2
+  expect(1).to_not eq(2)
 end
 ```
 
@@ -85,6 +84,9 @@ Good examples generally do as little setup as possible and only test one or two
 things; it makes tests easier to understand and easier to debug.
 
 More complete documentation on expectations is available at https://www.relishapp.com/rspec/rspec-expectations/docs
+
+Note Puppet supports the [RSpec 3](http://rspec.info/blog/2013/07/the-plan-for-rspec-3/)
+API, so please do not use RSpec 2 "should" syntax like `1.should == 1`.
 
 ### Example groups
 
@@ -95,15 +97,15 @@ set.
 describe "the number one" do
 
   it "is larger than zero" do
-    1.should be > 0
+    expect(1).to be > 0
   end
 
   it "is an odd number" do
-    1.odd?.should be true
+    expect(1).to be_odd # calls 1.odd?
   end
 
   it "is not nil" do
-    1.should_not be_nil
+    expect(1).to be
   end
 end
 ```
@@ -166,11 +168,11 @@ describe "a helper object" do
   end
 
   it "is an array" do
-    my_helper.should be_a_kind_of Array
+    expect(my_helper).to be_a_kind_of Array
   end
 
   it "has three elements" do
-    my_helper.should have(3).items
+    expect(my_helper.size).to eq(3)
   end
 end
 ```
@@ -185,11 +187,7 @@ individual tests are only running the code being tested. You can stub out entire
 objects, or just stub out individual methods on an object. When a method is
 stubbed the method itself will never be called.
 
-While RSpec comes with its own stubbing framework, Puppet uses the Mocha
-framework.
-
-A brief usage guide for Mocha is available at http://gofreerange.com/mocha/docs/#Usage,
-and an overview of Mocha expectations is available at http://gofreerange.com/mocha/docs/Mocha/Expectation.html
+The RSpec Mocks documentation can be found at https://relishapp.com/rspec/rspec-mocks/v/3-8/docs/
 
 ```ruby
 describe "stubbing a method on an object" do
@@ -198,16 +196,16 @@ describe "stubbing a method on an object" do
   end
 
   it 'has three items before being stubbed' do
-    my_helper.size.should == 3
+    expect(my_helper.size).to eq(3)
   end
 
   describe 'when stubbing the size' do
     before :each do
-      my_helper.stubs(:size).returns 10
+      allow(my_helper).to receive(:size).and_return(10)
     end
 
     it 'has the stubbed value for size' do
-      my_helper.size.should == 10
+      expect(my_helper.size).to eq(10)
     end
   end
 end
@@ -218,11 +216,11 @@ Entire objects can be stubbed as well.
 ```ruby
 describe "stubbing an object" do
   let(:my_helper) do
-    stub(:not_an_array, :size => 10)
+    double(:not_an_array, :size => 10)
   end
 
   it 'has the stubbed size'
-    my_helper.size.should == 10
+    expect(my_helper.size).to eq(10)
   end
 end
 ```
@@ -241,7 +239,7 @@ describe "mocking a method on an object" do
 
   describe "when mocking the size" do
     before :each do
-      my_helper.expects(:size).returns 10
+      expect(my_helper).to receive(:size).and_return(10)
     end
 
     it "adds an expectation that a method was called" do
@@ -256,11 +254,11 @@ Like stubs, entire objects can be mocked.
 ```ruby
 describe "mocking an object" do
   let(:my_helper) do
-    mock(:not_an_array)
+    double(:not_an_array)
   end
 
   before :each do
-    not_an_array.expects(:size).returns 10
+    expect(not_an_array).to receive(:size).and_return(10)
   end
 
   it "adds an expectation that the method was called" do
@@ -276,6 +274,32 @@ a single test to be run if only that test is failing, instead of running all
 17000+ tests each time something is changed. However, there are a number of ways
 that can make tests fail when run in isolation or out of order.
 
+#### Narrowing down a spec test with side effects
+
+If you do have a test that passes in isolation but fails when run as part of
+a full spec run, you can often narrow down the culprit by a two-step process.
+First, run:
+
+```
+bundle exec rake spec
+```
+
+which should generate a spec_order.txt file.
+
+Second, run:
+
+```
+util/binary_search_specs.rb <full path to failing spec>
+```
+
+And it will (usually) tell you the test that makes the failing spec fail.
+
+The 'usually' caveat is because there can be spec failures that require
+specific ordering between > 2 spec files, and this tool only handles the
+case for 2 spec files. The > 2 case is rare and if you suspect you're in
+that boat, there isn't an established best practice, other than to ask
+for help on IRC or the mailing list.
+
 #### Using instance variables
 
 Puppet has a number of older tests that use `before` blocks and instance
@@ -286,7 +310,7 @@ order.
 ```ruby
 # test.rb
 RSpec.configure do |c|
-  c.mock_framework = :mocha
+  c.mock_with :rspec
 end
 
 describe "fixture data" do
@@ -296,12 +320,12 @@ describe "fixture data" do
     before :all do
       # This fixture will be created only once and will retain the `foo` stub
       # between tests.
-      @fixture = stub 'test data'
+      @fixture = double('test data')
     end
 
     it "can be stubbed" do
-      @fixture.stubs(:foo).returns :bar
-      @fixture.foo.should == :bar
+      allow(@fixture).to receive(:foo).and_return(:bar)
+      expect(@fixture.foo).to eq(:bar)
     end
 
     it "does not keep state between tests" do
@@ -315,11 +339,11 @@ describe "fixture data" do
 
     # GOOD
     # This will be recreated between tests so that state isn't retained.
-    let(:fixture) { stub 'test data' }
+    let(:fixture) { double('test data') }
 
     it "can be stubbed" do
-      fixture.stubs(:foo).returns :bar
-      fixture.foo.should == :bar
+      allow(fixture).to receive(:foo).and_return(:bar)
+      expect(fixture.foo).to eq(:bar)
     end
 
     it "does not keep state between tests" do

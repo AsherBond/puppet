@@ -1,16 +1,21 @@
+# frozen_string_literal: true
 
+require_relative '../../../puppet/concurrent/thread_local_singleton'
+
+module Puppet::Pops
+module Parser
 # Does not support "import" and parsing ruby files
 #
-class Puppet::Pops::Parser::EvaluatingParser
+class EvaluatingParser
+  extend Puppet::Concurrent::ThreadLocalSingleton
 
   attr_reader :parser
 
-  def initialize()
-    @parser = Puppet::Pops::Parser::Parser.new()
+  def initialize
+    @parser = Parser.new()
   end
 
-  def parse_string(s, file_source = 'unknown')
-    @file_source = file_source
+  def parse_string(s, file_source = nil)
     clear()
     # Handling of syntax error can be much improved (in general), now it bails out of the parser
     # and does not have as rich information (when parsing a string), need to update it with the file source
@@ -19,45 +24,63 @@ class Puppet::Pops::Parser::EvaluatingParser
     # Also a possible improvement (if the YAML parser returns positions) is to provide correct output of position.
     #
     begin
-      assert_and_report(parser.parse_string(s))
+      assert_and_report(parser.parse_string(s, file_source), file_source).model
+    rescue Puppet::ParseErrorWithIssue => e
+      raise e
     rescue Puppet::ParseError => e
       # TODO: This is not quite right, why does not the exception have the correct file?
-      e.file = @file_source unless e.file.is_a?(String) && !e.file.empty?
+      e.file = file_source unless e.file.is_a?(String) && !e.file.empty?
       raise e
     end
   end
 
   def parse_file(file)
-    @file_source = file
     clear()
-    assert_and_report(parser.parse_file(file))
+    assert_and_report(parser.parse_file(file), file).model
   end
 
-  def evaluate_string(scope, s, file_source='unknown')
+  def evaluate_string(scope, s, file_source = nil)
     evaluate(scope, parse_string(s, file_source))
   end
 
-  def evaluate_file(file)
-    evaluate(parse_file(file))
+  def evaluate_file(scope, file)
+    evaluate(scope, parse_file(file))
   end
 
-  def clear()
+  def clear
     @acceptor = nil
   end
 
   # Create a closure that can be called in the given scope
   def closure(model, scope)
-    Puppet::Pops::Evaluator::Closure.new(evaluator, model, scope)
+    Evaluator::Closure::Dynamic.new(evaluator, model, scope)
   end
 
   def evaluate(scope, model)
     return nil unless model
+
     evaluator.evaluate(model, scope)
   end
 
+  # Evaluates the given expression in a local scope with the given variable bindings
+  # set in this local scope, returns what the expression returns.
+  #
+  def evaluate_expression_with_bindings(scope, variable_bindings, expression)
+    evaluator.evaluate_block_with_bindings(scope, variable_bindings, expression)
+  end
+
   def evaluator
-    @@evaluator ||= Puppet::Pops::Evaluator::EvaluatorImpl.new()
+    # Do not use the cached evaluator if this is a migration run
+    if (Puppet.lookup(:migration_checker) { nil })
+      return Evaluator::EvaluatorImpl.new()
+    end
+
+    @@evaluator ||= Evaluator::EvaluatorImpl.new()
     @@evaluator
+  end
+
+  def convert_to_3x(object, scope)
+    evaluator.convert(object, scope, nil)
   end
 
   def validate(parse_result)
@@ -66,23 +89,24 @@ class Puppet::Pops::Parser::EvaluatingParser
     resulting_acceptor
   end
 
-  def acceptor()
-    Puppet::Pops::Validation::Acceptor.new
+  def acceptor
+    Validation::Acceptor.new
   end
 
   def validator(acceptor)
-    Puppet::Pops::Validation::ValidatorFactory_4_0.new().validator(acceptor)
+    Validation::ValidatorFactory_4_0.new().validator(acceptor)
   end
 
-  def assert_and_report(parse_result)
+  def assert_and_report(parse_result, file_source)
     return nil unless parse_result
-    if parse_result.source_ref.nil? or parse_result.source_ref == ''
-      parse_result.source_ref = @file_source
-    end
-    validation_result = validate(parse_result)
 
-    Puppet::Pops::IssueReporter.assert_and_report(validation_result,
-                                          :emit_warnings => true)
+    if parse_result['source_ref'].nil? || parse_result['source_ref'] == ''
+      parse_result['source_ref'] = file_source
+    end
+    validation_result = validate(parse_result.model)
+
+    IssueReporter.assert_and_report(validation_result,
+                                    :emit_warnings => true)
     parse_result
   end
 
@@ -104,7 +128,7 @@ class Puppet::Pops::Parser::EvaluatingParser
   # @return [String] The quoted string
   #
   def self.quote(x)
-    escaped = '"'
+    escaped = '"'.dup
     p = nil
     x.each_char do |c|
       case p
@@ -132,9 +156,11 @@ class Puppet::Pops::Parser::EvaluatingParser
     escaped << '"'
   end
 
-  class EvaluatingEppParser < Puppet::Pops::Parser::EvaluatingParser
-    def initialize()
-      @parser = Puppet::Pops::Parser::EppParser.new()
+  class EvaluatingEppParser < EvaluatingParser
+    def initialize
+      @parser = EppParser.new()
     end
   end
+end
+end
 end

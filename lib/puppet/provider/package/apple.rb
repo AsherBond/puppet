@@ -1,22 +1,24 @@
-require 'puppet/provider/package'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/provider/package'
 
 # OS X Packaging sucks.  We can install packages, but that's about it.
 Puppet::Type.type(:package).provide :apple, :parent => Puppet::Provider::Package do
-  desc "Package management based on OS X's builtin packaging system.  This is
+  desc "Package management based on OS X's built-in packaging system.  This is
     essentially the simplest and least functional package system in existence --
     it only supports installation; no deletion or upgrades.  The provider will
     automatically add the `.pkg` extension, so leave that off when specifying
     the package name."
 
-  confine :operatingsystem => :darwin
+  confine 'os.name' => :darwin
   commands :installer => "/usr/sbin/installer"
 
   def self.instances
     instance_by_name.collect do |name|
       self.new(
-        :name     => name,
+        :name => name,
         :provider => :apple,
-        :ensure   => :installed
+        :ensure => :installed
       )
     end
   end
@@ -33,13 +35,13 @@ Puppet::Type.type(:package).provide :apple, :parent => Puppet::Provider::Package
   end
 
   def query
-    Puppet::FileSystem.exist?("/Library/Receipts/#{@resource[:name]}.pkg") ? {:name => @resource[:name], :ensure => :present} : nil
+    Puppet::FileSystem.exist?("/Library/Receipts/#{@resource[:name]}.pkg") ? { :name => @resource[:name], :ensure => :present } : nil
   end
 
   def install
-    source = nil
-    unless source = @resource[:source]
-      self.fail "Mac OS X packages must specify a package source"
+    source = @resource[:source]
+    unless source
+      self.fail _("Mac OS X packages must specify a package source")
     end
 
     installer "-pkg", source, "-target", "/"

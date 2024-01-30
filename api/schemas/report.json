@@ -13,8 +13,10 @@
         "configuration_version",
         "report_format",
         "puppet_version",
-        "kind",
         "status",
+        "transaction_completed",
+        "noop",
+        "noop_pending",
         "environment"
     ],
 
@@ -93,23 +95,44 @@
             "type":        "string"
         },
 
+        "code_id": {
+            "description": "The id of the code input to the compiler.",
+            "type":        "string"
+        },
+
+        "job_id": {
+            "description": "The id of the job that this transaction is a part of.",
+            "type":        ["string", "null"]
+        },
+
+        "catalog_uuid": {
+            "description": "A UUID covering a specific catalog.",
+            "type":        "string"
+        },
+
+        "cached_catalog_status": {
+            "description": "Whether a cached catalog was used, and if so, why it was used. Enumerator with one of the values:\n\n* `not_used`, if a cached catalog was not used.\n* `explicitly_requested`, if a cached catalog was used because the use_cached_catalog option was set.\n* `on_failure`, if a cached catalog was used because the usecacheonfailure setting was set and the agent failed to download a new catalog",
+            "enum": [
+              "not_used",
+              "explicitly_requested",
+              "on_failure"
+            ]
+        },
+
+        "server_used": {
+            "description": "The name of the server that was used to compile the catalog. If failover occurred, this will hold the first server successfully contacted. If this run had no server (e.g. a `puppet apply` run), this field will be blank",
+            "type": "string"
+        },
+
         "report_format": {
             "description": "The report format version documented by this schema",
             "type":        "integer",
-            "enum":        ["4", 4]
+            "enum":        ["12", 12]
         },
 
         "puppet_version": {
             "description": "The version of the Puppet Agent the report is for.",
             "type":        "string"
-        },
-
-        "kind": {
-            "description": "Report kind, enumerator with one of the values:\n\n* `inspect`, if this report came from a puppet inspect run.\n* `apply`, if this report came from a puppet apply or puppet agent run",
-            "enum": [
-                "inspect",
-                "apply"
-            ]
         },
 
         "status": {
@@ -121,9 +144,29 @@
             ]
         },
 
+        "transaction_completed": {
+                    "description": "Whether the transaction completed (e.g. didn't have an unrescued exception).",
+                    "type":        "boolean"
+                },
+
+        "noop": {
+            "description": "Whether the puppet run was started in noop mode",
+            "type":        "boolean"
+        },
+
+        "noop_pending": {
+            "description": "Whether there are changes that we decided not to apply because of noop",
+            "type":        "boolean"
+        },
+
         "environment": {
             "description": "The name of the environment that was used for the puppet run (e.g. \"production\").",
             "type":        "string"
+        },
+
+        "corrective_change": {
+            "description": "True if a change or noop event in this report was caused by an unexpected change to the system between Puppet runs.",
+            "type":        "boolean"
         }
     },
 
@@ -209,7 +252,7 @@
                 },
 
                 "values": {
-                    "description": "The metric values in the 'time' category contains one entry per resource type in the catalog for\nwhich there is at least one resource and the values named:\n\n* `config_retrieval`\n* `total`\n* `inspect` (only present if the report is of `inspect`-kind)\n",
+                    "description": "The metric values in the 'time' category contains one entry per resource type in the catalog for\nwhich there is at least one resource and the values named:\n\n* `config_retrieval`\n* `total`\n\n",
                     "type":        "array",
                     "items": {
                         "description": "Each entry in `values` is an array with 3 slots for `name`, `label` and `value`",
@@ -268,7 +311,8 @@
                                     "skipped",
                                     "failed_to_restart",
                                     "restarted",
-                                    "scheduled"
+                                    "scheduled",
+                                    "corrective_change"
                                 ]
                             },
                             {
@@ -281,7 +325,8 @@
                                     "Skipped",
                                     "Failed to restart",
                                     "Restarted",
-                                    "Scheduled"
+                                    "Scheduled",
+                                    "Corrective change"
                                 ]
                             },
                             {
@@ -415,6 +460,14 @@
                     "type":        "string"
                 },
 
+                "provider_used": {
+                    "description": "The provider name used by the resource",
+                    "oneOf":       [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ]
+                },
+
                 "file": {
                     "description": "The pathname of the manifest file which declared the resource.",
                     "oneOf":       [
@@ -432,7 +485,7 @@
                 },
 
                 "evaluation_time": {
-                    "description": "The amount of time, in seconds, taken to evaluate the resource. Not present in reports of `inspect` kind.",
+                    "description": "The amount of time, in seconds, taken to evaluate the resource.",
                     "oneOf":       [
                         {"type": "number"},
                         {"type": "null"}
@@ -440,12 +493,12 @@
                 },
 
                 "change_count": {
-                    "description": "The number of properties which changed. Always 0 in reports of `inspect` kind.",
+                    "description": "The number of properties which changed.",
                     "type":        "integer"
                 },
 
                 "out_of_sync_count": {
-                    "description": "The number of properties which were out of sync. Always 0 in reports of `inspect` kind.",
+                    "description": "The number of properties which were out of sync.",
                     "type":        "integer"
                 },
 
@@ -486,10 +539,20 @@
                     "type":        "boolean"
                 },
 
+                "failed_to_restart": {
+                    "description": "True if Puppet experienced an error while trying to restart this resource (For example, when a Service resource has been notified from another resource), otherwise false.",
+                    "type":        "boolean"
+                },
+
                 "containment_path": {
                     "description": "An array of strings; each element represents a container (type or class) that, together, make up the path of the resource in the catalog.",
                     "type":        "array",
                     "items":       { "type": "string" }
+                },
+
+                "corrective_change": {
+                    "description": "True if a change or noop event on this resource was caused by an unexpected change to the system between Puppet runs.",
+                    "type":        "boolean"
                 }
             },
 
@@ -501,7 +564,8 @@
                 "tags",
                 "events",
                 "skipped",
-                "containment_path"
+                "containment_path",
+                "corrective_change"
             ],
             "additionalProperties":   false
         },
@@ -534,7 +598,7 @@
                 },
 
                 "desired_value": {
-                    "description": "the value specified in the manifest. Absent in reports of `inspect` kind.",
+                    "description": "the value specified in the manifest.",
                     "oneOf": [
                         { "type": "string" },
                         { "type": "array" },
@@ -559,8 +623,13 @@
                 },
 
                 "name": {
-                    "description": "The name of the event. Absent in reports of `inspect` kind.",
+                    "description": "The name of the event.",
                     "type":        "string"
+                },
+
+                "redacted": {
+                  "description": "Whether this event has been redacted",
+                  "type": "boolean"
                 },
 
                 "status": {
@@ -575,6 +644,11 @@
                 "time": {
                     "description": "The time at which the property was evaluated. In ISO 8601 format with 9 characters second-fragment",
                     "type":        "string"
+                },
+
+                "corrective_change": {
+                    "description": "True if this event was caused by an unexpected change to the system between Puppet runs.",
+                    "type":        "boolean"
                 }
             },
             "required": [
@@ -583,7 +657,8 @@
                 "message",
                 "name",
                 "status",
-                "time"
+                "time",
+                "corrective_change"
             ],
 
             "additionalProperties": false

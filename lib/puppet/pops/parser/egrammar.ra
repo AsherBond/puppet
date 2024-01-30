@@ -8,7 +8,7 @@ token STRING DQPRE DQMID DQPOST
 token WORD
 token LBRACK  RBRACK LBRACE RBRACE SYMBOL FARROW COMMA TRUE
 token FALSE EQUALS APPENDS DELETES LESSEQUAL NOTEQUAL DOT COLON LLCOLLECT RRCOLLECT
-token QMARK LPAREN RPAREN ISEQUAL GREATEREQUAL GREATERTHAN LESSTHAN
+token QMARK WSLPAREN LPAREN RPAREN ISEQUAL GREATEREQUAL GREATERTHAN LESSTHAN
 token IF ELSE
 token DEFINE ELSIF VARIABLE CLASS INHERITS NODE BOOLEAN
 token NAME SEMIC CASE DEFAULT AT ATAT LCOLLECT RCOLLECT CLASSREF
@@ -20,20 +20,21 @@ token NUMBER
 token HEREDOC SUBLOCATE
 token RENDER_STRING RENDER_EXPR EPP_START EPP_END EPP_END_TRIM
 token FUNCTION
-token PRIVATE ATTR TYPE
+token TYPE
+token PRIVATE ATTR
+token PLAN APPLY
 token LOW
 
 prechigh
   left  HIGH
   left  SEMIC
   left  PIPE
-  left  LPAREN
+  left  LPAREN WSLPAREN
   left  RPAREN
   left  DOT
   nonassoc EPP_START
   left  LBRACK LISTSTART
   left  RBRACK
-  left  QMARK
   left  LCOLLECT LLCOLLECT
   right NOT
   nonassoc SPLAT
@@ -45,6 +46,7 @@ prechigh
   left  LSHIFT RSHIFT
   left  NOTEQUAL ISEQUAL
   left  GREATEREQUAL GREATERTHAN LESSTHAN LESSEQUAL
+  left  QMARK
   left  AND
   left  OR
   left  LBRACE
@@ -63,9 +65,9 @@ preclow
 rule
 # Produces [Model::Program] with a body containing what was parsed
 program
-  : statements     { result = create_program(Factory.block_or_expression(*val[0])) }
-  | epp_expression { result = create_program(Factory.block_or_expression(*val[0])) }
-  |                { result = create_empty_program() }
+  : statements     { result = create_program(Factory.block_or_expression(val[0])) }
+  | epp_expression { result = create_program(val[0]) }
+  |                { result = create_empty_program }
 
 # Produces a semantic model (non validated, but semantically adjusted).
 statements
@@ -86,7 +88,7 @@ syntactic_statements
 #
 syntactic_statement
   : assignment                             =LOW { result = val[0] }
-  | syntactic_statement COMMA assignment   =LOW { result = aryfy(val[0]).push val[2] }
+  | syntactic_statement COMMA assignment   =LOW { result = aryfy(val[0]).push(val[1]).push(val[2]) }
 
 # Assignment (is right recursive since assignment is right associative)
 assignment
@@ -95,9 +97,15 @@ assignment
   | relationship APPENDS assignment         { result = val[0].plus_set(val[2]) ; loc result, val[1] }
   | relationship DELETES assignment         { result = val[0].minus_set(val[2]); loc result, val[1] }
 
-assignments
-  : assignment                              { result = [val[0]] }
-  | assignments COMMA assignment            { result = val[0].push(val[2]) }
+# Argument is like assignment but permits KEY_ENTRY which it converts it to a HASH_UNFOLDED
+argument
+  : assignment
+  | hashpair { result = Factory.HASH_UNFOLDED([val[0]]); loc result, val[0] }
+
+# Repeated adjacent HASH_UNFOLDED entries merged into one HASH_UNFOLDED
+arguments
+  : argument                            { result = [val[0]] }
+  | arguments COMMA argument            { result = Factory.ARGUMENTS(val[0], val[2]) }
 
 relationship
   : resource =LOW
@@ -114,7 +122,7 @@ resource
     #---VIRTUAL
   | AT resource {
       result = val[1]
-      unless Factory.set_resource_form(result, :virtual)
+      unless Factory.set_resource_form(result, 'virtual')
         # This is equivalent to a syntax error - additional semantic restrictions apply
         error val[0], "Virtual (@) can only be applied to a Resource Expression"
       end
@@ -125,7 +133,7 @@ resource
     #---EXPORTED
   | ATAT resource {
       result = val[1]
-      unless Factory.set_resource_form(result, :exported)
+      unless Factory.set_resource_form(result, 'exported')
         # This is equivalent to a syntax error - additional semantic restrictions apply
         error val[0], "Exported (@@) can only be applied to a Resource Expression"
       end
@@ -157,7 +165,7 @@ resource
         # If the attribute operations does not include +>, then the found expression
         # is actually a LEFT followed by LITERAL_HASH
         #
-        unless tmp = transform_resource_wo_title(val[0], val[2])
+        unless tmp = transform_resource_wo_title(val[0], val[2], val[1], val[4])
           error val[1], "Syntax error resource body without title or hash with +>"
         end
         tmp
@@ -192,7 +200,7 @@ resource
 expression
   : primary_expression
   | call_function_expression
-  | expression LBRACK       expressions RBRACK =LBRACK { result = val[0][*val[2]]         ; loc result, val[0], val[3] }
+  | bracketed_expression
   | expression IN           expression                 { result = val[0].in val[2]        ; loc result, val[1] }
   | expression MATCH        expression                 { result = val[0] =~  val[2]       ; loc result, val[1] }
   | expression NOMATCH      expression                 { result = val[0].mne val[2]       ; loc result, val[1] }
@@ -203,10 +211,10 @@ expression
   | expression MODULO       expression                 { result = val[0] %   val[2]       ; loc result, val[1] }
   | expression LSHIFT       expression                 { result = val[0] <<  val[2]       ; loc result, val[1] }
   | expression RSHIFT       expression                 { result = val[0] >>  val[2]       ; loc result, val[1] }
-  |            MINUS        expression         =UMINUS { result = val[1].minus()          ; loc result, val[0] }
-  |            TIMES        expression         =SPLAT  { result = val[1].unfold()         ; loc result, val[0] }
+  |            MINUS        expression         =UMINUS { result = val[1].minus            ; loc result, val[0] }
+  |            TIMES        expression         =SPLAT  { result = val[1].unfold           ; loc result, val[0] }
   | expression NOTEQUAL     expression                 { result = val[0].ne  val[2]       ; loc result, val[1] }
-  | expression ISEQUAL      expression                 { result = val[0] ==  val[2]       ; loc result, val[1] }
+  | expression ISEQUAL      expression                 { result = val[0].eq  val[2]       ; loc result, val[1] }
   | expression GREATERTHAN  expression                 { result = val[0] >   val[2]       ; loc result, val[1] }
   | expression GREATEREQUAL expression                 { result = val[0] >=  val[2]       ; loc result, val[1] }
   | expression LESSTHAN     expression                 { result = val[0] <   val[2]       ; loc result, val[1] }
@@ -215,8 +223,19 @@ expression
   | expression AND          expression                 { result = val[0].and val[2]       ; loc result, val[1] }
   | expression OR           expression                 { result = val[0].or  val[2]       ; loc result, val[1] }
   | expression QMARK selector_entries                  { result = val[0].select(*val[2])  ; loc result, val[0] }
-  |            LPAREN       assignment RPAREN          { result = val[1].paren()          ; loc result, val[0] }
+  |            LPAREN       assignment RPAREN          { result = val[1].paren            ; loc result, val[0] }
+  |            WSLPAREN     assignment RPAREN          { result = val[1].paren          ; loc result, val[0] }
 
+bracketed_expression
+  : expression LBRACK access_args endcomma RBRACK =LBRACK { result = val[0].access(val[2]); loc result, val[0], val[4] }
+
+access_args
+  : access_arg                   { result = [val[0]] }
+  | access_args COMMA access_arg { result = Factory.ARGUMENTS(val[0], val[2]) }
+
+access_arg
+  : expression
+  | hashpair { result = Factory.HASH_UNFOLDED([val[0]]); loc result, val[0] }
 
 #---EXPRESSIONS
 #   (i.e. "argument list")
@@ -237,8 +256,13 @@ primary_expression
   | unless_expression
   | definition_expression
   | hostclass_expression
+  | plan_expression
+  | apply_expression
   | node_definition_expression
   | epp_render_expression
+  | function_definition
+  | type_alias
+  | type_definition
   | reserved_word
   | array
   | hash
@@ -257,24 +281,28 @@ primary_expression
 # Produces Model::CallNamedFunction
 
 call_function_expression
-  : expression LPAREN assignments endcomma RPAREN {
-      result = Factory.CALL_NAMED(val[0], true, val[2])
-      loc result, val[0], val[4]
+  : call_function_start arguments endcomma RPAREN {
+      result = Factory.CALL_NAMED(val[0], true, val[1])
+      loc result, val[0], val[3]
     }
-  | expression LPAREN RPAREN {
+  | call_function_start RPAREN {
+      result = Factory.CALL_NAMED(val[0], true, [])
+      loc result, val[0], val[1]
+    }
+  | call_function_start arguments endcomma RPAREN lambda {
+      result = Factory.CALL_NAMED(val[0], true, val[1])
+      loc result, val[0], val[4]
+      result.lambda = val[4]
+    }
+  | call_function_start RPAREN  lambda {
       result = Factory.CALL_NAMED(val[0], true, [])
       loc result, val[0], val[2]
+      result.lambda = val[2]
     }
-  | expression LPAREN assignments endcomma RPAREN lambda {
-      result = Factory.CALL_NAMED(val[0], true, val[2])
-      loc result, val[0], val[4]
-      result.lambda = val[5]
-    }
-  | expression LPAREN RPAREN  lambda {
-      result = Factory.CALL_NAMED(val[0], true, [])
-      loc result, val[0], val[2]
-      result.lambda = val[3]
-    }
+
+call_function_start
+  : expression LPAREN { result = val[0] }
+  | TYPE LPAREN { result = Factory.QNAME(val[0][:value]); loc result, val[0] }
 
 #---CALL METHOD
 #
@@ -283,7 +311,7 @@ call_method_with_lambda_expression
   | call_method_expression lambda       { result = val[0]; val[0].lambda = val[1] }
 
   call_method_expression
-    : named_access LPAREN assignments RPAREN { result = Factory.CALL_METHOD(val[0], val[2]); loc result, val[1], val[3] }
+    : named_access LPAREN arguments RPAREN { result = Factory.CALL_METHOD(val[0], val[2]); loc result, val[1], val[3] }
     | named_access LPAREN RPAREN             { result = Factory.CALL_METHOD(val[0], []); loc result, val[1], val[3] }
     | named_access =LOW                      { result = Factory.CALL_METHOD(val[0], []); loc result, val[0] }
 
@@ -292,13 +320,17 @@ call_method_with_lambda_expression
         result = val[0].dot(Factory.fqn(val[2][:value]))
         loc result, val[1], val[2]
       }
+    | expression DOT TYPE {
+        result = val[0].dot(Factory.fqn(val[2][:value]))
+        loc result, val[1], val[2]
+      }
 
 #---LAMBDA
 #
 lambda
-  : lambda_parameter_list lambda_rest {
-      result = Factory.LAMBDA(val[0][:value], val[1][:value])
-      loc result, val[0][:start], val[1][:end]
+  : lambda_parameter_list opt_return_type lambda_rest {
+      result = Factory.LAMBDA(val[0][:value], val[2][:value], val[1])
+      loc result, val[0][:start], val[2][:end]
     }
 
 lambda_rest
@@ -323,7 +355,7 @@ if_expression
   # Produces Model::IfExpression
   if_part
     : expression LBRACE statements RBRACE else {
-        result = Factory.IF(val[0], Factory.block_or_expression(*val[2]), val[4])
+        result = Factory.IF(val[0], Factory.block_or_expression(val[2], val[1], val[3]), val[4])
         loc(result, val[0], (val[4] ? val[4] : val[3]))
       }
     | expression LBRACE RBRACE else {
@@ -339,8 +371,7 @@ if_expression
         loc(result, val[0], val[1])
       }
     | ELSE LBRACE statements RBRACE {
-        result = Factory.block_or_expression(*val[2])
-        loc result, val[0], val[3]
+        result = Factory.block_or_expression(val[2], val[1], val[3])
       }
     | ELSE LBRACE RBRACE {
         result = nil # don't think a nop is needed here either
@@ -350,11 +381,11 @@ if_expression
 #
 unless_expression
   : UNLESS expression LBRACE statements RBRACE unless_else {
-      result = Factory.UNLESS(val[1], Factory.block_or_expression(*val[3]), val[5])
+      result = Factory.UNLESS(val[1], Factory.block_or_expression(val[3], val[2], val[4]), val[5])
       loc result, val[0], val[4]
     }
   | UNLESS expression LBRACE RBRACE unless_else {
-      result = Factory.UNLESS(val[1], nil, nil)
+      result = Factory.UNLESS(val[1], nil, val[4])
       loc result, val[0], val[4]
     }
 
@@ -364,8 +395,7 @@ unless_expression
   unless_else
     : # nothing
     | ELSE LBRACE statements RBRACE {
-        result = Factory.block_or_expression(*val[2])
-        loc result, val[0], val[3]
+        result = Factory.block_or_expression(val[2], val[1], val[3])
       }
     | ELSE LBRACE RBRACE {
         result = nil # don't think a nop is needed here either
@@ -444,7 +474,6 @@ collection_expression
 #
 attribute_operations
   :                                                { result = [] }
-  | TIMES FARROW expression                        { result = [tmp = Factory.ATTRIBUTES_OP(val[2])] ; loc tmp, val[0], val[2] }
   | attribute_operation                            { result = [val[0]] }
   | attribute_operations COMMA attribute_operation { result = val[0].push(val[2]) }
 
@@ -454,7 +483,6 @@ attribute_operations
   attribute_name
     : NAME
     | keyword
-#    | BOOLEAN
 
   # In this version, illegal combinations are validated instead of producing syntax errors
   # (Can give nicer error message "+> is not applicable to...")
@@ -462,13 +490,16 @@ attribute_operations
   #
   attribute_operation
     : attribute_name FARROW expression {
-        result = Factory.ATTRIBUTE_OP(val[0][:value], :'=>', val[2])
+        result = Factory.ATTRIBUTE_OP(val[0][:value], '=>', val[2])
         loc result, val[0], val[2]
       }
     | attribute_name PARROW expression {
-        result = Factory.ATTRIBUTE_OP(val[0][:value], :'+>', val[2])
+        result = Factory.ATTRIBUTE_OP(val[0][:value], '+>', val[2])
         loc result, val[0], val[2]
       }
+  | TIMES FARROW expression {
+      result = Factory.ATTRIBUTES_OP(val[2]) ; loc result, val[0], val[2]
+   }
 
 #---DEFINE
 #
@@ -476,12 +507,33 @@ attribute_operations
 #
 definition_expression
   : DEFINE classname parameter_list LBRACE opt_statements RBRACE {
-      result = add_definition(Factory.DEFINITION(classname(val[1][:value]), val[2], val[4]))
-      loc result, val[0], val[5]
+      definition = Factory.DEFINITION(classname(val[1][:value]), val[2], val[4])
+      loc(definition, val[0], val[5])
+      result = add_definition(definition)
       # New lexer does not keep track of this, this is done in validation
       if @lexer.respond_to?(:'indefine=')
         @lexer.indefine = false
       end
+    }
+
+#--PLAN
+plan_expression
+  : PLAN stacked_classname parameter_list LBRACE opt_statements RBRACE {
+      # Remove this plan's name from the namestack as all nested plans have been parsed
+      namepop
+      definition = Factory.PLAN(classname(val[1][:value]), val[2], val[4])
+      loc(definition, val[0], val[5])
+      result = add_definition(definition)
+    }
+
+apply_expression
+  : APPLY LPAREN arguments endcomma RPAREN LBRACE statements RBRACE {
+      result = Factory.APPLY(val[2], Factory.APPLY_BLOCK(val[6]))
+      loc result, val[0], val[7]
+    }
+  | APPLY LPAREN arguments endcomma RPAREN LBRACE RBRACE {
+      result = Factory.APPLY(val[2], Factory.APPLY_BLOCK([]))
+      loc result, val[0], val[6]
     }
 
 #---HOSTCLASS
@@ -492,8 +544,9 @@ hostclass_expression
   : CLASS stacked_classname parameter_list classparent LBRACE opt_statements RBRACE {
       # Remove this class' name from the namestack as all nested classes have been parsed
       namepop
-      result = add_definition(Factory.HOSTCLASS(classname(val[1][:value]), val[2], token_text(val[3]), val[5]))
-      loc result, val[0], val[6]
+      definition = Factory.HOSTCLASS(classname(val[1][:value]), val[2], token_text(val[3]), val[5])
+      loc(definition, val[0], val[6])
+      result = add_definition(definition)
     }
 
   # Record the classname so nested classes gets a fully qualified name at parse-time
@@ -526,12 +579,14 @@ hostclass_expression
 #
 node_definition_expression
   : NODE hostnames endcomma nodeparent LBRACE statements RBRACE {
-      result = add_definition(Factory.NODE(val[1], val[3], val[5]))
-      loc result, val[0], val[6]
+      definition = Factory.NODE(val[1], val[3], val[5])
+      loc(definition, val[0], val[6])
+      result = add_definition(definition)
     }
   | NODE hostnames endcomma nodeparent LBRACE RBRACE {
-      result = add_definition(Factory.NODE(val[1], val[3], nil))
-      loc result, val[0], val[5]
+      definition = Factory.NODE(val[1], val[3], nil)
+      loc(definition, val[0], val[5])
+      result = add_definition(definition)
     }
 
   # Hostnames is not a list of names, it is a list of name matchers (including a Regexp).
@@ -566,26 +621,35 @@ node_definition_expression
 
 #---FUNCTION DEFINITION
 #
-#function_definition
-  # For now the function word will just be reserved, in the future it will
-  # produce a function definition
-  # FUNCTION classname parameter_list LBRACE opt_statements RBRACE {
-  #   result = add_definition(Factory.FUNCTION(val[1][:value], val[2], val[4]))
-  #   loc result, val[0], val[5]
-  # }
+function_definition
+  : FUNCTION classname parameter_list opt_return_type LBRACE opt_statements RBRACE {
+      definition = Factory.FUNCTION(val[1][:value], val[2], val[5], val[3])
+      loc(definition, val[0], val[6])
+      result = add_definition(definition)
+    }
+
+opt_return_type
+  : RSHIFT type { result = val[1] }
+  | RSHIFT type LBRACK access_args RBRACK { result = val[1].access(val[3]) ; loc result, val[1], val[4] }
+  | nil
 
 #---NAMES AND PARAMETERS COMMON TO SEVERAL RULES
 #   Produces String
 #   TODO: The error that "class" is not a valid classname is bad - classname rule is also used for other things
 classname
   : NAME
-  | CLASS { error val[0], "'class' is not a valid classname" }
+  | WORD
+  | CLASSREF
+  | CLASS { error val[0], "'class' keyword not allowed at this location" }
+  | STRING { error val[0], "A quoted string is not valid as a name here" }
 
 # Produces Array<Model::Parameter>
 parameter_list
-  : nil                               { result = [] }
-  | LPAREN  RPAREN                    { result = [] }
-  | LPAREN parameters endcomma RPAREN { result = val[1] }
+  : nil                                   { result = [] }
+  | LPAREN  RPAREN                        { result = [] }
+  | WSLPAREN  RPAREN                      { result = [] }
+  | LPAREN parameters endcomma RPAREN     { result = val[1] }
+  | WSLPAREN parameters endcomma RPAREN   { result = val[1] }
 
 # Produces Array<Model::Parameter>
 parameters
@@ -606,48 +670,116 @@ regular_parameter
   | VARIABLE                   { result = Factory.PARAM(val[0][:value]); loc result, val[0] }
 
 splat_parameter
-  : TIMES regular_parameter { result = val[1]; val[1].captures_rest() }
+  : TIMES regular_parameter { result = val[1]; val[1].captures_rest }
 
 typed_parameter
   : parameter_type untyped_parameter { val[1].type_expr(val[0]) ; result = val[1] }
 
 parameter_type
   : type { result = val[0] }
-  | type LBRACK expressions RBRACK { result = val[0][*val[2]] ; loc result, val[0], val[3] }
+  | type LBRACK access_args RBRACK { result = val[0].access(val[2]) ; loc result, val[0], val[3] }
+
+#--TYPE ALIAS
+type_alias
+  : type_alias_lhs EQUALS type hash {
+      definition = Factory.TYPE_ASSIGNMENT(val[0], Factory.KEY_ENTRY(val[2], val[3]))
+      loc(definition, val[0], val[3])
+      result = add_definition(definition)
+    }
+  | type_alias_lhs EQUALS type LBRACK access_args endcomma RBRACK {
+      definition = Factory.TYPE_ASSIGNMENT(val[0], val[2].access(val[4]))
+      loc(definition, val[0], val[5])
+      result = add_definition(definition)
+    }
+  | type_alias_lhs EQUALS type {
+      definition = Factory.TYPE_ASSIGNMENT(val[0], val[2])
+      loc(definition, val[0], val[2])
+      result = add_definition(definition)
+    }
+  | type_alias_lhs EQUALS hash {
+      definition = Factory.TYPE_ASSIGNMENT(val[0], val[2])
+      loc(definition, val[0], val[2])
+      result = add_definition(definition)
+    }
+  | type_alias_lhs EQUALS array {
+      definition = Factory.TYPE_ASSIGNMENT(val[0], val[2])
+      loc(definition, val[0], val[4])
+      result = add_definition(definition)
+    }
+
+type_alias_lhs
+  : TYPE parameter_type { result = val[1] }
+
+#--TYPE definition
+# TODO: Uses the optional_statements rule temporarily since the actual body awaits final spec on methods and attributes.
+type_definition
+  : TYPE CLASSREF LBRACE optional_statements RBRACE {
+        definition = Factory.TYPE_DEFINITION(val[1][:value], nil, val[3])
+        loc(definition, val[0], val[4])
+        result = add_definition(definition)
+      }
+  | TYPE CLASSREF INHERITS CLASSREF LBRACE optional_statements RBRACE {
+        definition = Factory.TYPE_DEFINITION(val[1][:value], val[3][:value], val[5])
+        loc(definition, val[0], val[6])
+        result = add_definition(definition)
+      }
 
 #--VARIABLE
 #
 variable
-  : VARIABLE { result = Factory.fqn(val[0][:value]).var ; loc result, val[0] }
+  : VARIABLE {
+     fqn = Factory.fqn(val[0][:value])
+     loc(fqn, val[0])
+     fqn['offset'] += 1
+     fqn['length'] -= 1
+     result = fqn.var
+     loc(result, val[0])
+  }
 
 #---RESERVED WORDS
 #
 reserved_word
-  : FUNCTION  { result = Factory.RESERVED(val[0][:value]) ; loc result, val[0] }
-  | PRIVATE   { result = Factory.RESERVED(val[0][:value]) ; loc result, val[0] }
-  | TYPE      { result = Factory.RESERVED(val[0][:value]) ; loc result, val[0] }
+  : PRIVATE   { result = Factory.RESERVED(val[0][:value]) ; loc result, val[0] }
   | ATTR      { result = Factory.RESERVED(val[0][:value]) ; loc result, val[0] }
 
 #---LITERALS (dynamic and static)
 #
 
 array
-  : LISTSTART assignments endcomma  RBRACK { result = Factory.LIST(val[1]); loc result, val[0], val[3] }
-  | LISTSTART                       RBRACK { result = Factory.literal([]) ; loc result, val[0] }
-  | LBRACK    assignments endcomma  RBRACK { result = Factory.LIST(val[1]); loc result, val[0], val[3] }
-  | LBRACK                          RBRACK { result = Factory.literal([]) ; loc result, val[0] }
+  : LISTSTART collection_entries endcomma  RBRACK { result = Factory.LIST(val[1]); loc result, val[0], val[3] }
+  | LISTSTART                              RBRACK { result = Factory.literal([]) ; loc result, val[0], val[1] }
+  | LBRACK    collection_entries endcomma  RBRACK { result = Factory.LIST(val[1]); loc result, val[0], val[3] }
+  | LBRACK                                 RBRACK { result = Factory.literal([]) ; loc result, val[0], val[1] }
 
 hash
   : LBRACE hashpairs RBRACE       { result = Factory.HASH(val[1]); loc result, val[0], val[2] }
   | LBRACE hashpairs COMMA RBRACE { result = Factory.HASH(val[1]); loc result, val[0], val[3] }
-  | LBRACE RBRACE                 { result = Factory.literal({}) ; loc result, val[0], val[3] }
+  | LBRACE RBRACE                 { result = Factory.literal({}) ; loc result, val[0], val[1] }
 
   hashpairs
     : hashpair                 { result = [val[0]] }
     | hashpairs COMMA hashpair { result = val[0].push val[2] }
 
   hashpair
-    : assignment FARROW assignment { result = Factory.KEY_ENTRY(val[0], val[2]); loc result, val[1] }
+    : hash_entry FARROW hash_entry { result = Factory.KEY_ENTRY(val[0], val[2]); loc result, val[1] }
+
+collection_entry:
+  : argument
+  | collection_entry_keyword { result = Factory.literal(val[0][:value]) ; loc result, val[0] }
+
+# Like collection_entry but will not allow nested hashpair
+hash_entry:
+  : assignment
+  | collection_entry_keyword { result = Factory.literal(val[0][:value]) ; loc result, val[0] }
+
+collection_entries
+  : collection_entry                           { result = [val[0]] }
+  | collection_entries COMMA collection_entry  { result = Factory.ARGUMENTS(val[0], val[2]) }
+
+# Keywords valid as a collection value
+collection_entry_keyword
+  : TYPE
+  | FUNCTION
 
 quotedtext
   : string
@@ -658,7 +790,7 @@ string
   : STRING  { result = Factory.literal(val[0][:value]) ; loc result, val[0] }
   | WORD    { result = Factory.literal(val[0][:value]) ; loc result, val[0] }
 
-dq_string       : dqpre dqrval           { result = Factory.string(val[0], *val[1]) ; loc result, val[0], val[1][-1] }
+dq_string       : dqpre dqrval           { result = Factory.STRING(val[0], *val[1]) ; loc result, val[0], val[1][-1] }
 dqpre           : DQPRE                  { result = Factory.literal(val[0][:value]); loc result, val[0] }
 dqpost          : DQPOST                 { result = Factory.literal(val[0][:value]); loc result, val[0] }
 dqmid           : DQMID                  { result = Factory.literal(val[0][:value]); loc result, val[0] }
@@ -673,8 +805,8 @@ heredoc
   : HEREDOC sublocated_text  { result = Factory.HEREDOC(val[0][:value], val[1]); loc result, val[0] }
 
 sublocated_text
-  : SUBLOCATE string    { result = Factory.SUBLOCATE(val[0], val[1]); loc result, val[0] }
-  | SUBLOCATE dq_string { result = Factory.SUBLOCATE(val[0], val[1]); loc result, val[0] }
+  : SUBLOCATE string    { result = Factory.SUBLOCATE(val[0], val[1]); }
+  | SUBLOCATE dq_string { result = Factory.SUBLOCATE(val[0], val[1]); }
 
 epp_expression
   : EPP_START epp_parameters_list optional_statements { result = Factory.EPP(val[1], val[2]); loc result, val[0] }
@@ -691,7 +823,7 @@ epp_parameters_list
 epp_render_expression
   : RENDER_STRING                  { result = Factory.RENDER_STRING(val[0][:value]); loc result, val[0] }
   | RENDER_EXPR expression epp_end { result = Factory.RENDER_EXPR(val[1]); loc result, val[0], val[2] }
-  | RENDER_EXPR LBRACE statements RBRACE epp_end { result = Factory.RENDER_EXPR(Factory.block_or_expression(*val[2])); loc result, val[0], val[4] }
+  | RENDER_EXPR LBRACE statements RBRACE epp_end { result = Factory.RENDER_EXPR(Factory.block_or_expression(val[2], val[1], val[3])); loc result, val[0], val[4] }
 
 epp_end
   : EPP_END
@@ -731,6 +863,8 @@ keyword
   | ATTR
   | FUNCTION
   | PRIVATE
+  | PLAN
+  | APPLY
 
 nil
   : { result = nil}
@@ -738,8 +872,8 @@ nil
 end
 
 ---- header ----
-require 'puppet'
-require 'puppet/pops'
+require_relative '../../../puppet'
+require_relative '../../../puppet/pops'
 
 module Puppet
   class ParseError < Puppet::Error; end

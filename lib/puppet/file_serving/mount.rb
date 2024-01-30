@@ -1,12 +1,13 @@
-require 'puppet/network/authstore'
-require 'puppet/util/logging'
-require 'puppet/file_serving'
-require 'puppet/file_serving/metadata'
-require 'puppet/file_serving/content'
+# frozen_string_literal: true
+
+require_relative '../../puppet/util/logging'
+require_relative '../../puppet/file_serving'
+require_relative '../../puppet/file_serving/metadata'
+require_relative '../../puppet/file_serving/content'
 
 # Broker access to the filesystem, converting local URIs into metadata
 # or content objects.
-class Puppet::FileServing::Mount < Puppet::Network::AuthStore
+class Puppet::FileServing::Mount
   include Puppet::Util::Logging
 
   attr_reader :name
@@ -18,8 +19,9 @@ class Puppet::FileServing::Mount < Puppet::Network::AuthStore
   # Create our object.  It must have a name.
   def initialize(name)
     unless name =~ %r{^[-\w]+$}
-      raise ArgumentError, "Invalid mount name format '#{name}'"
+      raise ArgumentError, _("Invalid mount name format '%{name}'") % { name: name }
     end
+
     @name = name
 
     super()

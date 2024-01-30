@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Some simple methods for helping manage automatic documentation generation.
 module Puppet::Util::Docs
   # Specify the actual doc string.
@@ -20,7 +22,7 @@ module Puppet::Util::Docs
   def doc
     extra = methods.find_all { |m| m.to_s =~ /^dochook_.+/ }.sort.collect { |m|
       self.send(m)
-    }.delete_if {|r| r.nil? }.collect {|r| "* #{r}"}.join("\n")
+    }.delete_if { |r| r.nil? }.collect { |r| "* #{r}" }.join("\n")
 
     if @doc
       scrub(@doc) + (extra.empty? ? '' : "\n\n#{extra}")
@@ -65,6 +67,7 @@ module Puppet::Util::Docs
 
   # There is nothing that would ever set this. It gets read in reference/type.rb, but will never have any value but nil.
   attr_reader :nodoc
+
   def nodoc?
     nodoc
   end
@@ -114,6 +117,7 @@ module Puppet::Util::Docs
   def scrub(text)
     # One-liners are easy! (One-liners may be buffered with extra newlines.)
     return text.strip if text.strip !~ /\n/
+
     excluding_first_line = text.partition("\n").last
     indent = excluding_first_line.scan(/^[ \t]*(?=\S)/).min || '' # prevent nil
     # Clean hanging indent, if any
@@ -121,7 +125,7 @@ module Puppet::Util::Docs
       text = text.gsub(/^#{indent}/, '')
     end
     # Clean trailing space
-    text.lines.map{|line|line.rstrip}.join("\n").rstrip
+    text.lines.map { |line| line.rstrip }.join("\n").rstrip
   end
 
   module_function :scrub

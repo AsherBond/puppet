@@ -1,9 +1,8 @@
-require 'puppet/util/ldap'
-require 'puppet/util/methodhelper'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/ldap'
 
 class Puppet::Util::Ldap::Connection
-  include Puppet::Util::MethodHelper
-
   attr_accessor :host, :port, :user, :password, :reset, :ssl
 
   attr_reader :connection
@@ -11,18 +10,20 @@ class Puppet::Util::Ldap::Connection
   # Return a default connection, using our default settings.
   def self.instance
     ssl = if Puppet[:ldaptls]
-      :tls
-        elsif Puppet[:ldapssl]
-          true
-        else
-          false
-        end
+            :tls
+          elsif Puppet[:ldapssl]
+            true
+          else
+            false
+          end
 
     options = {}
     options[:ssl] = ssl
-    if user = Puppet.settings[:ldapuser] and user != ""
+    user = Puppet.settings[:ldapuser]
+    if user && user != ""
       options[:user] = user
-      if pass = Puppet.settings[:ldappassword] and pass != ""
+      pass = Puppet.settings[:ldappassword]
+      if pass && pass != ""
         options[:password] = pass
       end
     end
@@ -34,12 +35,15 @@ class Puppet::Util::Ldap::Connection
     connection.unbind if connection.bound?
   end
 
-  def initialize(host, port, options = {})
-    raise Puppet::Error, "Could not set up LDAP Connection: Missing ruby/ldap libraries" unless Puppet.features.ldap?
+  def initialize(host, port, user: nil, password: nil, reset: nil, ssl: nil)
+    raise Puppet::Error, _("Could not set up LDAP Connection: Missing ruby/ldap libraries") unless Puppet.features.ldap?
 
-    @host, @port = host, port
-
-    set_options(options)
+    @host = host
+    @port = port
+    @user = user
+    @password = password
+    @reset = reset
+    @ssl = ssl
   end
 
   # Create a per-connection unique name.
@@ -54,18 +58,18 @@ class Puppet::Util::Ldap::Connection
 
   # Start our ldap connection.
   def start
-      case ssl
-      when :tls
-        @connection = LDAP::SSLConn.new(host, port, true)
-      when true
-        @connection = LDAP::SSLConn.new(host, port)
-      else
-        @connection = LDAP::Conn.new(host, port)
-      end
-      @connection.set_option(LDAP::LDAP_OPT_PROTOCOL_VERSION, 3)
-      @connection.set_option(LDAP::LDAP_OPT_REFERRALS, LDAP::LDAP_OPT_ON)
-      @connection.simple_bind(user, password)
+    case ssl
+    when :tls
+      @connection = LDAP::SSLConn.new(host, port, true)
+    when true
+      @connection = LDAP::SSLConn.new(host, port)
+    else
+      @connection = LDAP::Conn.new(host, port)
+    end
+    @connection.set_option(LDAP::LDAP_OPT_PROTOCOL_VERSION, 3)
+    @connection.set_option(LDAP::LDAP_OPT_REFERRALS, LDAP::LDAP_OPT_ON)
+    @connection.simple_bind(user, password)
   rescue => detail
-      raise Puppet::Error, "Could not connect to LDAP: #{detail}", detail.backtrace
+    raise Puppet::Error, _("Could not connect to LDAP: %{detail}") % { detail: detail }, detail.backtrace
   end
 end

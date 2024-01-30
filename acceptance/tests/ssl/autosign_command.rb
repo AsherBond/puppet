@@ -1,64 +1,116 @@
-require 'puppet/acceptance/common_utils'
-extend Puppet::Acceptance::CAUtils
-
 test_name "autosign command and csr attributes behavior (#7243,#7244)" do
+  skip_test "Test requires at least one non-master agent" if hosts.length == 1
+
+  tag 'audit:high',        # cert/ca core behavior
+      'audit:integration',
+      'server'             # Ruby implementation is deprecated
 
   def assert_key_generated(name)
-    assert_match(/Creating a new SSL key for #{name}/, stdout, "Expected agent to create a new SSL key for autosigning")
+    assert_match(/Creating a new RSA SSL key for #{name}/, stdout, "Expected agent to create a new SSL key for autosigning")
   end
 
   testdirs = {}
-  step "generate tmp dirs on all hosts" do
-    hosts.each { |host| testdirs[host] = host.tmpdir('autosign_command') }
-  end
+  test_certnames = []
 
-  teardown do
-    step "Remove autosign configuration"
-    testdirs.each do |host,testdir|
-      on(host, host_command("rm -rf '#{testdir}'") )
+  step "Generate tmp dirs on all hosts" do
+    hosts.each do |host|
+      testdirs[host] = host.tmpdir('autosign_command')
+      on(host, "chmod 755 #{testdirs[host]}")
     end
-    reset_agent_ssl
   end
 
   hostname = master.execute('facter hostname')
   fqdn = master.execute('facter fqdn')
 
-  reset_agent_ssl(false)
+  teardown do
+    step "clear test certs"
+    master_opts = {
+      'main' => { 'server' => fqdn },
+      'master' => { 'dns_alt_names' => "puppet,#{hostname},#{fqdn}" }
+    }
+    with_puppet_running_on(master, master_opts) do
+      on(master,
+         "puppetserver ca clean --certname #{test_certnames.join(',')}",
+         :acceptable_exit_codes => [0,24])
+    end
+  end
 
   step "Step 1: ensure autosign command can approve CSRs" do
+
+    # Our script needs to consume stdin (SERVER-1116)
+    # We should revert back to /bin/true once resolved
+    autosign_true_script = <<-EOF
+!#/bin/bash
+while read line
+do
+    : # noop command
+done
+exit 0
+EOF
+
+    autosign_true_script_path = "#{testdirs[master]}/mytrue"
+    create_remote_file(master, autosign_true_script_path, autosign_true_script)
+    on(master, "chmod 777 #{autosign_true_script_path}")
+
     master_opts = {
       'master' => {
-        'autosign' => '/bin/true',
-        'dns_alt_names' => "puppet,#{hostname},#{fqdn}",
+        'autosign' => autosign_true_script_path,
+        'dns_alt_names' => "puppet,#{hostname},#{fqdn}"
       }
     }
     with_puppet_running_on(master, master_opts) do
       agents.each do |agent|
         next if agent == master
 
-        on(agent, puppet("agent --test --server #{master} --waitforcert 0 --certname #{agent}-autosign"))
-        assert_key_generated(agent)
-        assert_match(/Caching certificate for #{agent}/, stdout, "Expected certificate to be autosigned")
+        test_certnames << (certname = "#{agent}-autosign")
+        on(agent, puppet("agent --test",
+                  "--waitforcert 0",
+                  "--ssldir", "'#{testdirs[agent]}/ssldir-autosign'",
+                  "--certname #{certname}"), :acceptable_exit_codes => [0,2])
+        unless agent['locale'] == 'ja'
+          assert_key_generated(agent)
+          assert_match(/Downloaded certificate for #{agent}/, stdout, "Expected certificate to be autosigned")
+        end
       end
     end
   end
 
-  reset_agent_ssl(false)
-
   step "Step 2: ensure autosign command can reject CSRs" do
+
+    # Our script needs to consume stdin (SERVER-1116)
+    # We should revert back to /bin/false once resolved
+    autosign_false_script = <<-EOF
+!#/bin/bash
+while read line
+do
+    : # noop command
+done
+exit 1
+EOF
+
+    autosign_false_script_path = "#{testdirs[master]}/myfalse"
+    create_remote_file(master, autosign_false_script_path, autosign_false_script)
+    on(master, "chmod 777 #{autosign_false_script_path}")
+
     master_opts = {
       'master' => {
-        'autosign' => '/bin/false',
-        'dns_alt_names' => "puppet,#{hostname},#{fqdn}",
+        'autosign' => autosign_false_script_path,
+        'dns_alt_names' => "puppet,#{hostname},#{fqdn}"
       }
     }
     with_puppet_running_on(master, master_opts) do
       agents.each do |agent|
         next if agent == master
 
-        on(agent, puppet("agent --test --server #{master} --waitforcert 0 --certname #{agent}-reject"), :acceptable_exit_codes => [1])
-        assert_key_generated(agent)
-        assert_match(/no certificate found/, stdout, "Expected certificate to not be autosigned")
+        test_certnames << (certname = "#{agent}-reject")
+        on(agent, puppet("agent --test",
+                        "--waitforcert 0",
+                        "--ssldir", "'#{testdirs[agent]}/ssldir-reject'",
+                        "--certname #{certname}"), :acceptable_exit_codes => [1])
+        unless agent['locale'] == 'ja'
+          assert_key_generated(agent)
+          assert_match(/Certificate for #{agent}-reject has not been signed yet/, stdout, "Expected certificate to not be autosigned")
+        end
       end
     end
   end
@@ -106,13 +158,11 @@ custom_attributes:
     end
   end
 
-  reset_agent_ssl(false)
-
   step "Step 5: successfully obtain a cert" do
     master_opts = {
       'master' => {
         'autosign' => autosign_inspect_csr_path,
-        'dns_alt_names' => "puppet,#{hostname},#{fqdn}",
+        'dns_alt_names' => "puppet,#{hostname},#{fqdn}"
       },
     }
     with_puppet_running_on(master, master_opts) do
@@ -120,8 +170,14 @@ custom_attributes:
         next if agent == master
 
         step "attempting to obtain cert for #{agent}"
-        on(agent, puppet("agent --test --server #{master} --waitforcert 0 --csr_attributes '#{agent_csr_attributes[agent]}' --certname #{agent}-attrs"), :acceptable_exit_codes => [0])
-        assert_key_generated(agent)
+        test_certnames << (certname = "#{agent}-attrs")
+        on(agent, puppet("agent --test",
+                         "--waitforcert 0",
+                         "--ssldir", "'#{testdirs[agent]}/ssldir-attrs'",
+                         "--csr_attributes '#{agent_csr_attributes[agent]}'",
+                         "--certname #{certname}"), :acceptable_exit_codes => [0,2])
+        assert_key_generated(agent) unless agent['locale'] == 'ja'
+        assert_match(/Downloaded certificate for #{agent}/, stdout, "Expected certificate to be autosigned")
       end
     end
   end

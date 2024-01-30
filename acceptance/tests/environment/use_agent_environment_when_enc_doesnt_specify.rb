@@ -1,40 +1,73 @@
-test_name "Agent should use agent environment if there is an enc that does not specify the environment"
+test_name "Agent should use agent environment if there is an enc that does not specify the environment" do
+  require 'puppet/acceptance/classifier_utils'
+  extend Puppet::Acceptance::ClassifierUtils
 
-testdir = create_tmpdir_for_user master, 'use_agent_env'
+  tag 'audit:high',
+      'audit:integration',
+      'server'
 
-create_remote_file master, "#{testdir}/enc.rb", <<END
-#!#{master['puppetbindir']}/ruby
+  # Remove all traces of the last used environment
+  teardown do
+    agents.each do |agent|
+      on(agent, puppet('config print lastrunfile')) do |command_result|
+        agent.rm_rf(command_result.stdout)
+      end
+    end
+  end
+
+  classify_nodes_as_agent_specified_if_classifer_present
+
+  testdir = create_tmpdir_for_user(master, 'use_agent_env')
+
+  create_remote_file(master, "#{testdir}/enc.rb", <<END)
+#!#{master['privatebindir']}/ruby
 puts <<YAML
 parameters:
 YAML
 END
-on master, "chmod 755 #{testdir}/enc.rb"
+  on(master, "chmod 755 '#{testdir}/enc.rb'")
 
-create_remote_file(master, "#{testdir}/different.pp", 'notify { "production environment": }')
-create_remote_file(master, "#{testdir}/more_different.pp", 'notify { "more_different_string": }')
-
-master_opts = {
-  'main' => {
-    'node_terminus' => 'exec',
-    'external_nodes' => "#{testdir}/enc.rb",
-    'manifest' => "#{testdir}/site.pp"
-  },
-  'production' => {
-    'manifest' => "#{testdir}/different.pp"
-  },
-  'more_different' => {
-    'manifest' => "#{testdir}/more_different.pp"
+  apply_manifest_on(master, <<-MANIFEST, :catch_failures => true)
+  File {
+    ensure => directory,
+    mode => "0770",
+    owner => #{master.puppet['user']},
+    group => #{master.puppet['group']},
   }
-}
+  file {
+    '#{testdir}/environments':;
+    '#{testdir}/environments/production':;
+    '#{testdir}/environments/production/manifests':;
+    '#{testdir}/environments/more_different/':;
+    '#{testdir}/environments/more_different/manifests':;
+  }
+  file { '#{testdir}/environments/production/manifests/site.pp':
+    ensure => file,
+    mode => "0640",
+    content => 'notify { "production environment": }',
+  }
+  file { '#{testdir}/environments/more_different/manifests/more_different.pp':
+    ensure => file,
+    mode => "0640",
+    content => 'notify { "more_different_string": }',
+  }
+  MANIFEST
 
-on master, "chown -R #{master['user']}:#{master['group']} #{testdir}"
-on master, "chmod -R g+rwX #{testdir}"
+  master_opts = {
+      'main' => {
+          'environmentpath' => "#{testdir}/environments",
+          'node_terminus'   => 'exec',
+          'external_nodes'  => "#{testdir}/enc.rb",
+      },
+  }
 
-with_puppet_running_on master, master_opts, testdir do
+  with_puppet_running_on(master, master_opts, testdir) do
 
-  agents.each do |agent|
-    run_agent_on(agent, "--no-daemonize --onetime --server #{master} --verbose --environment more_different")
-    assert_match(/more_different_string/, stdout, "Did not find more_different_string from \"more_different\" environment")
+    agents.each do |agent|
+      run_agent_on(agent, "--no-daemonize --onetime --verbose --environment more_different") do |result|
+        assert_match(/more_different_string/, result.stdout, "Did not find more_different_string from \"more_different\" environment")
+      end
+    end
+
   end
-
 end

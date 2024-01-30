@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Adaptable is a mix-in module that adds adaptability to a class.
 # This means that an adapter can
 # associate itself with an instance of the class and store additional data/have behavior.
@@ -15,7 +17,8 @@
 #   be exploited as the implementation of _being adaptable_ may change in the future.
 # @api private
 #
-module Puppet::Pops::Adaptable
+module Puppet::Pops
+module Adaptable
   # Base class for an Adapter.
   #
   # A typical adapter just defines some accessors.
@@ -67,12 +70,8 @@ module Puppet::Pops::Adaptable
     # @raise [ArgumentError] if the object is not adaptable
     #
     def self.get(o)
-      attr_name = :"@#{instance_var_name(self.name)}"
-      if o.instance_variable_defined?(attr_name)
-        o.instance_variable_get(attr_name)
-      else
-        nil
-      end
+      attr_name = self_attr_name
+      o.instance_variable_get(attr_name)
     end
 
     # Returns an existing adapter for the given object, or creates a new adapter if the
@@ -92,18 +91,14 @@ module Puppet::Pops::Adaptable
     # @raise [ArgumentError] if the given object o is not adaptable
     #
     def self.adapt(o, &block)
-      attr_name = :"@#{instance_var_name(self.name)}"
-      adapter = if o.instance_variable_defined?(attr_name) && value = o.instance_variable_get(attr_name)
-        value
-      else
-        associate_adapter(create_adapter(o), o)
-      end
+      attr_name = self_attr_name
+      value = o.instance_variable_get(attr_name)
+      adapter = value || associate_adapter(create_adapter(o), o)
       if block_given?
-        case block.arity
-          when 1
-            block.call(adapter)
-          else
-            block.call(adapter, o)
+        if block.arity == 1
+          block.call(adapter)
+        else
+          block.call(adapter, o)
         end
       end
       adapter
@@ -129,8 +124,7 @@ module Puppet::Pops::Adaptable
     def self.adapt_new(o, &block)
       adapter = associate_adapter(create_adapter(o), o)
       if block_given?
-        case block.arity
-        when 1
+        if block.arity == 1
           block.call(adapter)
         else
           block.call(adapter, o)
@@ -145,7 +139,7 @@ module Puppet::Pops::Adaptable
     # @return [nil] if the adapter has not been set
     #
     def self.clear(o)
-      attr_name = :"@#{instance_var_name(self.name)}"
+      attr_name = self_attr_name
       if o.instance_variable_defined?(attr_name)
         o.send(:remove_instance_variable, attr_name)
       else
@@ -170,8 +164,7 @@ module Puppet::Pops::Adaptable
     # @return [adapter] the given adapter
     #
     def self.associate_adapter(adapter, o)
-      attr_name = :"@#{instance_var_name(adapter.class.name)}"
-      o.instance_variable_set(attr_name, adapter)
+      o.instance_variable_set(self_attr_name, adapter)
       adapter
     end
 
@@ -181,10 +174,26 @@ module Puppet::Pops::Adaptable
     # @param name [String] the fully qualified name of a class
     # @return [String] the name with all '::' replaced by '_'
     # @api private
-    # @private
     #
     def self.instance_var_name(name)
-      name.split("::").join('_')
+      name.split(DOUBLE_COLON).join(USCORE)
     end
+
+    # Returns the name of the class, or the name of the type if the class represents an Object type
+    # @return [String] the name of the class or type
+    def self.type_name
+      self.name
+    end
+
+    # Returns a suitable instance variable name for the _name_ of this instance. The name is created by calling
+    # Adapter#instance_var_name and then cached.
+    # @return [String] the instance variable name for _name_
+    # @api private
+    # rubocop:disable Naming/MemoizedInstanceVariableName
+    def self.self_attr_name
+      @attr_name_sym ||= :"@#{instance_var_name(type_name)}"
+    end
+    # rubocop:enable Naming/MemoizedInstanceVariableName
   end
+end
 end

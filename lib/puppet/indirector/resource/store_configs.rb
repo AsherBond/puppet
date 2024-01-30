@@ -1,5 +1,7 @@
-require 'puppet/indirector/store_configs'
-require 'puppet/indirector/resource/validator'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/indirector/store_configs'
+require_relative '../../../puppet/indirector/resource/validator'
 
 class Puppet::Resource::StoreConfigs < Puppet::Indirector::StoreConfigs
   include Puppet::Resource::Validator
@@ -7,7 +9,6 @@ class Puppet::Resource::StoreConfigs < Puppet::Indirector::StoreConfigs
   desc %q{Part of the "storeconfigs" feature. Should not be directly set by end users.}
 
   def allow_remote_requests?
-    Puppet.deprecation_warning("Accessing resources on the network is deprecated. See http://links.puppetlabs.com/deprecate-networked-resource")
-    super
+    false
   end
 end

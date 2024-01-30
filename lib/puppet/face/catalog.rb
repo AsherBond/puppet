@@ -1,10 +1,12 @@
-require 'puppet/indirector/face'
+# frozen_string_literal: true
+
+require_relative '../../puppet/indirector/face'
 
 Puppet::Indirector::Face.define(:catalog, '0.0.1') do
-  copyright "Puppet Labs", 2011
+  copyright "Puppet Inc.", 2011
   license   "Apache 2 license; see COPYING"
 
-  summary "Compile, save, view, and convert catalogs."
+  summary _("Compile, save, view, and convert catalogs.")
   description <<-'EOT'
     This subcommand deals with catalogs, which are compiled per-node artifacts
     generated from a set of Puppet manifests. By default, it interacts with the
@@ -21,10 +23,10 @@ Puppet::Indirector::Face.define(:catalog, '0.0.1') do
     `certname`; use the `--terminus` option to change the source of the catalog.
   EOT
 
-  get_action(:destroy).summary "Invalid for this subcommand."
-  get_action(:search).summary "Invalid for this subcommand."
+  deactivate_action(:destroy)
+  deactivate_action(:search)
   find = get_action(:find)
-  find.summary "Retrieve the catalog for a node."
+  find.summary "Retrieve the catalog for the node from which the command is run."
   find.arguments "<certname>"
   find.returns <<-'EOT'
     A serialized catalog. When used from the Ruby API, returns a
@@ -50,7 +52,7 @@ Puppet::Indirector::Face.define(:catalog, '0.0.1') do
 
       $ puppet catalog apply --terminus rest
 
-      From `secret_agent.rb` (API example):
+      API example:
 
           # ...
           Puppet::Face[:catalog, '0.0.1'].download
@@ -60,18 +62,18 @@ Puppet::Indirector::Face.define(:catalog, '0.0.1') do
           # ...
     EOT
 
-    when_invoked do |options|
+    when_invoked do |_options|
       catalog = Puppet::Face[:catalog, "0.0.1"].find(Puppet[:certname]) or raise "Could not find catalog for #{Puppet[:certname]}"
       catalog = catalog.to_ral
 
-      report = Puppet::Transaction::Report.new("apply")
+      report = Puppet::Transaction::Report.new
       report.configuration_version = catalog.version
       report.environment = Puppet[:environment]
 
       Puppet::Util::Log.newdestination(report)
 
       begin
-        benchmark(:notice, "Finished catalog run") do
+        benchmark(:notice, "Finished catalog run in %{seconds} seconds") do
           catalog.apply(:report => report)
         end
       rescue => detail
@@ -80,6 +82,25 @@ Puppet::Indirector::Face.define(:catalog, '0.0.1') do
 
       report.finalize_report
       report
+    end
+  end
+
+  action(:compile) do
+    summary _("Compile a catalog.")
+    description <<-'EOT'
+      Compiles a catalog locally for a node, requiring access to modules, node classifier, etc.
+    EOT
+    examples <<-'EOT'
+      Compile catalog for node 'mynode':
+
+      $ puppet catalog compile mynode --codedir ...
+    EOT
+    returns <<-'EOT'
+      A serialized catalog.
+    EOT
+    when_invoked do |*args|
+      Puppet.settings.preferred_run_mode = :server
+      Puppet::Face[:catalog, :current].find(*args)
     end
   end
 
@@ -104,14 +125,14 @@ Puppet::Indirector::Face.define(:catalog, '0.0.1') do
 
       $ puppet catalog download
 
-      From `secret_agent.rb` (API example):
+      API example:
 
           Puppet::Face[:plugin, '0.0.1'].download
           Puppet::Face[:facts, '0.0.1'].upload
           Puppet::Face[:catalog, '0.0.1'].download
           # ...
     EOT
-    when_invoked do |options|
+    when_invoked do |_options|
       Puppet::Resource::Catalog.indirection.terminus_class = :rest
       Puppet::Resource::Catalog.indirection.cache_class = nil
       catalog = nil
@@ -123,7 +144,7 @@ Puppet::Indirector::Face.define(:catalog, '0.0.1') do
 
       Puppet::Resource::Catalog.indirection.terminus_class = :yaml
       Puppet::Face[:catalog, "0.0.1"].save(catalog)
-      Puppet.notice "Saved catalog for #{Puppet[:certname]} to yaml"
+      Puppet.notice "Saved catalog for #{Puppet[:certname]} to #{Puppet::Resource::Catalog.indirection.terminus.path(Puppet[:certname])}"
       nil
     end
   end

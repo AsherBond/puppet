@@ -1,306 +1,636 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/network/http/connection'
-require 'puppet/network/authentication'
+require 'puppet/test_ca'
 
 describe Puppet::Network::HTTP::Connection do
+  let(:host) { "me.example.com" }
+  let(:port) { 8140 }
+  let(:path) { '/foo' }
+  let(:url) { "https://#{host}:#{port}#{path}" }
+  let(:params) { { 'key' => 'a value' } }
+  let(:encoded_url_with_params) { "#{url}?%7B%22key%22:%22a%20value%22%7D" }
+  let(:ssl_context) { Puppet::SSL::SSLProvider.new.create_system_context(cacerts: []) }
+  let(:verifier) { Puppet::SSL::Verifier.new(host, ssl_context) }
 
-  let (:host) { "me" }
-  let (:port) { 54321 }
-  subject { Puppet::Network::HTTP::Connection.new(host, port, :verify => Puppet::SSL::Validator.no_validator) }
-  let (:httpok) { Net::HTTPOK.new('1.1', 200, '') }
+  shared_examples_for "an HTTP connection" do |klass|
+    subject { klass.new(host, port, :verifier => verifier) }
 
-  context "when providing HTTP connections" do
-    context "when initializing http instances" do
-      it "should return an http instance created with the passed host and port" do
-        conn = Puppet::Network::HTTP::Connection.new(host, port, :verify => Puppet::SSL::Validator.no_validator)
+    context "when providing HTTP connections" do
+      context "when initializing http instances" do
+        it "should return an http instance created with the passed host and port" do
+          conn = klass.new(host, port, :verifier => verifier)
 
-        expect(conn.address).to eq(host)
-        expect(conn.port).to eq(port)
-      end
+          expect(conn.address).to eq(host)
+          expect(conn.port).to eq(port)
+        end
 
-      it "should enable ssl on the http instance by default" do
-        conn = Puppet::Network::HTTP::Connection.new(host, port, :verify => Puppet::SSL::Validator.no_validator)
+        it "should enable ssl on the http instance by default" do
+          conn = klass.new(host, port, :verifier => verifier)
 
-        expect(conn).to be_use_ssl
-      end
+          expect(conn).to be_use_ssl
+        end
 
-      it "can disable ssl using an option" do
-        conn = Puppet::Network::HTTP::Connection.new(host, port, :use_ssl => false, :verify => Puppet::SSL::Validator.no_validator)
+        it "can disable ssl using an option and ignore the verify" do
+          conn = klass.new(host, port, :use_ssl => false)
 
-        expect(conn).to_not be_use_ssl
-      end
+          expect(conn).to_not be_use_ssl
+        end
 
-      it "can enable ssl using an option" do
-        conn = Puppet::Network::HTTP::Connection.new(host, port, :use_ssl => true, :verify => Puppet::SSL::Validator.no_validator)
+        it "can enable ssl using an option" do
+          conn = klass.new(host, port, :use_ssl => true, :verifier => verifier)
 
-        expect(conn).to be_use_ssl
-      end
+          expect(conn).to be_use_ssl
+        end
 
-      it "should raise Puppet::Error when invalid options are specified" do
-        expect { Puppet::Network::HTTP::Connection.new(host, port, :invalid_option => nil) }.to raise_error(Puppet::Error, 'Unrecognized option(s): :invalid_option')
-      end
-    end
-  end
+        it "ignores the ':verify' option when ssl is disabled" do
+          conn = klass.new(host, port, :use_ssl => false, :verifier => verifier)
 
-  context "when methods that accept a block are called with a block" do
-    let (:host) { "my_server" }
-    let (:port) { 8140 }
-    let (:subject) { Puppet::Network::HTTP::Connection.new(host, port, :use_ssl => false, :verify => Puppet::SSL::Validator.no_validator) }
+          expect(conn.verifier).to be_nil
+        end
 
-    before :each do
-      httpok.stubs(:body).returns ""
+        it "wraps the validator in an adapter" do
+          conn = klass.new(host, port, :verifier => verifier)
 
-      # This stubbing relies a bit more on knowledge of the internals of Net::HTTP
-      # than I would prefer, but it works on ruby 1.8.7 and 1.9.3, and it seems
-      # valuable enough to have tests for blocks that this is probably warranted.
-      socket = stub_everything("socket")
-      TCPSocket.stubs(:open).returns(socket)
+          expect(conn.verifier).to be_a(Puppet::SSL::Verifier)
+        end
 
-      Net::HTTP::Post.any_instance.stubs(:exec).returns("")
-      Net::HTTP::Head.any_instance.stubs(:exec).returns("")
-      Net::HTTP::Get.any_instance.stubs(:exec).returns("")
-      Net::HTTPResponse.stubs(:read_new).returns(httpok)
-    end
+        it "should raise Puppet::Error when invalid options are specified" do
+          expect { klass.new(host, port, :invalid_option => nil) }.to raise_error(Puppet::Error, 'Unrecognized option(s): :invalid_option')
+        end
 
-    [:request_get, :request_head, :request_post].each do |method|
-      context "##{method}" do
-        it "should yield to the block" do
-          block_executed = false
-          subject.send(method, "/foo", {}) do |response|
-            block_executed = true
-          end
-          block_executed.should == true
+        it "accepts a verifier" do
+          verifier = Puppet::SSL::Verifier.new(host, double('ssl_context'))
+          conn = klass.new(host, port, :use_ssl => true, :verifier => verifier)
+
+          expect(conn.verifier).to eq(verifier)
+        end
+
+        it "raises if the wrong verifier class is specified" do
+          expect {
+            klass.new(host, port, :verifier => Object.new)
+          }.to raise_error(ArgumentError,
+                           "Expected an instance of Puppet::SSL::Verifier but was passed a Object")
         end
       end
     end
-  end
 
-  class ConstantErrorValidator
-    def initialize(args)
-      @fails_with = args[:fails_with]
-      @error_string = args[:error_string] || ""
-      @peer_certs = args[:peer_certs] || []
-    end
+    context "for streaming GET requests" do
+      it 'yields the response' do
+        stub_request(:get, url)
 
-    def setup_connection(connection)
-      connection.stubs(:start).raises(OpenSSL::SSL::SSLError.new(@fails_with))
-    end
+        expect { |b|
+          subject.request_get('/foo', {}, &b)
+        }.to yield_with_args(Net::HTTPResponse)
+      end
 
-    def peer_certs
-      @peer_certs
-    end
+      it "stringifies keys and encodes values in the query" do
+        stub_request(:get, encoded_url_with_params)
 
-    def verify_errors
-      [@error_string]
-    end
-  end
+        subject.request_get("#{path}?#{params.to_json}") { |_| }
+      end
 
-  class NoProblemsValidator
-    def initialize(cert)
-      @cert = cert
-    end
+      it "merges custom headers with default ones" do
+        stub_request(:get, url).with(headers: { 'X-Foo' => 'Bar', 'User-Agent' => /./ })
 
-    def setup_connection(connection)
-    end
+        subject.request_get(path, {'X-Foo' => 'Bar'}) { |_| }
+      end
 
-    def peer_certs
-      [@cert]
-    end
+      it "returns the response" do
+        stub_request(:get, url)
 
-    def verify_errors
-      []
-    end
-  end
+        response = subject.request_get(path) { |_| }
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+        expect(response.code).to eq("200")
+      end
 
-  shared_examples_for 'ssl verifier' do
-    include PuppetSpec::Files
+      it "accepts a URL string as the path" do
+        url_with_query = "#{url}?foo=bar"
+        stub_request(:get, url_with_query)
 
-    let (:host) { "my_server" }
-    let (:port) { 8140 }
-
-    it "should provide a useful error message when one is available and certificate validation fails", :unless => Puppet.features.microsoft_windows? do
-      connection = Puppet::Network::HTTP::Connection.new(
-        host, port,
-        :verify => ConstantErrorValidator.new(:fails_with => 'certificate verify failed',
-                                              :error_string => 'shady looking signature'))
-
-      expect do
-        connection.get('request')
-      end.to raise_error(Puppet::Error, "certificate verify failed: [shady looking signature]")
-    end
-
-    it "should provide a helpful error message when hostname was not match with server certificate", :unless => Puppet.features.microsoft_windows? do
-      Puppet[:confdir] = tmpdir('conf')
-
-      connection = Puppet::Network::HTTP::Connection.new(
-      host, port,
-      :verify => ConstantErrorValidator.new(
-        :fails_with => 'hostname was not match with server certificate',
-        :peer_certs => [Puppet::SSL::CertificateAuthority.new.generate(
-          'not_my_server', :dns_alt_names => 'foo,bar,baz')]))
-
-      expect do
-        connection.get('request')
-      end.to raise_error(Puppet::Error) do |error|
-        error.message =~ /Server hostname 'my_server' did not match server certificate; expected one of (.+)/
-        $1.split(', ').should =~ %w[DNS:foo DNS:bar DNS:baz DNS:not_my_server not_my_server]
+        response = subject.request_get(url_with_query) { |_| }
+        expect(response).to be_an_instance_of(Net::HTTPOK)
       end
     end
 
-    it "should pass along the error message otherwise" do
-      connection = Puppet::Network::HTTP::Connection.new(
-        host, port,
-        :verify => ConstantErrorValidator.new(:fails_with => 'some other message'))
+    context "for streaming head requests" do
+      it 'yields the response when request_head is called' do
+        stub_request(:head, url)
 
-      expect do
-        connection.get('request')
-      end.to raise_error(/some other message/)
-    end
-
-    it "should check all peer certificates for upcoming expiration", :unless => Puppet.features.microsoft_windows? do
-      Puppet[:confdir] = tmpdir('conf')
-      cert = Puppet::SSL::CertificateAuthority.new.generate(
-        'server', :dns_alt_names => 'foo,bar,baz')
-
-      connection = Puppet::Network::HTTP::Connection.new(
-        host, port,
-        :verify => NoProblemsValidator.new(cert))
-
-      Net::HTTP.any_instance.stubs(:start)
-      Net::HTTP.any_instance.stubs(:request).returns(httpok)
-
-      connection.expects(:warn_if_near_expiration).with(cert)
-
-      connection.get('request')
-    end
-  end
-
-  context "when using single use HTTPS connections" do
-    it_behaves_like 'ssl verifier' do
-    end
-  end
-
-  context "when using persistent HTTPS connections" do
-    around :each do |example|
-      pool = Puppet::Network::HTTP::Pool.new
-      Puppet.override(:http_pool => pool) do
-        example.run
+        expect { |b|
+          subject.request_head('/foo', {}, &b)
+        }.to yield_with_args(Net::HTTPResponse)
       end
-      pool.close
+
+      it "stringifies keys and encodes values in the query" do
+        stub_request(:head, encoded_url_with_params)
+
+        subject.request_head("#{path}?#{params.to_json}") { |_| }
+      end
+
+      it "merges custom headers with default ones" do
+        stub_request(:head, url).with(headers: { 'X-Foo' => 'Bar', 'User-Agent' => /./ })
+
+        subject.request_head(path, {'X-Foo' => 'Bar'}) { |_| }
+      end
+
+      it "returns the response" do
+        stub_request(:head, url)
+
+        response = subject.request_head(path) { |_| }
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+        expect(response.code).to eq("200")
+      end
+
+      it "accepts a URL string as the path" do
+        url_with_query = "#{url}?foo=bar"
+        stub_request(:head, url_with_query)
+
+        response = subject.request_head(url_with_query) { |_| }
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+      end
     end
 
-    it_behaves_like 'ssl verifier' do
+    context "for streaming post requests" do
+      it 'yields the response when request_post is called' do
+        stub_request(:post, url)
+
+        expect { |b|
+          subject.request_post('/foo', "param: value", &b)
+        }.to yield_with_args(Net::HTTPResponse)
+      end
+
+      it "stringifies keys and encodes values in the query" do
+        stub_request(:post, encoded_url_with_params)
+
+        subject.request_post("#{path}?#{params.to_json}", "") { |_| }
+      end
+
+      it "merges custom headers with default ones" do
+        stub_request(:post, url).with(headers: { 'X-Foo' => 'Bar', 'User-Agent' => /./ })
+
+        subject.request_post(path, "", {'X-Foo' => 'Bar'}) { |_| }
+      end
+
+      it "returns the response" do
+        stub_request(:post, url)
+
+        response = subject.request_post(path, "") { |_| }
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+        expect(response.code).to eq("200")
+      end
+
+      it "accepts a URL string as the path" do
+        url_with_query = "#{url}?foo=bar"
+        stub_request(:post, url_with_query)
+
+        response = subject.request_post(url_with_query, "") { |_| }
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+      end
+    end
+
+    context "for GET requests" do
+      it "includes default HTTP headers" do
+        stub_request(:get, url).with(headers: {'User-Agent' => /./})
+
+        subject.get(path)
+      end
+
+      it "stringifies keys and encodes values in the query" do
+        stub_request(:get, encoded_url_with_params)
+
+        subject.get("#{path}?#{params.to_json}")
+      end
+
+      it "merges custom headers with default ones" do
+        stub_request(:get, url).with(headers: { 'X-Foo' => 'Bar', 'User-Agent' => /./ })
+
+        subject.get(path, {'X-Foo' => 'Bar'})
+      end
+
+      it "returns the response" do
+        stub_request(:get, url)
+
+        response = subject.get(path)
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+        expect(response.code).to eq("200")
+      end
+
+      it "returns the entire response body" do
+        stub_request(:get, url).to_return(body: "abc")
+
+        response = subject.get(path)
+        expect(response.body).to eq("abc")
+      end
+
+      it "accepts a URL string as the path" do
+        url_with_query = "#{url}?foo=bar"
+        stub_request(:get, url_with_query)
+
+        response = subject.get(url_with_query)
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+      end
+    end
+
+    context "for HEAD requests" do
+      it "includes default HTTP headers" do
+        stub_request(:head, url).with(headers: {'User-Agent' => /./})
+
+        subject.head(path)
+      end
+
+      it "stringifies keys and encodes values in the query" do
+        stub_request(:head, encoded_url_with_params)
+
+        subject.head("#{path}?#{params.to_json}")
+      end
+
+      it "merges custom headers with default ones" do
+        stub_request(:head, url).with(headers: { 'X-Foo' => 'Bar', 'User-Agent' => /./ })
+
+        subject.head(path, {'X-Foo' => 'Bar'})
+      end
+
+      it "returns the response" do
+        stub_request(:head, url)
+
+        response = subject.head(path)
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+        expect(response.code).to eq("200")
+      end
+
+      it "accepts a URL string as the path" do
+        url_with_query = "#{url}?foo=bar"
+        stub_request(:head, url_with_query)
+
+        response = subject.head(url_with_query)
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+      end
+    end
+
+    context "for PUT requests" do
+      it "includes default HTTP headers" do
+        stub_request(:put, url).with(headers: {'User-Agent' => /./})
+
+        subject.put(path, "", {'Content-Type' => 'text/plain'})
+      end
+
+      it "stringifies keys and encodes values in the query" do
+        stub_request(:put, encoded_url_with_params)
+
+        subject.put("#{path}?#{params.to_json}", "")
+      end
+
+      it "includes custom headers" do
+        stub_request(:put, url).with(headers: { 'X-Foo' => 'Bar' })
+
+        subject.put(path, "", {'X-Foo' => 'Bar', 'Content-Type' => 'text/plain'})
+      end
+
+      it "returns the response" do
+        stub_request(:put, url)
+
+        response = subject.put(path, "", {'Content-Type' => 'text/plain'})
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+        expect(response.code).to eq("200")
+      end
+
+      it "sets content-type for the body" do
+        stub_request(:put, url).with(headers: {"Content-Type" => "text/plain"})
+
+        subject.put(path, "hello", {'Content-Type' => 'text/plain'})
+      end
+
+      it 'sends an empty body' do
+        stub_request(:put, url).with(body: '')
+
+        subject.put(path, nil)
+      end
+
+      it 'defaults content-type to application/x-www-form-urlencoded' do
+        stub_request(:put, url).with(headers: {'Content-Type' => 'application/x-www-form-urlencoded'})
+
+        subject.put(path, '')
+      end
+
+      it "accepts a URL string as the path" do
+        url_with_query = "#{url}?foo=bar"
+        stub_request(:put, url_with_query)
+
+        response = subject.put(url_with_query, '')
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+      end
+    end
+
+    context "for POST requests" do
+      it "includes default HTTP headers" do
+        stub_request(:post, url).with(headers: {'User-Agent' => /./})
+
+        subject.post(path, "", {'Content-Type' => 'text/plain'})
+      end
+
+      it "stringifies keys and encodes values in the query" do
+        stub_request(:post, encoded_url_with_params)
+
+        subject.post("#{path}?#{params.to_json}", "", {'Content-Type' => 'text/plain'})
+      end
+
+      it "includes custom headers" do
+        stub_request(:post, url).with(headers: { 'X-Foo' => 'Bar' })
+
+        subject.post(path, "", {'X-Foo' => 'Bar', 'Content-Type' => 'text/plain'})
+      end
+
+      it "returns the response" do
+        stub_request(:post, url)
+
+        response = subject.post(path, "", {'Content-Type' => 'text/plain'})
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+        expect(response.code).to eq("200")
+      end
+
+      it "sets content-type for the body" do
+        stub_request(:post, url).with(headers: {"Content-Type" => "text/plain"})
+
+        subject.post(path, "hello", {'Content-Type' => 'text/plain'})
+      end
+
+      it 'sends an empty body' do
+        stub_request(:post, url).with(body: '')
+
+        subject.post(path, nil)
+      end
+
+      it 'defaults content-type to application/x-www-form-urlencoded' do
+        stub_request(:post, url).with(headers: {'Content-Type' => 'application/x-www-form-urlencoded'})
+
+        subject.post(path, "")
+      end
+
+      it "accepts a URL string as the path" do
+        url_with_query = "#{url}?foo=bar"
+        stub_request(:post, url_with_query)
+
+        response = subject.post(url_with_query, '')
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+      end
+    end
+
+    context "for DELETE requests" do
+      it "includes default HTTP headers" do
+        stub_request(:delete, url).with(headers: {'User-Agent' => /./})
+
+        subject.delete(path)
+      end
+
+      it "merges custom headers with default ones" do
+        stub_request(:delete, url).with(headers: { 'X-Foo' => 'Bar', 'User-Agent' => /./ })
+
+        subject.delete(path, {'X-Foo' => 'Bar'})
+      end
+
+      it "stringifies keys and encodes values in the query" do
+        stub_request(:delete, encoded_url_with_params)
+
+        subject.delete("#{path}?#{params.to_json}")
+      end
+
+      it "returns the response" do
+        stub_request(:delete, url)
+
+        response = subject.delete(path)
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+        expect(response.code).to eq("200")
+      end
+
+      it "returns the entire response body" do
+        stub_request(:delete, url).to_return(body: "abc")
+
+        expect(subject.delete(path).body).to eq("abc")
+      end
+
+      it "accepts a URL string as the path" do
+        url_with_query = "#{url}?foo=bar"
+        stub_request(:delete, url_with_query)
+
+        response = subject.delete(url_with_query)
+        expect(response).to be_an_instance_of(Net::HTTPOK)
+      end
+    end
+
+    context "when response is a redirect" do
+      subject { klass }
+
+      def create_connection(options = {})
+        options[:use_ssl] = false
+        options[:verifier] = verifier
+        subject.new(host, port, options)
+      end
+
+      def redirect_to(url)
+        { status: 302, headers: { 'Location' => url } }
+      end
+
+      it "should follow the redirect to the final resource location" do
+        stub_request(:get, "http://me.example.com:8140/foo").to_return(redirect_to("http://me.example.com:8140/bar"))
+        stub_request(:get, "http://me.example.com:8140/bar").to_return(status: 200)
+
+        create_connection.get('/foo')
+      end
+
+      def expects_limit_exceeded(conn)
+        expect {
+          conn.get('/')
+        }.to raise_error(Puppet::Network::HTTP::RedirectionLimitExceededException)
+      end
+
+      it "should not follow any redirects when the limit is 0" do
+        stub_request(:get, "http://me.example.com:8140/").to_return(redirect_to("http://me.example.com:8140/foo"))
+
+        conn = create_connection(:redirect_limit => 0)
+        expects_limit_exceeded(conn)
+      end
+
+      it "should follow the redirect once" do
+        stub_request(:get, "http://me.example.com:8140/").to_return(redirect_to("http://me.example.com:8140/foo"))
+        stub_request(:get, "http://me.example.com:8140/foo").to_return(redirect_to("http://me.example.com:8140/bar"))
+
+        conn = create_connection(:redirect_limit => 1)
+        expects_limit_exceeded(conn)
+      end
+
+      it "should raise an exception when the redirect limit is exceeded" do
+        stub_request(:get, "http://me.example.com:8140/").to_return(redirect_to("http://me.example.com:8140/foo"))
+        stub_request(:get, "http://me.example.com:8140/foo").to_return(redirect_to("http://me.example.com:8140/bar"))
+        stub_request(:get, "http://me.example.com:8140/bar").to_return(redirect_to("http://me.example.com:8140/baz"))
+        stub_request(:get, "http://me.example.com:8140/baz").to_return(redirect_to("http://me.example.com:8140/qux"))
+
+        conn = create_connection(:redirect_limit => 3)
+        expects_limit_exceeded(conn)
+      end
+
+      it 'raises an exception when the location header is missing' do
+        stub_request(:get, "http://me.example.com:8140/").to_return(status: 302)
+
+        expect {
+            create_connection.get('/')
+          }.to raise_error(Puppet::HTTP::ProtocolError, /Location response header is missing/)
+      end
+    end
+
+    context "when response indicates an overloaded server" do
+      def retry_after(datetime)
+        stub_request(:get, url)
+          .to_return(status: [503, 'Service Unavailable'], headers: {'Retry-After' => datetime}).then
+          .to_return(status: 200)
+      end
+
+      it "should return a 503 response if Retry-After is not set" do
+        stub_request(:get, url).to_return(status: [503, 'Service Unavailable'])
+
+        result = subject.get('/foo')
+        expect(result.code).to eq("503")
+      end
+
+      it "should return a 503 response if Retry-After is not convertible to an Integer or RFC 2822 Date" do
+        retry_after('foo')
+
+        expect {
+          subject.get('/foo')
+        }.to raise_error(Puppet::HTTP::ProtocolError, /Failed to parse Retry-After header 'foo'/)
+      end
+
+      it "should close the connection before sleeping" do
+        retry_after('42')
+
+        http1 = Net::HTTP.new(host, port)
+        http1.use_ssl = true
+        allow(http1).to receive(:started?).and_return(true)
+
+        http2 = Net::HTTP.new(host, port)
+        http2.use_ssl = true
+        allow(http1).to receive(:started?).and_return(true)
+
+        # The "with_connection" method is required to yield started connections
+        pool = Puppet.runtime[:http].pool
+
+        allow(pool).to receive(:with_connection).and_yield(http1).and_yield(http2)
+
+        expect(http1).to receive(:finish).ordered
+        expect(::Kernel).to receive(:sleep).with(42).ordered
+
+        subject.get('/foo')
+      end
+
+      it "should sleep and retry if Retry-After is an Integer" do
+        retry_after('42')
+
+        expect(::Kernel).to receive(:sleep).with(42)
+
+        result = subject.get('/foo')
+        expect(result.code).to eq("200")
+      end
+
+      it "should sleep and retry if Retry-After is an RFC 2822 Date" do
+        retry_after('Wed, 13 Apr 2005 15:18:05 GMT')
+
+        now = DateTime.new(2005, 4, 13, 8, 17, 5, '-07:00')
+        allow(DateTime).to receive(:now).and_return(now)
+
+        expect(::Kernel).to receive(:sleep).with(60)
+
+        result = subject.get('/foo')
+        expect(result.code).to eq("200")
+      end
+
+      it "should sleep for no more than the Puppet runinterval" do
+        retry_after('60')
+
+        Puppet[:runinterval] = 30
+
+        expect(::Kernel).to receive(:sleep).with(30)
+
+        subject.get('/foo')
+      end
+
+      it "should sleep for 0 seconds if the RFC 2822 date has past" do
+        retry_after('Wed, 13 Apr 2005 15:18:05 GMT')
+
+        expect(::Kernel).to receive(:sleep).with(0)
+
+        subject.get('/foo')
+      end
+    end
+
+    context "basic auth" do
+      let(:auth) { { :user => 'user', :password => 'password' } }
+      let(:creds) { [ 'user', 'password'] }
+
+      it "is allowed in get requests" do
+        stub_request(:get, url).with(basic_auth: creds)
+
+        subject.get('/foo', nil, :basic_auth => auth)
+      end
+
+      it "is allowed in post requests" do
+        stub_request(:post, url).with(basic_auth: creds)
+
+        subject.post('/foo', 'data', nil, :basic_auth => auth)
+      end
+
+      it "is allowed in head requests" do
+        stub_request(:head, url).with(basic_auth: creds)
+
+        subject.head('/foo', nil, :basic_auth => auth)
+      end
+
+      it "is allowed in delete requests" do
+        stub_request(:delete, url).with(basic_auth: creds)
+
+        subject.delete('/foo', nil, :basic_auth => auth)
+      end
+
+      it "is allowed in put requests" do
+        stub_request(:put, url).with(basic_auth: creds)
+
+        subject.put('/foo', 'data', nil, :basic_auth => auth)
+      end
+    end
+
+    it "sets HTTP User-Agent header" do
+      puppet_ua = "Puppet/#{Puppet.version} Ruby/#{RUBY_VERSION}-p#{RUBY_PATCHLEVEL} (#{RUBY_PLATFORM})"
+      stub_request(:get, url).with(headers: { 'User-Agent' => puppet_ua })
+
+      subject.get('/foo')
+    end
+
+    describe 'connection request errors' do
+      it "logs and raises generic http errors" do
+        generic_error = Net::HTTPError.new('generic error', double("response"))
+        stub_request(:get, url).to_raise(generic_error)
+
+        expect(Puppet).to receive(:log_exception).with(anything, /^.*failed.*: generic error$/)
+        expect { subject.get('/foo') }.to raise_error(generic_error)
+      end
+
+      it "logs and raises timeout errors" do
+        timeout_error = Net::OpenTimeout.new
+        stub_request(:get, url).to_raise(timeout_error)
+
+        expect(Puppet).to receive(:log_exception).with(anything, /^.*timed out .*after .* seconds/)
+        expect { subject.get('/foo') }.to raise_error(timeout_error)
+      end
+
+      it "logs and raises eof errors" do
+        eof_error = EOFError
+        stub_request(:get, url).to_raise(eof_error)
+
+        expect(Puppet).to receive(:log_exception).with(anything, /^.*interrupted after .* seconds$/)
+        expect { subject.get('/foo') }.to raise_error(eof_error)
+      end
     end
   end
 
-  context "when response is a redirect" do
-    let (:site)       { Puppet::Network::HTTP::Site.new('http', 'my_server', 8140) }
-    let (:other_site) { Puppet::Network::HTTP::Site.new('http', 'redirected', 9292) }
-    let (:other_path) { "other-path" }
-    let (:verify) { Puppet::SSL::Validator.no_validator }
-    let (:subject) { Puppet::Network::HTTP::Connection.new(site.host, site.port, :use_ssl => false, :verify => verify) }
-    let (:httpredirection) do
-      response = Net::HTTPFound.new('1.1', 302, 'Moved Temporarily')
-      response['location'] = "#{other_site.addr}/#{other_path}"
-      response.stubs(:read_body).returns("This resource has moved")
-      response
-    end
-
-    def create_connection(site, options)
-      options[:use_ssl] = site.use_ssl?
-      Puppet::Network::HTTP::Connection.new(site.host, site.port, options)
-    end
-
-    it "should redirect to the final resource location" do
-      http = stub('http')
-      http.stubs(:request).returns(httpredirection).then.returns(httpok)
-
-      seq = sequence('redirection')
-      pool = Puppet.lookup(:http_pool)
-      pool.expects(:with_connection).with(site, anything).yields(http).in_sequence(seq)
-      pool.expects(:with_connection).with(other_site, anything).yields(http).in_sequence(seq)
-
-      conn = create_connection(site, :verify => verify)
-      conn.get('/foo')
-    end
-
-    def expects_redirection(conn, &block)
-      http = stub('http')
-      http.stubs(:request).returns(httpredirection)
-
-      pool = Puppet.lookup(:http_pool)
-      pool.expects(:with_connection).with(site, anything).yields(http)
-      pool
-    end
-
-    def expects_limit_exceeded(conn)
-      expect {
-        conn.get('/')
-      }.to raise_error(Puppet::Network::HTTP::RedirectionLimitExceededException)
-    end
-
-    it "should not redirect when the limit is 0" do
-      conn = create_connection(site, :verify => verify, :redirect_limit => 0)
-
-      pool = expects_redirection(conn)
-      pool.expects(:with_connection).with(other_site, anything).never
-
-      expects_limit_exceeded(conn)
-    end
-
-    it "should redirect only once" do
-      conn = create_connection(site, :verify => verify, :redirect_limit => 1)
-
-      pool = expects_redirection(conn)
-      pool.expects(:with_connection).with(other_site, anything).once
-
-      expects_limit_exceeded(conn)
-    end
-
-    it "should raise an exception when the redirect limit is exceeded" do
-      conn = create_connection(site, :verify => verify, :redirect_limit => 3)
-
-      pool = expects_redirection(conn)
-      pool.expects(:with_connection).with(other_site, anything).times(3)
-
-      expects_limit_exceeded(conn)
-    end
-  end
-
-  it "allows setting basic auth on get requests" do
-    expect_request_with_basic_auth
-
-    subject.get('/path', nil, :basic_auth => { :user => 'user', :password => 'password' })
-  end
-
-  it "allows setting basic auth on post requests" do
-    expect_request_with_basic_auth
-
-    subject.post('/path', 'data', nil, :basic_auth => { :user => 'user', :password => 'password' })
-  end
-
-  it "allows setting basic auth on head requests" do
-    expect_request_with_basic_auth
-
-    subject.head('/path', nil, :basic_auth => { :user => 'user', :password => 'password' })
-  end
-
-  it "allows setting basic auth on delete requests" do
-    expect_request_with_basic_auth
-
-    subject.delete('/path', nil, :basic_auth => { :user => 'user', :password => 'password' })
-  end
-
-  it "allows setting basic auth on put requests" do
-    expect_request_with_basic_auth
-
-    subject.put('/path', 'data', nil, :basic_auth => { :user => 'user', :password => 'password' })
-  end
-
-  def expect_request_with_basic_auth
-    Net::HTTP.any_instance.expects(:request).with do |request|
-      expect(request['authorization']).to match(/^Basic/)
-    end.returns(httpok)
+  describe Puppet::Network::HTTP::Connection do
+    it_behaves_like "an HTTP connection", described_class
   end
 end

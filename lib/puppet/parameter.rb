@@ -1,6 +1,7 @@
-require 'puppet/util/methodhelper'
-require 'puppet/util/logging'
-require 'puppet/util/docs'
+# frozen_string_literal: true
+
+require_relative '../puppet/util/logging'
+require_relative '../puppet/util/docs'
 
 # The Parameter class is the implementation of a resource's attributes of _parameter_ kind.
 # The Parameter class is also the base class for {Puppet::Property}, and is used to describe meta-parameters
@@ -22,26 +23,12 @@ class Puppet::Parameter
   include Puppet::Util
   include Puppet::Util::Errors
   include Puppet::Util::Logging
-  include Puppet::Util::MethodHelper
 
-  require 'puppet/parameter/value_collection'
+  require_relative 'parameter/value_collection'
 
   class << self
     include Puppet::Util
     include Puppet::Util::Docs
-    # Unused?
-    # @todo The term "validater" only appears in this location in the Puppet code base. There is `validate`
-    #   which seems to works fine without this attribute declaration.
-    # @api private
-    #
-    attr_reader :validater
-
-    # Unused?
-    # @todo The term "munger" only appears in this location in the Puppet code base. There is munge and unmunge
-    #  and they seem to work perfectly fine without this attribute declaration.
-    # @api private
-    #
-    attr_reader :munger
 
     # @return [Symbol] The parameter name as given when it was created.
     attr_reader :name
@@ -100,11 +87,21 @@ class Puppet::Parameter
       else
         if value.nil?
           raise Puppet::DevError,
-            "Either a default value or block must be provided"
+                "Either a default value or block must be provided"
         end
         define_method(:default) do value end
       end
     end
+
+    # rubocop:disable Naming/PredicateName
+    def sensitive(value = nil, &block)
+      if block
+        define_method(:is_sensitive, &block)
+      else
+        define_method(:is_sensitive) do value end
+      end
+    end
+    # rubocop:enable Naming/PredicateName
 
     # Produces a documentation string.
     # If an enumeration of _valid values_ has been defined, it is appended to the documentation
@@ -117,12 +114,14 @@ class Puppet::Parameter
 
       unless defined?(@addeddocvals)
         @doc = Puppet::Util::Docs.scrub(@doc)
-        if vals = value_collection.doc
+        vals = value_collection.doc
+        if vals
           @doc << "\n\n#{vals}"
         end
 
-        if f = self.required_features
-          @doc << "\n\nRequires features #{f.flatten.collect { |f| f.to_s }.join(" ")}."
+        features = self.required_features
+        if features
+          @doc << "\n\nRequires features #{features.flatten.collect { |f| f.to_s }.join(" ")}."
         end
         @addeddocvals = true
       end
@@ -182,15 +181,15 @@ class Puppet::Parameter
     end
 
     # @overload unmunge {|| ... }
-    # Defines an optional method used to convert the parameter value to DSL/string form from an internal form.
+    # Defines an optional method used to convert the parameter value from internal form to DSL/string form.
     # If an `unmunge` method is not defined, the internal form is used.
     # @see munge
-    # @note This adds a method with the name `unmunge` in the created parameter class.
+    # @note This adds a method with the name `unsafe_unmunge` in the created parameter class.
     # @dsl type
     # @api public
     #
     def unmunge(&block)
-      define_method(:unmunge, &block)
+      define_method(:unsafe_unmunge, &block)
     end
 
     # Sets a marker indicating that this parameter is the _namevar_ (unique identifier) of the type
@@ -308,6 +307,10 @@ class Puppet::Parameter
   #
   attr_accessor :parent
 
+  # @!attribute [rw] sensitive
+  #   @return [true, false] If this parameter has been tagged as sensitive.
+  attr_accessor :sensitive
+
   # Returns a string representation of the resource's containment path in
   # the catalog.
   # @return [String]
@@ -330,7 +333,6 @@ class Puppet::Parameter
     resource.version
   end
 
-
   # Initializes the parameter with a required resource reference and optional attribute settings.
   # The option `:resource` must be specified or an exception is raised. Any additional options passed
   # are used to initialize the attributes of this parameter by treating each key in the `options` hash as
@@ -341,16 +343,15 @@ class Puppet::Parameter
   # @api public
   # @note A parameter should be created via the DSL method {Puppet::Type::newparam}
   #
-  def initialize(options = {})
-    options = symbolize_options(options)
-    if resource = options[:resource]
+  def initialize(resource: nil, value: nil, should: nil)
+    if resource
       self.resource = resource
-      options.delete(:resource)
     else
-      raise Puppet::DevError, "No resource set for #{self.class.name}"
+      raise Puppet::DevError, _("No resource set for %{name}") % { name: self.class.name }
     end
 
-    set_options(options)
+    self.value = value if value
+    self.should = should if should
   end
 
   # Writes the given `msg` to the log with the loglevel indicated by the associated resource's
@@ -385,11 +386,10 @@ class Puppet::Parameter
   def noop
     @noop ||= false
     tmp = @noop || self.resource.noop || Puppet[:noop] || false
-    #debug "noop is #{tmp}"
     tmp
   end
 
-  # Returns an array of strings representing the containment heirarchy
+  # Returns an array of strings representing the containment hierarchy
   # (types/classes) that make up the path to the resource from the root
   # of the catalog.  This is mostly used for logging purposes.
   #
@@ -417,10 +417,21 @@ class Puppet::Parameter
   # @return [Object] the unmunged value
   #
   def unmunge(value)
+    return value if value.is_a?(Puppet::Pops::Evaluator::DeferredValue)
+
+    unsafe_unmunge(value)
+  end
+
+  # This is the default implementation of `unmunge` that simply produces the value (if it is valid).
+  # The DSL method {unmunge} should be used to define an overriding method if unmunging is required.
+  #
+  # @api private
+  #
+  def unsafe_unmunge(value)
     value
   end
 
-  # Munges the value to internal form.
+  # Munges the value from DSL form to internal form.
   # This implementation of `munge` provides exception handling around the specified munging of this parameter.
   # @note This method should not be overridden. Use the DSL method {munge} to define a munging method
   #   if required.
@@ -428,13 +439,15 @@ class Puppet::Parameter
   # @return [Object] the munged (internal) value
   #
   def munge(value)
+    return value if value.is_a?(Puppet::Pops::Evaluator::DeferredValue)
+
     begin
       ret = unsafe_munge(value)
     rescue Puppet::Error => detail
-      Puppet.debug "Reraising #{detail}"
+      Puppet.debug { "Reraising #{detail}" }
       raise
     rescue => detail
-      raise Puppet::DevError, "Munging failed for value #{value.inspect} in class #{self.name}: #{detail}", detail.backtrace
+      raise Puppet::DevError, _("Munging failed for value %{value} in class %{class_name}: %{detail}") % { value: value.inspect, class_name: self.name, detail: detail }, detail.backtrace
     end
     ret
   end
@@ -461,6 +474,8 @@ class Puppet::Parameter
   # @api public
   #
   def validate(value)
+    return if value.is_a?(Puppet::Pops::Evaluator::DeferredValue)
+
     begin
       unsafe_validate(value)
     rescue ArgumentError => detail
@@ -468,7 +483,7 @@ class Puppet::Parameter
     rescue Puppet::Error, TypeError
       raise
     rescue => detail
-      raise Puppet::DevError, "Validate method failed for class #{self.name}: #{detail}", detail.backtrace
+      raise Puppet::DevError, _("Validate method failed for class %{class_name}: %{detail}") % { class_name: self.name, detail: detail }, detail.backtrace
     end
   end
 
@@ -492,7 +507,7 @@ class Puppet::Parameter
   #   calls both validate and munge on the given value, so no late binding.
   #
   # The given value is validated and then munged (if munging has been specified). The result is store
-  # as the value of this arameter.
+  # as the value of this parameter.
   # @return [Object] The given `value` after munging.
   # @raise (see #validate)
   #
@@ -514,7 +529,7 @@ class Puppet::Parameter
 
   # @return [Array<Symbol>] Returns an array of the associated resource's symbolic tags (including the parameter itself).
   # Returns an array of the associated resource's symbolic tags (including the parameter itself).
-  # At a minimun, the array contains the name of the parameter. If the associated resource
+  # At a minimum, the array contains the name of the parameter. If the associated resource
   # has tags, these tags are also included in the array.
   # @todo The original comment says = _"The properties need to return tags so that logs correctly
   #   collect them."_ what if anything of that is of interest to document. Should tags and their relationship
@@ -535,40 +550,31 @@ class Puppet::Parameter
     name.to_s
   end
 
+  # Formats the given string and conditionally redacts the provided interpolation variables, depending on if
+  # this property is sensitive.
+  #
+  # @note Because the default implementation of Puppet::Property#is_to_s returns the current value as-is, it
+  #   doesn't necessarily return a string. For the sake of sanity we just cast everything to a string for
+  #   interpolation so we don't introduce issues with unexpected property values.
+  #
+  # @see String#format
+  # @param fmt [String] The format string to interpolate.
+  # @param args [Array<String>] One or more strings to conditionally redact and interpolate into the format string.
+  #
+  # @return [String]
+  def format(fmt, *args)
+    fmt % args.map { |arg| @sensitive ? "[redacted]" : arg.to_s }
+  end
+
   # Produces a String with the value formatted for display to a human.
-  # When the parameter value is a:
   #
-  # * **single valued parameter value** the result is produced on the
-  #   form `'value'` where _value_ is the string form of the parameter's value.
-  #
-  # * **Array** the list of values is enclosed in `[]`, and
-  #   each produced value is separated by a comma.
-  #
-  # * **Hash** value is output with keys in sorted order enclosed in `{}` with each entry formatted
-  #   on the form `'k' => v` where
-  #   `k` is the key in string form and _v_ is the value of the key. Entries are comma separated.
-  #
-  # For both Array and Hash this method is called recursively to format contained values.
-  # @note this method does not protect against infinite structures.
+  # The output is created using the StringConverter with format '%#p' to produce
+  # human readable code that is understood by puppet.
   #
   # @return [String] The formatted value in string form.
   #
   def self.format_value_for_display(value)
-    if value.is_a? Array
-      formatted_values = value.collect {|value| format_value_for_display(value)}.join(', ')
-      "[#{formatted_values}]"
-    elsif value.is_a? Hash
-      # Sorting the hash keys for display is largely for having stable
-      # output to test against, but also helps when scanning for hash
-      # keys, since they will be in ASCIIbetical order.
-      hash = value.keys.sort {|a,b| a.to_s <=> b.to_s}.collect do |k|
-        "'#{k}' => #{format_value_for_display(value[k])}"
-      end.join(', ')
-
-      "{#{hash}}"
-    else
-      "'#{value}'"
-    end
+    Puppet::Pops::Types::StringConverter.convert(value, Puppet::Pops::Types::StringConverter::DEFAULT_PARAMETER_FORMAT)
   end
 
   # @comment Document post_compile_hook here as it does not exist anywhere (called from type if implemented)
@@ -582,4 +588,4 @@ class Puppet::Parameter
   #   @see Puppet::Parser::Compiler#finish
 end
 
-require 'puppet/parameter/path'
+require_relative 'parameter/path'

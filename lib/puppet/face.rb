@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # The public name of this feature is 'face', but we have hidden all the
 # plumbing over in the 'interfaces' namespace to make clear the distinction
 # between the two.
@@ -8,5 +10,5 @@
 #
 # It isn't hidden to gratuitously hide things, just to make it easier to
 # separate out the interests people will have.  --daniel 2011-04-07
-require 'puppet/interface'
+require_relative '../puppet/interface'
 Puppet::Face = Puppet::Interface

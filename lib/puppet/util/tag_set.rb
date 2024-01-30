@@ -1,11 +1,13 @@
+# frozen_string_literal: true
+
 require 'set'
-require 'puppet/network/format_support'
+require_relative '../../puppet/network/format_support'
 
 class Puppet::Util::TagSet < Set
   include Puppet::Network::FormatSupport
 
   def self.from_yaml(yaml)
-    self.new(YAML.load(yaml))
+    self.new(Puppet::Util::Yaml.safe_load(yaml, [Symbol]))
   end
 
   def to_yaml
@@ -16,23 +18,9 @@ class Puppet::Util::TagSet < Set
     self.new(data)
   end
 
-  def self.from_pson(data)
-    Puppet.deprecation_warning("from_pson is being removed in favour of from_data_hash.")
-    self.from_data_hash(data)
-  end
-
+  # TODO: A method named #to_data_hash should not return an array
   def to_data_hash
     to_a
-  end
-
-  def to_pson(*args)
-    to_data_hash.to_pson
-  end
-
-  # this makes puppet serialize it as an array for backwards
-  # compatibility
-  def to_zaml(z)
-    to_data_hash.to_zaml(z)
   end
 
   def join(*args)

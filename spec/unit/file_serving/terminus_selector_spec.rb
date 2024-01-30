@@ -1,57 +1,83 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/file_serving/terminus_selector'
 
 describe Puppet::FileServing::TerminusSelector do
-  before do
-    @object = Object.new
-    @object.extend(Puppet::FileServing::TerminusSelector)
-
-    @request = stub 'request', :key => "mymod/myfile", :options => {:node => "whatever"}, :server => nil, :protocol => nil
+  class TestSelector
+    include Puppet::FileServing::TerminusSelector
   end
+
+  def create_request(key)
+    Puppet::Indirector::Request.new(:indirection_name, :find, key, nil, {node: 'whatever'})
+  end
+
+  subject { TestSelector.new }
 
   describe "when being used to select termini" do
     it "should return :file if the request key is fully qualified" do
-      @request.expects(:key).returns File.expand_path('/foo')
-      @object.select(@request).should == :file
+      request = create_request(File.expand_path('/foo'))
+
+      expect(subject.select(request)).to eq(:file)
+    end
+
+    it "should return :file_server if the request key is relative" do
+      request = create_request('modules/my_module/path/to_file')
+
+      expect(subject.select(request)).to eq(:file_server)
     end
 
     it "should return :file if the URI protocol is set to 'file'" do
-      @request.expects(:protocol).returns "file"
-      @object.select(@request).should == :file
+      request = create_request(Puppet::Util.path_to_uri(File.expand_path("/foo")).to_s)
+
+      expect(subject.select(request)).to eq(:file)
     end
 
-    it "should fail when a protocol other than :puppet or :file is used" do
-      @request.stubs(:protocol).returns "http"
-      proc { @object.select(@request) }.should raise_error(ArgumentError)
+    it "should return :http if the URI protocol is set to 'http'" do
+      request = create_request("http://www.example.com")
+
+      expect(subject.select(request)).to eq(:http)
+    end
+
+    it "should return :http if the URI protocol is set to 'https'" do
+      request = create_request("https://www.example.com")
+
+      expect(subject.select(request)).to eq(:http)
+    end
+
+    it "should return :http if the path starts with a double slash" do
+      request = create_request("https://www.example.com//index.html")
+
+      expect(subject.select(request)).to eq(:http)
+    end
+
+    it "should fail when a protocol other than :puppet, :http(s) or :file is used" do
+      request = create_request("ftp://ftp.example.com")
+
+      expect {
+        subject.select(request)
+      }.to raise_error(ArgumentError, /URI protocol 'ftp' is not currently supported for file serving/)
     end
 
     describe "and the protocol is 'puppet'" do
-      before do
-        @request.stubs(:protocol).returns "puppet"
-      end
-
       it "should choose :rest when a server is specified" do
-        @request.stubs(:protocol).returns "puppet"
-        @request.expects(:server).returns "foo"
-        @object.select(@request).should == :rest
+        request = create_request("puppet://puppetserver.example.com")
+
+        expect(subject.select(request)).to eq(:rest)
       end
 
       # This is so a given file location works when bootstrapping with no server.
       it "should choose :rest when default_file_terminus is rest" do
-        @request.stubs(:protocol).returns "puppet"
         Puppet[:server] = 'localhost'
-        @object.select(@request).should == :rest
+        request = create_request("puppet:///plugins")
+
+        expect(subject.select(request)).to eq(:rest)
       end
 
       it "should choose :file_server when default_file_terminus is file_server and no server is specified on the request" do
-        modules = mock 'modules'
-
-        @request.expects(:protocol).returns "puppet"
-        @request.expects(:server).returns nil
         Puppet[:default_file_terminus] = 'file_server'
-        @object.select(@request).should == :file_server
+        request = create_request("puppet:///plugins")
+
+        expect(subject.select(request)).to eq(:file_server)
       end
     end
   end

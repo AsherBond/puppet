@@ -1,10 +1,12 @@
+# frozen_string_literal: true
+
 require 'pathname'
 
-require 'puppet/forge'
-require 'puppet/module_tool'
+require_relative '../../puppet/forge'
+require_relative '../../puppet/module_tool'
 
 module Puppet::ModuleTool
-  class InstalledModules < Semantic::Dependency::Source
+  class InstalledModules < SemanticPuppet::Dependency::Source
     attr_reader :modules, :by_name
 
     def priority
@@ -22,6 +24,7 @@ module Puppet::ModuleTool
         modules[path].each do |mod|
           @by_name[mod.name] = mod
           next unless mod.has_metadata?
+
           release = ModuleRelease.new(self, mod)
           @modules[release.name] ||= release
         end
@@ -33,17 +36,17 @@ module Puppet::ModuleTool
     # Fetches {ModuleRelease} entries for each release of the named module.
     #
     # @param name [String] the module name to look up
-    # @return [Array<Semantic::Dependency::ModuleRelease>] a list of releases for
+    # @return [Array<SemanticPuppet::Dependency::ModuleRelease>] a list of releases for
     #         the given name
-    # @see Semantic::Dependency::Source#fetch
+    # @see SemanticPuppet::Dependency::Source#fetch
     def fetch(name)
       name = name.tr('/', '-')
 
       if @modules.key? name
         @fetched << name
-        [ @modules[name] ]
+        [@modules[name]]
       else
-        [ ]
+        []
       end
     end
 
@@ -51,7 +54,7 @@ module Puppet::ModuleTool
       @fetched
     end
 
-    class ModuleRelease < Semantic::Dependency::ModuleRelease
+    class ModuleRelease < SemanticPuppet::Dependency::ModuleRelease
       attr_reader :mod, :metadata
 
       def initialize(source, mod)
@@ -59,24 +62,22 @@ module Puppet::ModuleTool
         @metadata = mod.metadata
         name = mod.forge_name.tr('/', '-')
         begin
-          version = Semantic::Version.parse(mod.version)
-        rescue Semantic::Version::ValidationFailure => e
-          Puppet.warning "#{mod.name} (#{mod.path}) has an invalid version number (#{mod.version}). The version has been set to 0.0.0. If you are the maintainer for this module, please update the metadata.json with a valid Semantic Version (http://semver.org)."
-          version = Semantic::Version.parse("0.0.0")
+          version = SemanticPuppet::Version.parse(mod.version)
+        rescue SemanticPuppet::Version::ValidationFailure
+          Puppet.warning _("%{module_name} (%{path}) has an invalid version number (%{version}). The version has been set to 0.0.0. If you are the maintainer for this module, please update the metadata.json with a valid Semantic Version (http://semver.org).") % { module_name: mod.name, path: mod.path, version: mod.version }
+          version = SemanticPuppet::Version.parse("0.0.0")
         end
         release = "#{name}@#{version}"
 
         super(source, name, version, {})
 
         if mod.dependencies
-          mod.dependencies.each do |dep|
-            results = Puppet::ModuleTool.parse_module_dependency(release, dep)
+          mod.dependencies.each do |dependency|
+            results = Puppet::ModuleTool.parse_module_dependency(release, dependency)
             dep_name, parsed_range, range = results
 
-            dep.tap do |dep|
-              add_constraint('initialize', dep_name, range.to_s) do |node|
-                parsed_range === node.version
-              end
+            add_constraint('initialize', dep_name, range.to_s) do |node|
+              parsed_range === node.version
             end
           end
         end

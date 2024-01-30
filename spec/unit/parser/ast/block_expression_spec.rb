@@ -1,7 +1,7 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
+require 'puppet/parser/ast/block_expression'
 
-describe Puppet::Parser::AST::BlockExpression do
+describe 'Puppet::Parser::AST::BlockExpression' do
   class StackDepthAST < Puppet::Parser::AST
     attr_reader :call_depth
     def evaluate(*options)
@@ -12,12 +12,12 @@ describe Puppet::Parser::AST::BlockExpression do
   NO_SCOPE = nil
 
   def depth_probe
-    StackDepthAST.new({})
+    StackDepthAST.new
   end
 
-  def sequence_probe(name, sequence)
-    probe = mock("Sequence Probe #{name}")
-    probe.expects(:safeevaluate).in_sequence(sequence)
+  def sequence_probe(name)
+    probe = double("Sequence Probe #{name}")
+    expect(probe).to receive(:safeevaluate).ordered
     probe
   end
 
@@ -28,7 +28,7 @@ describe Puppet::Parser::AST::BlockExpression do
   def assert_all_at_same_depth(*probes)
     depth0 = probes[0].call_depth
     probes.drop(1).each do |p|
-      p.call_depth.should == depth0
+      expect(p.call_depth).to eq(depth0)
     end
   end
 
@@ -56,10 +56,9 @@ describe Puppet::Parser::AST::BlockExpression do
   end
 
   it "evaluates sequenced children in order" do
-    evaluation_order = sequence("Child evaluation order")
-    expr1 = block_of([sequence_probe("Step 1", evaluation_order)])
-    expr2 = block_of([sequence_probe("Step 2", evaluation_order)])
-    expr3 = block_of([sequence_probe("Step 3", evaluation_order)])
+    expr1 = block_of([sequence_probe("Step 1")])
+    expr2 = block_of([sequence_probe("Step 2")])
+    expr3 = block_of([sequence_probe("Step 3")])
 
     expr1.sequence_with(expr2).sequence_with(expr3).evaluate(NO_SCOPE)
   end

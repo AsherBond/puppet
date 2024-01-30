@@ -1,5 +1,11 @@
 test_name "Package:IPS versionable"
-confine :to, :platform => 'solaris'
+confine :to, :platform => 'solaris-11'
+
+tag 'audit:medium',
+    'audit:refactor',  # Use block style `test_name`
+    'audit:acceptance' # Could be done at the integration (or unit) layer though
+                       # actual changing of resources could irreparably damage a
+                       # host running this, or require special permissions.
 
 require 'puppet/acceptance/solaris_util'
 extend Puppet::Acceptance::IPSUtils
@@ -47,8 +53,8 @@ agents.each do |agent|
     assert_match( /mypkg2@0.0.2/, result.stdout, "err: #{agent}")
   end
 
-  step "IPS: it should not upgrade current and dependent package if dependent package is held"
-  apply_manifest_on(agent, 'package {mypkg : ensure=>"held", provider=>"pkg"}') do
+  step "IPS: it should not upgrade current and dependent package if dependent package is hold"
+  apply_manifest_on(agent, 'package {mypkg : ensure=>"present", mark=>"hold", provider=>"pkg"}') do
     assert_match( //, result.stdout, "err: #{agent}")
   end
   setup_fakeroot agent

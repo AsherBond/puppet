@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Module Puppet::IniConfig
 # A generic way to parse .ini style files and manipulate them in memory
 # One 'file' can be made up of several physical files. Changes to sections
@@ -8,8 +10,8 @@
 #
 # The parsing tries to stay close to python's ConfigParser
 
-require 'puppet/util/filetype'
-require 'puppet/error'
+require_relative '../../puppet/util/filetype'
+require_relative '../../puppet/error'
 
 module Puppet::Util::IniConfig
   # A section in a .ini file
@@ -56,7 +58,7 @@ module Puppet::Util::IniConfig
     end
 
     # Set the entry 'key=value'. If no entry with the
-    # given key exists, one is appended to teh end of the section
+    # given key exists, one is appended to the end of the section
     def []=(key, value)
       entry = find_entry(key)
       @dirty = true
@@ -78,7 +80,7 @@ module Puppet::Util::IniConfig
     # written to file
     def format
       if @destroy
-        text = ""
+        text = ''.dup
       else
         text = "[#{name}]\n"
         @entries.each do |entry|
@@ -94,17 +96,16 @@ module Puppet::Util::IniConfig
     end
 
     private
+
     def find_entry(key)
       @entries.each do |entry|
         return entry if entry.is_a?(Array) && entry[0] == key
       end
       nil
     end
-
   end
 
   class PhysicalFile
-
     # @!attribute [r] filetype
     #   @api private
     #   @return [Puppet::Util::FileType::FileTypeFlat]
@@ -136,8 +137,9 @@ module Puppet::Util::IniConfig
     def read
       text = @filetype.read
       if text.nil?
-        raise IniParseError, "Cannot read nonexistent file #{@file.inspect}"
+        raise IniParseError, _("Cannot read nonexistent file %{file}") % { file: @file.inspect }
       end
+
       parse(text)
     end
 
@@ -148,7 +150,7 @@ module Puppet::Util::IniConfig
     )
     INI_CONTINUATION = /^[ \t\r\n\f]/
     INI_SECTION_NAME = /^\[([^\]]+)\]/
-    INI_PROPERTY     = /^\s*([^\s=]+)\s*\=(.*)$/
+    INI_PROPERTY     = /^\s*([^\s=]+)\s*\=\s*(.*)$/
 
     # @api private
     def parse(text)
@@ -177,19 +179,18 @@ module Puppet::Util::IniConfig
           section = add_section(section_name)
           optname = nil
         elsif (match = l.match(INI_PROPERTY))
-          # We allow space around the keys, but not the values
-          # For the values, we don't know if space is significant
+          # the regex strips leading white space from the value, and here we strip the trailing white space as well
           key = match[1]
-          val = match[2]
+          val = match[2].rstrip
 
           if section.nil?
-            raise IniParseError.new("Property with key #{key.inspect} outside of a section")
+            raise IniParseError.new(_("Property with key %{key} outside of a section") % { key: key.inspect })
           end
 
           section[key] = val
           optname = key
         else
-          raise IniParseError.new("Can't parse line '#{l.chomp}'", @file, line_num)
+          raise IniParseError.new(_("Can't parse line '%{line}'") % { line: l.chomp }, @file, line_num)
         end
       end
       section.mark_clean unless section.nil?
@@ -208,7 +209,7 @@ module Puppet::Util::IniConfig
     end
 
     def format
-      text = ""
+      text = ''.dup
 
       @contents.each do |content|
         if content.is_a? Section
@@ -238,7 +239,7 @@ module Puppet::Util::IniConfig
     # @return [Puppet::Util::IniConfig::Section]
     def add_section(name)
       if section_exists?(name)
-        raise IniParseError.new("Section #{name.inspect} is already defined, cannot redefine", @file)
+        raise IniParseError.new(_("Section %{name} is already defined, cannot redefine") % { name: name.inspect }, @file)
       end
 
       section = Section.new(name, @file)
@@ -261,7 +262,6 @@ module Puppet::Util::IniConfig
   end
 
   class FileCollection
-
     attr_reader :files
 
     def initialize
@@ -306,7 +306,7 @@ module Puppet::Util::IniConfig
     alias [] get_section
 
     def include?(name)
-      !! get_section(name)
+      !!get_section(name)
     end
 
     def add_section(name, file)

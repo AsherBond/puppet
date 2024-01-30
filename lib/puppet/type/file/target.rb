@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Puppet
   Puppet::Type.type(:file).newproperty(:target) do
     desc "The target for creating a link.  Currently, symlinks are the
@@ -7,9 +9,9 @@ module Puppet
       Symlink targets can be relative, as well as absolute:
 
           # (Useful on Solaris)
-          file { \"/etc/inetd.conf\":
+          file { '/etc/inetd.conf':
             ensure => link,
-            target => \"inet/inetd.conf\",
+            target => 'inet/inetd.conf',
           }
 
       Directories of symlinks can be served recursively by instead using the
@@ -23,10 +25,10 @@ module Puppet
 
     # Anything else, basically
     newvalue(/./) do
-      @resource[:ensure] = :link if ! @resource.should(:ensure)
+      @resource[:ensure] = :link if !@resource.should(:ensure)
 
       # Only call mklink if ensure didn't call us in the first place.
-      currentensure  = @resource.property(:ensure).retrieve
+      currentensure = @resource.property(:ensure).retrieve
       mklink if @resource.property(:ensure).safe_insync?(currentensure)
     end
 
@@ -63,16 +65,16 @@ module Puppet
     def insync?(currentvalue)
       if [:nochange, :notlink].include?(self.should) or @resource.recurse?
         return true
-      elsif ! @resource.replace? and Puppet::FileSystem.exist?(@resource[:path])
+      elsif !@resource.replace? and Puppet::FileSystem.exist?(@resource[:path])
         return true
       else
         return super(currentvalue)
       end
     end
 
-
     def retrieve
-      if stat = @resource.stat
+      stat = @resource.stat
+      if stat
         if stat.ftype == "link"
           return Puppet::FileSystem.readlink(@resource[:path])
         else
@@ -84,4 +86,3 @@ module Puppet
     end
   end
 end
-

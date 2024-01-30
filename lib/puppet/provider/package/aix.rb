@@ -1,5 +1,7 @@
-require 'puppet/provider/package'
-require 'puppet/util/package'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/provider/package'
+require_relative '../../../puppet/util/package'
 
 Puppet::Type.type(:package).provide :aix, :parent => Puppet::Provider::Package do
   desc "Installation from an AIX software directory, using the AIX `installp`
@@ -24,21 +26,30 @@ Puppet::Type.type(:package).provide :aix, :parent => Puppet::Provider::Package d
   # AIX supports versionable packages with and without a NIM server
   has_feature :versionable
 
-  confine  :operatingsystem => [ :aix ]
-  defaultfor :operatingsystem => :aix
+  confine 'os.name' => [:aix]
+  defaultfor 'os.name' => :aix
 
-  attr_accessor   :latest_info
+  attr_accessor :latest_info
+
+  STATE_CODE = {
+    'A' => :applied,
+    'B' => :broken,
+    'C' => :committed,
+    'E' => :efix_locked,
+    'O' => :obsolete,
+    '?' => :inconsistent,
+  }.freeze
 
   def self.srclistcmd(source)
-    [ command(:installp), "-L", "-d", source ]
+    [command(:installp), "-L", "-d", source]
   end
 
   def self.prefetch(packages)
-    raise Puppet::Error, "The aix provider can only be used by root" if Process.euid != 0
+    raise Puppet::Error, _("The aix provider can only be used by root") if Process.euid != 0
 
-    return unless packages.detect { |name, package| package.should(:ensure) == :latest }
+    return unless packages.detect { |_name, package| package.should(:ensure) == :latest }
 
-    sources = packages.collect { |name, package| package[:source] }.uniq
+    sources = packages.collect { |_name, package| package[:source] }.uniq.compact
 
     updates = {}
     sources.each do |source|
@@ -52,7 +63,7 @@ Puppet::Type.type(:package).provide :aix, :parent => Puppet::Provider::Package d
           if updates.key?(current[:name])
             previous = updates[current[:name]]
 
-            updates[ current[:name] ] = current unless Puppet::Util::Package.versioncmp(previous[:version], current[:version]) == 1
+            updates[current[:name]] = current unless Puppet::Util::Package.versioncmp(previous[:version], current[:version]) == 1
 
           else
             updates[current[:name]] = current
@@ -62,8 +73,8 @@ Puppet::Type.type(:package).provide :aix, :parent => Puppet::Provider::Package d
     end
 
     packages.each do |name, package|
-      if info = updates[package[:name]]
-        package.provider.latest_info = info[0]
+      if updates.key?(name)
+        package.provider.latest_info = updates[name]
       end
     end
   end
@@ -76,44 +87,52 @@ Puppet::Type.type(:package).provide :aix, :parent => Puppet::Provider::Package d
     # installp will return an exit code of zero even if it didn't uninstall
     # anything... so let's make sure it worked.
     unless query().nil?
-      self.fail "Failed to uninstall package '#{@resource[:name]}'"
+      self.fail _("Failed to uninstall package '%{name}'") % { name: @resource[:name] }
     end
   end
 
   def install(useversion = true)
-    unless source = @resource[:source]
-      self.fail "A directory is required which will be used to find packages"
+    source = @resource[:source]
+    unless source
+      self.fail _("A directory is required which will be used to find packages")
     end
 
     pkg = @resource[:name]
 
-    pkg += " #{@resource.should(:ensure)}" if (! @resource.should(:ensure).is_a? Symbol) and useversion
+    pkg += " #{@resource.should(:ensure)}" if (!@resource.should(:ensure).is_a? Symbol) and useversion
 
     output = installp "-acgwXY", "-d", source, pkg
 
     # If the package is superseded, it means we're trying to downgrade and we
     # can't do that.
     if output =~ /^#{Regexp.escape(@resource[:name])}\s+.*\s+Already superseded by.*$/
-      self.fail "aix package provider is unable to downgrade packages"
+      self.fail _("aix package provider is unable to downgrade packages")
+    end
+
+    pkg_info = query
+    if pkg_info && [:broken, :inconsistent].include?(pkg_info[:status])
+      self.fail _("Package '%{name}' is in a %{status} state and requires manual intervention") % { name: @resource[:name], status: pkg_info[:status] }
     end
   end
 
   def self.pkglist(hash = {})
     cmd = [command(:lslpp), "-qLc"]
 
-    if name = hash[:pkgname]
+    name = hash[:pkgname]
+    if name
       cmd << name
     end
 
     begin
-      list = execute(cmd).scan(/^[^#][^:]*:([^:]*):([^:]*)/).collect { |n,e|
-        { :name => n, :ensure => e, :provider => self.name }
+      list = execute(cmd).scan(/^[^#][^:]*:([^:]*):([^:]*):[^:]*:[^:]*:([^:])/).collect { |n, e, s|
+        e = :absent if [:broken, :inconsistent].include?(STATE_CODE[s])
+        { :name => n, :ensure => e, :status => STATE_CODE[s], :provider => self.name }
       }
     rescue Puppet::ExecutionFailure => detail
       if hash[:pkgname]
         return nil
       else
-        raise Puppet::Error, "Could not list installed Packages: #{detail}", detail.backtrace
+        raise Puppet::Error, _("Could not list installed Packages: %{detail}") % { detail: detail }, detail.backtrace
       end
     end
 
@@ -136,7 +155,7 @@ Puppet::Type.type(:package).provide :aix, :parent => Puppet::Provider::Package d
     unless upd.nil?
       return "#{upd[:version]}"
     else
-      raise Puppet::DevError, "Tried to get latest on a missing package" if properties[:ensure] == :absent
+      raise Puppet::DevError, _("Tried to get latest on a missing package") if properties[:ensure] == :absent
 
       return properties[:ensure]
     end

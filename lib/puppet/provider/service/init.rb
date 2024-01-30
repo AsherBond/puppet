@@ -1,26 +1,35 @@
+# frozen_string_literal: true
+
 # The standard init-based service type.  Many other service types are
 # customizations of this module.
 Puppet::Type.type(:service).provide :init, :parent => :base do
   desc "Standard `init`-style service management."
 
   def self.defpath
-    case Facter.value(:operatingsystem)
+    case Puppet.runtime[:facter].value('os.name')
     when "FreeBSD", "DragonFly"
       ["/etc/rc.d", "/usr/local/etc/rc.d"]
     when "HP-UX"
       "/sbin/init.d"
     when "Archlinux"
       "/etc/rc.d"
+    when "AIX"
+      "/etc/rc.d/init.d"
     else
       "/etc/init.d"
     end
   end
 
+  # Debian and Ubuntu should use the Debian provider.
+  confine :false => ['Debian', 'Ubuntu'].include?(Puppet.runtime[:facter].value('os.name'))
+  # RedHat systems should use the RedHat provider.
+  confine :false => Puppet.runtime[:facter].value('os.family') == 'RedHat'
+
   # We can't confine this here, because the init path can be overridden.
-  #confine :exists => defpath
+  # confine :exists => defpath
 
   # some init scripts are not safe to execute, e.g. we do not want
-  # to suddently run /etc/init.d/reboot.sh status and reboot our system. The
+  # to suddenly run /etc/init.d/reboot.sh status and reboot our system. The
   # exclude list could be platform agnostic but I assume an invalid init script
   # on system A will never be a valid init script on system B
   def self.excludes
@@ -38,11 +47,18 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     # launchpad bug
     # (https://bugs.launchpad.net/ubuntu/+source/upstart/+bug/962047) that may
     # eventually explain how to use the wait-for-state service or perhaps why
-    # it should remain excluded. When that bug is adddressed this should be
+    # it should remain excluded. When that bug is addressed this should be
     # reexamined.
     excludes += %w{wait-for-state portmap-wait}
     # these excludes were found with grep -r -L start /etc/init.d
     excludes += %w{rcS module-init-tools}
+    # Prevent puppet failing on unsafe scripts from Yocto Linux
+    if Puppet.runtime[:facter].value('os.family') == "cisco-wrlinux"
+      excludes += %w{banner.sh bootmisc.sh checkroot.sh devpts.sh dmesg.sh
+                     hostname.sh mountall.sh mountnfs.sh populate-volatile.sh
+                     rmnologin.sh save-rtc.sh sendsigs sysfs.sh umountfs
+                     umountnfs.sh}
+    end
     # Prevent puppet failing to get status of the new service introduced
     # by the fix for this (bug https://bugs.launchpad.net/ubuntu/+source/lightdm/+bug/982889)
     # due to puppet's inability to deal with upstart services with instances.
@@ -55,6 +71,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     excludes += %w{cryptdisks-udev}
     excludes += %w{statd-mounting}
     excludes += %w{gssd-mounting}
+    excludes
   end
 
   # List all services of this type.
@@ -66,7 +83,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     defpath = [defpath] unless defpath.is_a? Array
     instances = []
     defpath.each do |path|
-      unless FileTest.directory?(path)
+      unless Puppet::FileSystem.directory?(path)
         Puppet.debug "Service path #{path} does not exist"
         next
       end
@@ -79,8 +96,10 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
         fullpath = File.join(path, name)
         next if name =~ /^\./
         next if exclude.include? name
-        next if not FileTest.executable?(fullpath)
-        next if not is_init?(fullpath)
+        next if Puppet::FileSystem.directory?(fullpath)
+        next unless Puppet::FileSystem.executable?(fullpath)
+        next unless is_init?(fullpath)
+
         instances << new(:name => name, :path => path, :hasstatus => true)
       end
     end
@@ -104,7 +123,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
 
   def paths
     @paths ||= @resource[:path].find_all do |path|
-      if File.directory?(path)
+      if Puppet::FileSystem.directory?(path)
         true
       else
         if Puppet::FileSystem.exist?(path)
@@ -119,7 +138,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
 
   def search(name)
     paths.each do |path|
-      fqname = File.join(path,name)
+      fqname = File.join(path, name)
       if Puppet::FileSystem.exist? fqname
         return fqname
       else
@@ -128,7 +147,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     end
 
     paths.each do |path|
-      fqname_sh = File.join(path,"#{name}.sh")
+      fqname_sh = File.join(path, "#{name}.sh")
       if Puppet::FileSystem.exist? fqname_sh
         return fqname_sh
       else
@@ -138,7 +157,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     raise Puppet::Error, "Could not find init script for '#{name}'"
   end
 
-  # The start command is just the init scriptwith 'start'.
+  # The start command is just the init script with 'start'.
   def startcmd
     [initscript, :start]
   end
@@ -152,6 +171,13 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     (@resource[:hasrestart] == :true) && [initscript, :restart]
   end
 
+  def service_execute(type, command, fof = true, squelch = false, combine = true)
+    if type == :start && Puppet.runtime[:facter].value('os.family') == "Solaris"
+      command = ["/usr/bin/ctrun -l child", command].flatten.join(" ")
+    end
+    super(type, command, fof, squelch, combine)
+  end
+
   # If it was specified that the init script has a 'status' command, then
   # we just return that; otherwise, we return false, which causes it to
   # fallback to other mechanisms.
@@ -159,11 +185,10 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     (@resource[:hasstatus] == :true) && [initscript, :status]
   end
 
-private
+  private
 
   def self.is_init?(script = initscript)
     file = Puppet::FileSystem.pathname(script)
     !Puppet::FileSystem.symlink?(file) || Puppet::FileSystem.readlink(file) != "/lib/init/upstart-job"
   end
 end
-

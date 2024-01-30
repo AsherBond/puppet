@@ -1,63 +1,87 @@
-test_name "Agent should use environment given by ENC for fetching remote files"
+test_name "Agent should use environment given by ENC for fetching remote files" do
 
-testdir = create_tmpdir_for_user master, 'respect_enc_test'
+  tag 'audit:high',
+      'audit:integration',
+      'audit:refactor', # This test should be rolled into use_enc_environment
+      'server'
 
-create_remote_file master, "#{testdir}/enc.rb", <<END
-#!#{master['puppetbindir']}/ruby
+  # Remove all traces of the last used environment
+  teardown do
+    agents.each do |agent|
+      on(agent, puppet('config print lastrunfile')) do |command_result|
+        agent.rm_rf(command_result.stdout)
+      end
+    end
+  end
+
+  testdir = create_tmpdir_for_user(master, 'respect_enc_test')
+
+  create_remote_file(master, "#{testdir}/enc.rb", <<END)
+#!#{master['privatebindir']}/ruby
 puts <<YAML
 parameters:
 environment: special
 YAML
 END
-on master, "chmod 755 #{testdir}/enc.rb"
+  on(master, "chmod 755 '#{testdir}/enc.rb'")
 
-on master, "mkdir -p #{testdir}/modules"
-# Create a plugin file on the master
-on master, "mkdir -p #{testdir}/special/amod/files"
-create_remote_file(master, "#{testdir}/special/amod/files/testy", "special_environment")
-
-on master, "chown -R #{master['user']}:#{master['group']} #{testdir}"
-on master, "chmod -R g+rwX #{testdir}"
-
-master_opts = {
-  'master' => {
-    'node_terminus' => 'exec',
-    'external_nodes' => "#{testdir}/enc.rb",
-    'filetimeout' => 1
-  },
-  'special' => {
-    'modulepath' => "#{testdir}/special",
-    'manifest' => "#{testdir}/different.pp"
+  apply_manifest_on(master, <<-MANIFEST, :catch_failures => true)
+  File {
+    ensure => directory,
+    mode => "0770",
+    owner => #{master.puppet['user']},
+    group => #{master.puppet['group']},
   }
-}
-if master.is_pe?
-  master_opts['special']['modulepath'] << ":#{master['sitemoduledir']}"
-end
+  file {
+    '#{testdir}/environments':;
+    '#{testdir}/environments/production':;
+    '#{testdir}/environments/special/':;
+    '#{testdir}/environments/special/manifests':;
+    '#{testdir}/environments/special/modules':;
+    '#{testdir}/environments/special/modules/amod':;
+    '#{testdir}/environments/special/modules/amod/files':;
+  }
+  file { '#{testdir}/environments/special/modules/amod/files/testy':
+    ensure => file,
+    mode => "0640",
+    content => 'special_environment',
+  }
+  MANIFEST
 
-with_puppet_running_on master, master_opts, testdir do
-  agents.each do |agent|
-    atmp = agent.tmpdir('respect_enc_test')
-    logger.debug "agent: #{agent} \tagent.tmpdir => #{atmp}"
+  master_opts = {
+      'main'   => {
+          'environmentpath'     => "#{testdir}/environments",
+          'environment_timeout' => 0,
+      },
+      'master' => {
+          'node_terminus'  => 'exec',
+          'external_nodes' => "#{testdir}/enc.rb",
+      },
+  }
 
-    create_remote_file master, "#{testdir}/different.pp", <<END
+  with_puppet_running_on(master, master_opts, testdir) do
+    agents.each do |agent|
+      atmp = agent.tmpdir('respect_enc_test')
+      teardown do
+        on(agent, "rm -rf '#{atmp}'")
+      end
+
+      logger.debug "agent: #{agent} \tagent.tmpdir => #{atmp}"
+
+      create_remote_file(master, "#{testdir}/environments/special/manifests/different.pp", <<END)
 file { "#{atmp}/special_testy":
   source => "puppet:///modules/amod/testy",
 }
-
-notify { "mytemp is ${::mytemp}": }
 END
-    on master, "chmod 644 #{testdir}/different.pp"
+      on(master, "chmod 644 '#{testdir}/environments/special/manifests/different.pp'")
 
-    sleep 2 # Make sure the master has time to reload the file
+      run_agent_on(agent, "--no-daemonize --onetime --verbose --trace")
 
-    run_agent_on(agent, "--no-daemonize --onetime --server #{master} --verbose --trace")
-
-    on agent, "cat #{atmp}/special_testy" do |result|
-      assert_match(/special_environment/,
-                   result.stdout,
-                   "The file from environment 'special' was not found")
+      on(agent, "cat '#{atmp}/special_testy'") do |result|
+        assert_match(/special_environment/,
+                     result.stdout,
+                     "The file from environment 'special' was not found")
+      end
     end
-
-    on agent, "rm -rf #{atmp}"
   end
 end

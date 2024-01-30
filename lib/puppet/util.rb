@@ -1,53 +1,96 @@
+# frozen_string_literal: true
+
 # A module to collect utility functions.
 
 require 'English'
-require 'puppet/error'
-require 'puppet/util/execution_stub'
+require_relative '../puppet/error'
+require_relative 'util/execution_stub'
 require 'uri'
 require 'pathname'
 require 'ostruct'
-require 'puppet/util/platform'
-require 'puppet/util/symbolic_file_mode'
-require 'puppet/file_system/uniquefile'
+require_relative 'util/platform'
+require_relative 'util/windows'
+require_relative 'util/symbolic_file_mode'
+require_relative '../puppet/file_system/uniquefile'
 require 'securerandom'
+require_relative 'util/character_encoding'
 
 module Puppet
 module Util
-  require 'puppet/util/monkey_patches'
+  require_relative 'util/monkey_patches'
   require 'benchmark'
 
   # These are all for backward compatibility -- these are methods that used
   # to be in Puppet::Util but have been moved into external modules.
-  require 'puppet/util/posix'
+  require_relative 'util/posix'
   extend Puppet::Util::POSIX
+
+  require_relative 'util/windows/process' if Puppet::Util::Platform.windows?
 
   extend Puppet::Util::SymbolicFileMode
 
-  def self.activerecord_version
-    if (defined?(::ActiveRecord) and defined?(::ActiveRecord::VERSION) and defined?(::ActiveRecord::VERSION::MAJOR) and defined?(::ActiveRecord::VERSION::MINOR))
-      ([::ActiveRecord::VERSION::MAJOR, ::ActiveRecord::VERSION::MINOR].join('.').to_f)
-    else
-      0
-    end
+  def default_env
+    Puppet.features.microsoft_windows? ?
+      :windows :
+      :posix
   end
+  module_function :default_env
 
+  def create_erb(content)
+    ERB.new(content, trim_mode: '-')
+  end
+  module_function :create_erb
+
+  # @deprecated Use ENV instead
+  # @api private
+  def get_env(name, mode = default_env)
+    ENV[name]
+  end
+  module_function :get_env
+
+  # @deprecated Use ENV instead
+  # @api private
+  def get_environment(mode = default_env)
+    ENV.to_hash
+  end
+  module_function :get_environment
+
+  # @deprecated Use ENV instead
+  # @api private
+  def clear_environment(mode = default_env)
+    ENV.clear
+  end
+  module_function :clear_environment
+
+  # @deprecated Use ENV instead
+  # @api private
+  def set_env(name, value = nil, mode = default_env)
+    ENV[name] = value
+  end
+  module_function :set_env
+
+  # @deprecated Use ENV instead
+  # @api private
+  def merge_environment(env_hash, mode = default_env)
+    ENV.merge!(hash.transform_keys(&:to_s))
+  end
+  module_function :merge_environment
 
   # Run some code with a specific environment.  Resets the environment back to
   # what it was at the end of the code.
-  def self.withenv(hash)
+  #
+  # @param hash [Hash{String,Symbol => String}] Environment variables to override the current environment.
+  # @param mode [Symbol] ignored
+  def withenv(hash, mode = :posix)
     saved = ENV.to_hash
-    hash.each do |name, val|
-      ENV[name.to_s] = val
-    end
-
-    yield
-  ensure
-    ENV.clear
-    saved.each do |name, val|
-      ENV[name] = val
+    begin
+      ENV.merge!(hash.transform_keys(&:to_s))
+      yield
+    ensure
+      ENV.replace(saved)
     end
   end
-
+  module_function :withenv
 
   # Execute a given chunk of code with a new umask.
   def self.withumask(mask)
@@ -60,27 +103,28 @@ module Util
     end
   end
 
-
   # Change the process to a different user
   def self.chuser
-    if group = Puppet[:group]
+    group = Puppet[:group]
+    if group
       begin
         Puppet::Util::SUIDManager.change_group(group, true)
       rescue => detail
-        Puppet.warning "could not change to group #{group.inspect}: #{detail}"
-        $stderr.puts "could not change to group #{group.inspect}"
+        Puppet.warning _("could not change to group %{group}: %{detail}") % { group: group.inspect, detail: detail }
+        $stderr.puts _("could not change to group %{group}") % { group: group.inspect }
 
         # Don't exit on failed group changes, since it's
         # not fatal
-        #exit(74)
+        # exit(74)
       end
     end
 
-    if user = Puppet[:user]
+    user = Puppet[:user]
+    if user
       begin
         Puppet::Util::SUIDManager.change_user(user, true)
       rescue => detail
-        $stderr.puts "Could not change to user #{user}: #{detail}"
+        $stderr.puts _("Could not change to user %{user}: %{detail}") % { user: user, detail: detail }
         exit(74)
       end
     end
@@ -111,48 +155,33 @@ module Util
     }
   end
 
-  # Proxy a bunch of methods to another object.
-  def self.classproxy(klass, objmethod, *methods)
-    classobj = class << klass; self; end
-    methods.each do |method|
-      classobj.send(:define_method, method) do |*args|
-        obj = self.send(objmethod)
-
-        obj.send(method, *args)
-      end
-    end
-  end
-
-  # Proxy a bunch of methods to another object.
-  def self.proxy(klass, objmethod, *methods)
-    methods.each do |method|
-      klass.send(:define_method, method) do |*args|
-        obj = self.send(objmethod)
-
-        obj.send(method, *args)
-      end
-    end
-  end
-
+  # execute a block of work and based on the logging level provided, log the provided message with the seconds taken
+  # The message 'msg' should include string ' in %{seconds} seconds' as part of the message and any content should escape
+  # any percent signs '%' so that they are not interpreted as formatting commands
+  #     escaped_str = str.gsub(/%/, '%%')
+  #
+  # @param msg [String] the message to be formated to assigned the %{seconds} seconds take to execute,
+  #                     other percent signs '%' need to be escaped
+  # @param level [Symbol] the logging level for this message
+  # @param object [Object] The object use for logging the message
   def benchmark(*args)
     msg = args.pop
     level = args.pop
-    object = nil
+    object = if args.empty?
+               if respond_to?(level)
+                 self
+               else
+                 Puppet
+               end
+             else
+               args.pop
+             end
 
-    if args.empty?
-      if respond_to?(level)
-        object = self
-      else
-        object = Puppet
-      end
-    else
-      object = args.pop
-    end
-
-    raise Puppet::DevError, "Failed to provide level to :benchmark" unless level
+    # TRANSLATORS 'benchmark' is a method name and should not be translated
+    raise Puppet::DevError, _("Failed to provide level to benchmark") unless level
 
     unless level == :none or object.respond_to? level
-      raise Puppet::DevError, "Benchmarked object does not respond to #{level}"
+      raise Puppet::DevError, _("Benchmarked object does not respond to %{value}") % { value: level }
     end
 
     # Only benchmark if our log level is high enough
@@ -160,7 +189,7 @@ module Util
       seconds = Benchmark.realtime {
         yield
       }
-      object.send(level, msg + (" in %0.2f seconds" % seconds))
+      object.send(level, msg % { seconds: "%0.2f" % seconds })
       return seconds
     else
       yield
@@ -179,6 +208,8 @@ module Util
     if absolute_path?(bin)
       return bin if FileTest.file? bin and FileTest.executable? bin
     else
+      exts = ENV['PATHEXT']
+      exts = exts ? exts.split(File::PATH_SEPARATOR) : %w[.COM .EXE .BAT .CMD]
       ENV['PATH'].split(File::PATH_SEPARATOR).each do |dir|
         begin
           dest = File.expand_path(File.join(dir, bin))
@@ -189,17 +220,17 @@ module Util
           if e.to_s =~ /HOME/ and (ENV['HOME'].nil? || ENV['HOME'] == "")
             # if we get here they have a tilde in their PATH.  We'll issue a single warning about this and then
             # ignore this path element and carry on with our lives.
-            Puppet::Util::Warnings.warnonce("PATH contains a ~ character, and HOME is not set; ignoring PATH element '#{dir}'.")
+            # TRANSLATORS PATH and HOME are environment variables and should not be translated
+            Puppet::Util::Warnings.warnonce(_("PATH contains a ~ character, and HOME is not set; ignoring PATH element '%{dir}'.") % { dir: dir })
           elsif e.to_s =~ /doesn't exist|can't find user/
             # ...otherwise, we just skip the non-existent entry, and do nothing.
-            Puppet::Util::Warnings.warnonce("Couldn't expand PATH containing a ~ character; ignoring PATH element '#{dir}'.")
+            # TRANSLATORS PATH is an environment variable and should not be translated
+            Puppet::Util::Warnings.warnonce(_("Couldn't expand PATH containing a ~ character; ignoring PATH element '%{dir}'.") % { dir: dir })
           else
             raise
           end
         else
-          if Puppet.features.microsoft_windows? && File.extname(dest).empty?
-            exts = ENV['PATHEXT']
-            exts = exts ? exts.split(File::PATH_SEPARATOR) : %w[.COM .EXE .BAT .CMD]
+          if Puppet::Util::Platform.windows? && File.extname(dest).empty?
             exts.each do |ext|
               destext = File.expand_path(dest + ext)
               return destext if FileTest.file? destext and FileTest.executable? destext
@@ -221,12 +252,19 @@ module Util
   label = '[^\\\\/]+'
   AbsolutePathWindows = %r!^(?:(?:[A-Z]:#{slash})|(?:#{slash}#{slash}#{label}#{slash}#{label})|(?:#{slash}#{slash}\?#{slash}#{label}))!io
   AbsolutePathPosix   = %r!^/!
-  def absolute_path?(path, platform=nil)
+  def absolute_path?(path, platform = nil)
+    unless path.is_a?(String)
+      Puppet.warning("Cannot check if #{path} is an absolute path because it is a '#{path.class}' and not a String'")
+      return false
+    end
+
     # Ruby only sets File::ALT_SEPARATOR on Windows and the Ruby standard
     # library uses that to test what platform it's on.  Normally in Puppet we
     # would use Puppet.features.microsoft_windows?, but this method needs to
     # be called during the initialization of features so it can't depend on
     # that.
+    #
+    # @deprecated Use ruby's built-in methods to determine if a path is absolute.
     platform ||= Puppet::Util::Platform.windows? ? :windows : :posix
     regex = case platform
             when :windows
@@ -234,10 +272,10 @@ module Util
             when :posix
               AbsolutePathPosix
             else
-              raise Puppet::DevError, "unknown platform #{platform} in absolute_path"
+              raise Puppet::DevError, _("unknown platform %{platform} in absolute_path") % { platform: platform }
             end
 
-    !! (path =~ regex)
+    !!(path =~ regex)
   end
   module_function :absolute_path?
 
@@ -247,10 +285,11 @@ module Util
 
     params = { :scheme => 'file' }
 
-    if Puppet.features.microsoft_windows?
-      path = path.gsub(/\\/, '/')
+    if Puppet::Util::Platform.windows?
+      path = path.tr('\\', '/')
 
-      if unc = /^\/\/([^\/]+)(\/.+)/.match(path)
+      unc = /^\/\/([^\/]+)(\/.+)/.match(path)
+      if unc
         params[:host] = unc[1]
         path = unc[2]
       elsif path =~ /^[a-z]:\//i
@@ -258,12 +297,17 @@ module Util
       end
     end
 
-    params[:path] = URI.escape(path)
+    # have to split *after* any relevant escaping
+    params[:path], params[:query] = uri_encode(path).split('?')
+    search_for_fragment = params[:query] ? :query : :path
+    if params[search_for_fragment].include?('#')
+      params[search_for_fragment], _, params[:fragment] = params[search_for_fragment].rpartition('#')
+    end
 
     begin
       URI::Generic.build(params)
     rescue => detail
-      raise Puppet::Error, "Failed to convert '#{path}' to URI: #{detail}", detail.backtrace
+      raise Puppet::Error, _("Failed to convert '%{path}' to URI: %{detail}") % { path: path, detail: detail }, detail.backtrace
     end
   end
   module_function :path_to_uri
@@ -272,10 +316,12 @@ module Util
   def uri_to_path(uri)
     return unless uri.is_a?(URI)
 
-    path = URI.unescape(uri.path)
+    # CGI.unescape doesn't handle space rules properly in uri paths
+    # URI.unescape does, but returns strings in their original encoding
+    path = uri_unescape(uri.path.encode(Encoding::UTF_8))
 
-    if Puppet.features.microsoft_windows? and uri.scheme == 'file'
-      if uri.host
+    if Puppet::Util::Platform.windows? && uri.scheme == 'file'
+      if uri.host && !uri.host.empty?
         path = "//#{uri.host}" + path # UNC
       else
         path.sub!(/^\//, '')
@@ -286,30 +332,168 @@ module Util
   end
   module_function :uri_to_path
 
-  def safe_posix_fork(stdin=$stdin, stdout=$stdout, stderr=$stderr, &block)
-    child_pid = Kernel.fork do
-      $stdin.reopen(stdin)
-      $stdout.reopen(stdout)
-      $stderr.reopen(stderr)
+  RFC_3986_URI_REGEX = /^(?<scheme>(?:[^:\/?#]+):)?(?<authority>\/\/(?:[^\/?#]*))?(?<path>[^?#]*)(?:\?(?<query>[^#]*))?(?:#(?<fragment>.*))?$/
 
-      3.upto(256){|fd| IO::new(fd).close rescue nil}
+  # Percent-encodes a URI query parameter per RFC3986 - https://tools.ietf.org/html/rfc3986
+  #
+  # The output will correctly round-trip through URI.unescape
+  #
+  # @param [String query_string] A URI query parameter that may contain reserved
+  #   characters that must be percent encoded for the key or value to be
+  #   properly decoded as part of a larger query string:
+  #
+  #   query
+  #   encodes as : query
+  #
+  #   query_with_special=chars like&and * and# plus+this
+  #   encodes as:
+  #   query_with_special%3Dchars%20like%26and%20%2A%20and%23%20plus%2Bthis
+  #
+  #   Note: Also usable by fragments, but not suitable for paths
+  #
+  # @return [String] a new string containing an encoded query string per the
+  #   rules of RFC3986.
+  #
+  #   In particular,
+  #   query will encode + as %2B and space as %20
+  def uri_query_encode(query_string)
+    return nil if query_string.nil?
+
+    # query can encode space to %20 OR +
+    # + MUST be encoded as %2B
+    # in RFC3968 both query and fragment are defined as:
+    # = *( pchar / "/" / "?" )
+    # CGI.escape turns space into + which is the most backward compatible
+    # however it doesn't roundtrip through URI.unescape which prefers %20
+    CGI.escape(query_string).gsub('+', '%20')
+  end
+  module_function :uri_query_encode
+
+  # Percent-encodes a URI string per RFC3986 - https://tools.ietf.org/html/rfc3986
+  #
+  # Properly handles escaping rules for paths, query strings and fragments
+  # independently
+  #
+  # The output is safe to pass to URI.parse or URI::Generic.build and will
+  # correctly round-trip through URI.unescape
+  #
+  # @param [String path] A URI string that may be in the form of:
+  #
+  #   http://foo.com/bar?query
+  #   file://tmp/foo bar
+  #   //foo.com/bar?query
+  #   /bar?query
+  #   bar?query
+  #   bar
+  #   .
+  #   C:\Windows\Temp
+  #
+  #   Note that with no specified scheme, authority or query parameter delimiter
+  #   ? that a naked string will be treated as a path.
+  #
+  #   Note that if query parameters need to contain data such as & or =
+  #   that this method should not be used, as there is no way to differentiate
+  #   query parameter data from query delimiters when multiple parameters
+  #   are specified
+  #
+  # @param [Hash{Symbol=>String} opts] Options to alter encoding
+  # @option opts [Array<Symbol>] :allow_fragment defaults to false. When false
+  #   will treat # as part of a path or query and not a fragment delimiter
+  #
+  # @return [String] a new string containing appropriate portions of the URI
+  #   encoded per the rules of RFC3986.
+  #   In particular,
+  #   path will not encode +, but will encode space as %20
+  #   query will encode + as %2B and space as %20
+  #   fragment behaves like query
+  def uri_encode(path, opts = { :allow_fragment => false })
+    raise ArgumentError.new(_('path may not be nil')) if path.nil?
+
+    encoded = ''.dup
+
+    # parse uri into named matches, then reassemble properly encoded
+    parts = path.match(RFC_3986_URI_REGEX)
+
+    encoded += parts[:scheme] unless parts[:scheme].nil?
+    encoded += parts[:authority] unless parts[:authority].nil?
+
+    # path requires space to be encoded as %20 (NEVER +)
+    # + should be left unencoded
+    # URI::parse and URI::Generic.build don't like paths encoded with CGI.escape
+    # URI.escape does not change / to %2F and : to %3A like CGI.escape
+    #
+    encoded += rfc2396_escape(parts[:path]) unless parts[:path].nil?
+
+    # each query parameter
+    if !parts[:query].nil?
+      query_string = parts[:query].split('&').map do |pair|
+        # can optionally be separated by an =
+        pair.split('=').map do |v|
+          uri_query_encode(v)
+        end.join('=')
+      end.join('&')
+      encoded += '?' + query_string
+    end
+
+    encoded += ((opts[:allow_fragment] ? '#' : '%23') + uri_query_encode(parts[:fragment])) unless parts[:fragment].nil?
+
+    encoded
+  end
+  module_function :uri_encode
+
+  # From https://github.com/ruby/ruby/blob/v2_7_3/lib/uri/rfc2396_parser.rb#L24-L46
+  ALPHA = "a-zA-Z"
+  ALNUM = "#{ALPHA}\\d"
+  UNRESERVED = "\\-_.!~*'()#{ALNUM}"
+  RESERVED = ";/?:@&=+$,\\[\\]"
+  UNSAFE = Regexp.new("[^#{UNRESERVED}#{RESERVED}]").freeze
+
+  HEX = "a-fA-F\\d"
+  ESCAPED = Regexp.new("%[#{HEX}]{2}").freeze
+
+  def rfc2396_escape(str)
+    str.gsub(UNSAFE) do |match|
+      tmp = ''.dup
+      match.each_byte do |uc|
+        tmp << sprintf('%%%02X', uc)
+      end
+      tmp
+    end.force_encoding(Encoding::US_ASCII)
+  end
+  module_function :rfc2396_escape
+
+  def uri_unescape(str)
+    enc = str.encoding
+    enc = Encoding::UTF_8 if enc == Encoding::US_ASCII
+    str.gsub(ESCAPED) { [$&[1, 2]].pack('H2').force_encoding(enc) }
+  end
+  module_function :uri_unescape
+
+  def safe_posix_fork(stdin = $stdin, stdout = $stdout, stderr = $stderr, &block)
+    child_pid = Kernel.fork do
+      STDIN.reopen(stdin)
+      STDOUT.reopen(stdout)
+      STDERR.reopen(stderr)
+
+      $stdin = STDIN
+      $stdout = STDOUT
+      $stderr = STDERR
+
+      begin
+        Dir.foreach('/proc/self/fd') do |f|
+          if f != '.' && f != '..' && f.to_i >= 3
+            IO.new(f.to_i).close rescue nil
+          end
+        end
+      rescue Errno::ENOENT, Errno::ENOTDIR # /proc/self/fd not found, /proc/self not a dir
+        3.upto(256) { |fd| IO.new(fd).close rescue nil }
+      end
 
       block.call if block
     end
     child_pid
   end
   module_function :safe_posix_fork
-
-  def memory
-    unless defined?(@pmap)
-      @pmap = which('pmap')
-    end
-    if @pmap
-      %x{#{@pmap} #{Process.pid}| grep total}.chomp.sub(/^\s*total\s+/, '').sub(/K$/, '').to_i
-    else
-      0
-    end
-  end
 
   def symbolizehash(hash)
     newhash = {}
@@ -330,30 +514,46 @@ module Util
     seconds
   end
 
-  module_function :memory, :thinmark
+  module_function :thinmark
 
-  # Because IO#binread is only available in 1.9
-  def binread(file)
-    Puppet.deprecation_warning("Puppet::Util.binread is deprecated. Read the file without this method as it will be removed in a future version.")
-    File.open(file, 'rb') { |f| f.read }
-  end
-  module_function :binread
+  PUPPET_STACK_INSERTION_FRAME = /.*puppet_stack\.rb.*in.*`stack'/
 
   # utility method to get the current call stack and format it to a human-readable string (which some IDEs/editors
   # will recognize as links to the line numbers in the trace)
-  def self.pretty_backtrace(backtrace = caller(1))
-    backtrace.collect do |line|
-      _, path, rest = /^(.*):(\d+.*)$/.match(line).to_a
-      # If the path doesn't exist - like in one test, and like could happen in
-      # the world - we should just tolerate it and carry on. --daniel 2012-09-05
-      # Also, if we don't match, just include the whole line.
-      if path
-        path = Pathname(path).realpath rescue path
-        "#{path}:#{rest}"
+  def self.pretty_backtrace(backtrace = caller(1), puppetstack = [])
+    format_backtrace_array(backtrace, puppetstack).join("\n")
+  end
+
+  # arguments may be a Ruby stack, with an optional Puppet stack argument,
+  # or just a Puppet stack.
+  # stacks may be an Array of Strings "/foo.rb:0 in `blah'" or
+  # an Array of Arrays that represent a frame: ["/foo.pp", 0]
+  def self.format_backtrace_array(primary_stack, puppetstack = [])
+    primary_stack.flat_map do |frame|
+      frame = format_puppetstack_frame(frame) if frame.is_a?(Array)
+      primary_frame = resolve_stackframe(frame)
+
+      if primary_frame =~ PUPPET_STACK_INSERTION_FRAME && !puppetstack.empty?
+        [resolve_stackframe(format_puppetstack_frame(puppetstack.shift)),
+         primary_frame]
       else
-        line
+        primary_frame
       end
-    end.join("\n")
+    end
+  end
+
+  def self.resolve_stackframe(frame)
+    _, path, rest = /^(.*):(\d+.*)$/.match(frame).to_a
+    if path
+      path = Pathname(path).realpath rescue path
+      "#{path}:#{rest}"
+    else
+      frame
+    end
+  end
+
+  def self.format_puppetstack_frame(file_and_lineno)
+    file_and_lineno.join(':')
   end
 
   # Replace a file, securely.  This takes a block, and passes it the file
@@ -367,7 +567,7 @@ module Util
   # preserved.  This works hard to avoid loss of any metadata, but will result
   # in an inode change for the file.
   #
-  # Arguments: `filename`, `default_mode`
+  # Arguments: `filename`, `default_mode`, `staging_location`
   #
   # The filename is the file we are going to replace.
   #
@@ -375,21 +575,24 @@ module Util
   # exist; if the file is present we copy the existing mode/owner/group values
   # across. The default_mode can be expressed as an octal integer, a numeric string (ie '0664')
   # or a symbolic file mode.
+  #
+  # The staging_location is a location to render the temporary file before
+  # moving the file to it's final location.
 
   DEFAULT_POSIX_MODE = 0644
   DEFAULT_WINDOWS_MODE = nil
 
-  def replace_file(file, default_mode, &block)
-    raise Puppet::DevError, "replace_file requires a block" unless block_given?
+  def replace_file(file, default_mode, staging_location: nil, validate_callback: nil, &block)
+    raise Puppet::DevError, _("replace_file requires a block") unless block_given?
 
     if default_mode
       unless valid_symbolic_mode?(default_mode)
-        raise Puppet::DevError, "replace_file default_mode: #{default_mode} is invalid"
+        raise Puppet::DevError, _("replace_file default_mode: %{default_mode} is invalid") % { default_mode: default_mode }
       end
 
       mode = symbolic_mode_to_int(normalize_symbolic_mode(default_mode))
     else
-      if Puppet.features.microsoft_windows?
+      if Puppet::Util::Platform.windows?
         mode = DEFAULT_WINDOWS_MODE
       else
         mode = DEFAULT_POSIX_MODE
@@ -397,37 +600,36 @@ module Util
     end
 
     begin
-      file     = Puppet::FileSystem.pathname(file)
-      tempfile = Puppet::FileSystem::Uniquefile.new(Puppet::FileSystem.basename_string(file), Puppet::FileSystem.dir_string(file))
+      file = Puppet::FileSystem.pathname(file)
 
-      # Set properties of the temporary file before we write the content, because
-      # Tempfile doesn't promise to be safe from reading by other people, just
-      # that it avoids races around creating the file.
-      #
-      # Our Windows emulation is pretty limited, and so we have to carefully
-      # and specifically handle the platform, which has all sorts of magic.
-      # So, unlike Unix, we don't pre-prep security; we use the default "quite
-      # secure" tempfile permissions instead.  Magic happens later.
-      if !Puppet.features.microsoft_windows?
-        # Grab the current file mode, and fall back to the defaults.
-        effective_mode =
-        if Puppet::FileSystem.exist?(file)
-          stat = Puppet::FileSystem.lstat(file)
-          tempfile.chown(stat.uid, stat.gid)
-          stat.mode
-        else
-          mode
-        end
-
-        if effective_mode
-          # We only care about the bottom four slots, which make the real mode,
-          # and not the rest of the platform stat call fluff and stuff.
-          tempfile.chmod(effective_mode & 07777)
-        end
+      # encoding for Uniquefile is not important here because the caller writes to it as it sees fit
+      if staging_location
+        tempfile = Puppet::FileSystem::Uniquefile.new(Puppet::FileSystem.basename_string(file), staging_location)
+      else
+        tempfile = Puppet::FileSystem::Uniquefile.new(Puppet::FileSystem.basename_string(file), Puppet::FileSystem.dir_string(file))
       end
+
+      effective_mode =
+        if !Puppet::Util::Platform.windows?
+          # Grab the current file mode, and fall back to the defaults.
+
+          if Puppet::FileSystem.exist?(file)
+            stat = Puppet::FileSystem.lstat(file)
+            tempfile.chown(stat.uid, stat.gid)
+            stat.mode
+          else
+            mode
+          end
+        end
 
       # OK, now allow the caller to write the content of the file.
       yield tempfile
+
+      if effective_mode
+        # We only care about the bottom four slots, which make the real mode,
+        # and not the rest of the platform stat call fluff and stuff.
+        tempfile.chmod(effective_mode & 07777)
+      end
 
       # Now, make sure the data (which includes the mode) is safe on disk.
       tempfile.flush
@@ -445,7 +647,11 @@ module Util
 
       tempfile.close
 
-      if Puppet.features.microsoft_windows?
+      if validate_callback
+        validate_callback.call(tempfile.path)
+      end
+
+      if Puppet::Util::Platform.windows?
         # Windows ReplaceFile needs a file to exist, so touch handles this
         if !Puppet::FileSystem.exist?(file)
           Puppet::FileSystem.touch(file)
@@ -458,14 +664,21 @@ module Util
         Puppet::Util::Windows::File.replace_file(FileSystem.path_string(file), tempfile.path)
 
       else
+        # MRI Ruby checks for this and raises an error, while JRuby removes the directory
+        # and replaces it with a file. This makes the our version of replace_file() consistent
+        if Puppet::FileSystem.exist?(file) && Puppet::FileSystem.directory?(file)
+          raise Errno::EISDIR, _("Is a directory: %{directory}") % { directory: file }
+        end
+
         File.rename(tempfile.path, Puppet::FileSystem.path_string(file))
       end
     ensure
       # in case an error occurred before we renamed the temp file, make sure it
       # gets deleted
-      tempfile.close!
+      if tempfile
+        tempfile.close!
+      end
     end
-
 
     # Ideally, we would now fsync the directory as well, but Ruby doesn't
     # have support for that, and it doesn't matter /that/ much...
@@ -493,60 +706,45 @@ module Util
   #  code (e.g. webrick), and we have no idea what they might throw.
   rescue Exception => err
     ## NOTE: when debugging spec failures, these two lines can be very useful
-    #puts err.inspect
-    #puts Puppet::Util.pretty_backtrace(err.backtrace)
-    Puppet.log_exception(err, "Could not #{message}: #{err}")
+    # puts err.inspect
+    # puts Puppet::Util.pretty_backtrace(err.backtrace)
+    Puppet.log_exception(err, "#{message}: #{err}")
     Puppet::Util::Log.force_flushqueue()
     exit(code)
   end
   module_function :exit_on_fail
 
-  def deterministic_rand(seed,max)
-    if defined?(Random) == 'constant' && Random.class == Class
-      Random.new(seed).rand(max).to_s
-    else
-      srand(seed)
-      result = rand(max).to_s
-      srand()
-      result
-    end
+  def deterministic_rand(seed, max)
+    deterministic_rand_int(seed, max).to_s
   end
   module_function :deterministic_rand
 
-
-  #######################################################################################################
-  # Deprecated methods relating to process execution; these have been moved to Puppet::Util::Execution
-  #######################################################################################################
-
-  def execpipe(command, failonfail = true, &block)
-    Puppet.deprecation_warning("Puppet::Util.execpipe is deprecated; please use Puppet::Util::Execution.execpipe")
-    Puppet::Util::Execution.execpipe(command, failonfail, &block)
+  def deterministic_rand_int(seed, max)
+    Random.new(seed).rand(max)
   end
-  module_function :execpipe
+  module_function :deterministic_rand_int
 
-  def execfail(command, exception)
-    Puppet.deprecation_warning("Puppet::Util.execfail is deprecated; please use Puppet::Util::Execution.execfail")
-    Puppet::Util::Execution.execfail(command, exception)
+  # Executes a block of code, wrapped around Facter.load_external(false) and
+  # Facter.load_external(true) which will cause Facter to not evaluate external facts.
+  def skip_external_facts
+    return yield unless Puppet.runtime[:facter].load_external?
+
+    begin
+      Puppet.runtime[:facter].load_external(false)
+      yield
+    ensure
+      Puppet.runtime[:facter].load_external(true)
+    end
   end
-  module_function :execfail
-
-  def execute(*args)
-    Puppet.deprecation_warning("Puppet::Util.execute is deprecated; please use Puppet::Util::Execution.execute")
-
-    Puppet::Util::Execution.execute(*args)
-  end
-  module_function :execute
-
+  module_function :skip_external_facts
 end
 end
 
-
-require 'puppet/util/errors'
-require 'puppet/util/methodhelper'
-require 'puppet/util/metaid'
-require 'puppet/util/classgen'
-require 'puppet/util/docs'
-require 'puppet/util/execution'
-require 'puppet/util/logging'
-require 'puppet/util/package'
-require 'puppet/util/warnings'
+require_relative 'util/errors'
+require_relative 'util/metaid'
+require_relative 'util/classgen'
+require_relative 'util/docs'
+require_relative 'util/execution'
+require_relative 'util/logging'
+require_relative 'util/package'
+require_relative 'util/warnings'

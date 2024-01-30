@@ -1,4 +1,6 @@
-require 'puppet/util/posix'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/posix'
 
 module Puppet
   # Manage file group ownership.
@@ -10,7 +12,7 @@ module Puppet
       On Windows, a user (such as "Administrator") can be set as a file's group
       and a group (such as "Administrators") can be set as a file's owner;
       however, a file's owner and group shouldn't be the same. (If the owner
-      is also the group, files with modes like `0640` will cause log churn, as
+      is also the group, files with modes like `"0640"` will cause log churn, as
       they will always appear out of sync.)
     EOT
 
@@ -23,19 +25,26 @@ module Puppet
       # evaluate this property, because they might be added during the catalog
       # apply.
       @should.map! do |val|
-        provider.name2gid(val) or raise "Could not find group #{val}"
+        gid = provider.name2gid(val)
+        if gid
+          gid
+        elsif provider.resource.noop?
+          return false
+        else
+          raise "Could not find group #{val}"
+        end
       end
 
       @should.include?(current)
     end
 
     # We want to print names, not numbers
-    def is_to_s(currentvalue)
-      provider.gid2name(currentvalue) || currentvalue
+    def is_to_s(currentvalue) # rubocop:disable Naming/PredicateName
+      super(provider.gid2name(currentvalue) || currentvalue)
     end
 
     def should_to_s(newvalue)
-      provider.gid2name(newvalue) || newvalue
+      super(provider.gid2name(newvalue) || newvalue)
     end
   end
 end

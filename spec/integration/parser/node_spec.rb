@@ -6,7 +6,7 @@ describe 'node statements' do
   include PuppetSpec::Compiler
   include Matchers::Resource
 
-  shared_examples_for 'nodes' do
+  context 'nodes' do
     it 'selects a node where the name is just a number' do
       # Future parser doesn't allow a number in this position
       catalog = compile_to_catalog(<<-MANIFEST, Puppet::Node.new("5"))
@@ -61,20 +61,43 @@ describe 'node statements' do
       expect(catalog).to have_resource('Notify[matched]')
     end
 
-    it 'errors when two nodes with regexes collide after some regex syntax is removed' do
+    it 'that have regex names should not collide with matching class names' do
+        catalog = compile_to_catalog(<<-MANIFEST, Puppet::Node.new("foo"))
+        class foo {
+          $bar = 'one'
+        }
+
+        node /foo/ {
+          $bar = 'two'
+          include foo
+          notify{"${::foo::bar}":}
+        }
+        MANIFEST
+        expect(catalog).to have_resource('Notify[one]')
+    end
+
+    it 'does not raise an error with regex and non-regex node names are the same' do
       expect do
         compile_to_catalog(<<-MANIFEST)
         node /a.*(c)?/ { }
         node 'a.c' { }
         MANIFEST
-      end.to raise_error(Puppet::Error, /Node 'a.c' is already defined/)
+      end.not_to raise_error
+    end
+
+    it 'errors when two nodes with regexes collide after some regex syntax is removed' do
+      expect do
+        compile_to_catalog(<<-MANIFEST)
+        node /a.*(c)?/ { }
+        node /a.*c/ { }
+        MANIFEST
+      end.to raise_error(Puppet::Error, /Node '__node_regexp__a.c' is already defined/)
     end
 
     it 'provides captures from the regex in the node body' do
       catalog = compile_to_catalog(<<-MANIFEST, Puppet::Node.new("nodename"))
       node /(.*)/ { notify { "$1": } }
       MANIFEST
-
       expect(catalog).to have_resource('Notify[nodename]')
     end
 
@@ -88,15 +111,6 @@ describe 'node statements' do
 
     it 'selects a node that is a literal string' do
       catalog = compile_to_catalog(<<-MANIFEST, Puppet::Node.new("node.name"))
-      node 'node.name' { notify { matched: } }
-      MANIFEST
-
-      expect(catalog).to have_resource('Notify[matched]')
-    end
-
-    it 'selects a node that is a prefix of the agent name' do
-      Puppet[:strict_hostname_checking] = false
-      catalog = compile_to_catalog(<<-MANIFEST, Puppet::Node.new("node.name.com"))
       node 'node.name' { notify { matched: } }
       MANIFEST
 
@@ -120,48 +134,11 @@ describe 'node statements' do
         MANIFEST
       end.to raise_error(Puppet::Error, /Node 'name' is already defined/)
     end
-  end
-
-  describe 'using classic parser' do
-    before :each do
-      Puppet[:parser] = 'current'
-    end
-
-    it_behaves_like 'nodes'
-
-    it 'includes the inherited nodes of the matching node' do
-      catalog = compile_to_catalog(<<-MANIFEST, Puppet::Node.new("nodename"))
-      node notmatched1 { notify { inherited: } }
-      node nodename inherits notmatched1 { notify { matched: } }
-      node notmatched2 { notify { ignored: } }
-      MANIFEST
-
-      expect(catalog).to have_resource('Notify[matched]')
-      expect(catalog).to have_resource('Notify[inherited]')
-    end
-
-    it 'raises deprecation warning for node inheritance for 3x parser' do
-      Puppet.expects(:warning).at_least_once
-      Puppet.expects(:warning).with(regexp_matches(/Deprecation notice\: Node inheritance is not supported in Puppet >= 4\.0\.0/))
-
-      catalog = compile_to_catalog(<<-MANIFEST, Puppet::Node.new("1.2.3.4"))
-        node default {}
-        node '1.2.3.4' inherits default {  }
-      MANIFEST
-    end
-  end
-
-  describe 'using future parser' do
-    before :each do
-      Puppet[:parser] = 'future'
-    end
-
-    it_behaves_like 'nodes'
 
     it 'is unable to parse a name that is an invalid number' do
       expect do
         compile_to_catalog('node 5name {} ')
-      end.to raise_error(Puppet::Error, /Illegal number/)
+      end.to raise_error(Puppet::Error, /Illegal number '5name'/)
     end
 
     it 'parses a node name that is dotted numbers' do
@@ -182,4 +159,5 @@ describe 'node statements' do
     end
 
   end
+
 end

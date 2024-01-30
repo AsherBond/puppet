@@ -1,36 +1,38 @@
+# frozen_string_literal: true
+
 # Sun packaging.
 
-require 'puppet/provider/package'
+require_relative '../../../puppet/provider/package'
 
 Puppet::Type.type(:package).provide :sun, :parent => Puppet::Provider::Package do
   desc "Sun's packaging system.  Requires that you specify the source for
     the packages you're managing.
 
     This provider supports the `install_options` attribute, which allows command-line flags to be passed to pkgadd.
-    These options should be specified as a string (e.g. '--flag'), a hash (e.g. {'--flag' => 'value'}),
-    or an array where each element is either a string or a hash."
+    These options should be specified as an array where each element is either a string
+     or a hash."
 
   commands :pkginfo => "/usr/bin/pkginfo",
-    :pkgadd => "/usr/sbin/pkgadd",
-    :pkgrm => "/usr/sbin/pkgrm"
+           :pkgadd => "/usr/sbin/pkgadd",
+           :pkgrm => "/usr/sbin/pkgrm"
 
-  confine :osfamily => :solaris
-  defaultfor :osfamily => :solaris
+  confine 'os.family' => :solaris
+  defaultfor 'os.family' => :solaris
 
   has_feature :install_options
 
   self::Namemap = {
-    "PKGINST"  => :name,
+    "PKGINST" => :name,
     "CATEGORY" => :category,
-    "ARCH"     => :platform,
-    "VERSION"  => :ensure,
-    "BASEDIR"  => :root,
-    "VENDOR"   => :vendor,
-    "DESC"     => :description,
+    "ARCH" => :platform,
+    "VERSION" => :ensure,
+    "BASEDIR" => :root,
+    "VENDOR" => :vendor,
+    "DESC" => :description,
   }
 
   def self.namemap(hash)
-    self::Namemap.keys.inject({}) do |hsh,k|
+    self::Namemap.keys.inject({}) do |hsh, k|
       hsh.merge(self::Namemap[k] => hash[k])
     end
   end
@@ -68,17 +70,18 @@ Puppet::Type.type(:package).provide :sun, :parent => Puppet::Provider::Package d
     begin
       pkgs = self.class.parse_pkginfo(pkginfo(*args))
       errmsg = case pkgs.size
-        when 0
-          'No message'
-        when 1
-           pkgs[0]['ERROR']
-      end
+               when 0
+                 'No message'
+               when 1
+                 pkgs[0]['ERROR']
+               end
       return self.class.namemap(pkgs[0]) if errmsg.nil?
+
       # according to commit 41356a7 some errors do not raise an exception
-      # so eventhough pkginfo passed, we have to check the actual output
-      raise Puppet::Error, "Unable to get information about package #{@resource[:name]} because of: #{errmsg}"
+      # so even though pkginfo passed, we have to check the actual output
+      raise Puppet::Error, _("Unable to get information about package %{name} because of: %{errmsg}") % { name: @resource[:name], errmsg: errmsg }
     rescue Puppet::ExecutionFailure
-      return {:ensure => :absent}
+      return { :ensure => :absent }
     end
   end
 
@@ -93,12 +96,14 @@ Puppet::Type.type(:package).provide :sun, :parent => Puppet::Provider::Package d
 
   # only looking for -G now
   def install
-    raise Puppet::Error, "Sun packages must specify a package source" unless @resource[:source]
+    # TRANSLATORS Sun refers to the company name, do not translate
+    raise Puppet::Error, _("Sun packages must specify a package source") unless @resource[:source]
+
     options = {
-      :adminfile    => @resource[:adminfile],
+      :adminfile => @resource[:adminfile],
       :responsefile => @resource[:responsefile],
-      :source       => @resource[:source],
-      :cmd_options  => @resource[:install_options]
+      :source => @resource[:source],
+      :cmd_options => @resource[:install_options]
     }
     pkgadd prepare_cmd(options)
   end

@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet_spec/files'
@@ -11,6 +10,10 @@ describe Puppet::Resource::TypeCollection do
     before do
       @dir = tmpfile("autoload_testing")
       FileUtils.mkdir_p @dir
+
+      loader = double('loader', load: nil, set_entry: nil)
+      loaders = double('loaders', runtime3_type_loader: loader)
+      expect(Puppet::Pops::Loaders).to receive(:loaders).at_most(:once).and_return(loaders)
 
       environment = Puppet::Node::Environment.create(:env, [@dir])
       @code = environment.known_resource_types
@@ -40,55 +43,46 @@ describe Puppet::Resource::TypeCollection do
     end
 
     it "should return nil when a class can't be found or loaded" do
-      @code.find_hostclass('', 'nosuchclass').should be_nil
+      expect(@code.find_hostclass('nosuchclass')).to be_nil
     end
 
     it "should load the module's init file first" do
       name = "simple"
       mk_module(name, :init => [name])
-
-      @code.find_hostclass("", name).name.should == name
-    end
-
-    it "should load the module's init file even when searching from a different namespace" do
-      name = "simple"
-      mk_module(name, :init => [name])
-
-      @code.find_hostclass("other::ns", name).name.should == name
+      expect(@code.find_hostclass(name).name).to eq(name)
     end
 
     it "should be able to load definitions from the module base file" do
       name = "simpdef"
       mk_module(name, :define => true, :init => [name])
-      @code.find_definition("", name).name.should == name
+      expect(@code.find_definition(name).name).to eq(name)
     end
 
     it "should be able to load qualified classes from the module base file" do
-      modname = "both"
-      name = "sub"
-      mk_module(modname, :init => %w{both both::sub})
-
-      @code.find_hostclass("both", name).name.should == "both::sub"
+      mk_module('both', :init => %w{both both::sub})
+      expect(@code.find_hostclass("both::sub").name).to eq("both::sub")
     end
 
     it "should be able load classes from a separate file" do
-      modname = "separate"
-      name = "sub"
-      mk_module(modname, :init => %w{separate}, :sub => %w{separate::sub})
-      @code.find_hostclass("separate", name).name.should == "separate::sub"
+      mk_module('separate', :init => %w{separate}, :sub => %w{separate::sub})
+      expect(@code.find_hostclass("separate::sub").name).to eq("separate::sub")
     end
 
     it "should not fail when loading from a separate file if there is no module file" do
-      modname = "alone"
-      name = "sub"
-      mk_module(modname, :sub => %w{alone::sub})
-      lambda { @code.find_hostclass("alone", name) }.should_not raise_error
+      mk_module('alone', :sub => %w{alone::sub})
+      expect { @code.find_hostclass("alone::sub") }.not_to raise_error
     end
 
     it "should be able to load definitions from their own file" do
       name = "mymod"
       mk_module(name, :define => true, :mydefine => ["mymod::mydefine"])
-      @code.find_definition("", "mymod::mydefine").name.should == "mymod::mydefine"
+      expect(@code.find_definition("mymod::mydefine").name).to eq("mymod::mydefine")
+    end
+
+    it 'should be able to load definitions from their own file using uppercased name' do
+      name = 'mymod'
+      mk_module(name, :define => true, :mydefine => ['mymod::mydefine'])
+      expect(@code.find_definition('Mymod::Mydefine')).not_to be_nil
     end
   end
 end

@@ -1,10 +1,26 @@
-require 'puppet/indirector/rest'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/indirector/rest'
+require 'semantic_puppet'
 
 class Puppet::Transaction::Report::Rest < Puppet::Indirector::REST
   desc "Get server report over HTTP via REST."
-  use_server_setting(:report_server)
-  use_port_setting(:report_port)
-  use_srv_service(:report)
+
+  def save(request)
+    session = Puppet.lookup(:http_session)
+    api = session.route_to(:report)
+    response = api.put_report(
+      request.key,
+      request.instance,
+      environment: request.environment.to_s
+    )
+    content_type, body = parse_response(response)
+    deserialize_save(content_type, body)
+  rescue Puppet::HTTP::ResponseError => e
+    return nil if e.response.code == 404
+
+    raise convert_to_http_error(e.response)
+  end
 
   private
 

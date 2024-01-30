@@ -1,19 +1,17 @@
-require 'puppet/application'
-require 'puppet/scheduler'
+# frozen_string_literal: true
 
-# Run periodic actions and a network server in a daemonized process.
+require_relative '../puppet/application'
+require_relative '../puppet/scheduler'
+
+# Run periodic actions in a daemonized process.
 #
-# A Daemon has 3 parts:
+# A Daemon has 2 parts:
 #   * config reparse
-#   * (optional) an agent that responds to #run
-#   * (optional) a server that response to #stop, #start, and #wait_for_shutdown
+#   * an agent that responds to #run
 #
-# The config reparse will occur periodically based on Settings. The server will
-# be started and is expected to manage its own run loop (and so not block the
-# start call). The server will, however, still be waited for by using the
-# #wait_for_shutdown method. The agent is run periodically and a time interval
-# based on Settings. The config reparse will update this time interval when
-# needed.
+# The config reparse will occur periodically based on Settings. The agent
+# is run periodically and a time interval based on Settings. The config
+# reparse will update this time interval when needed.
 #
 # The Daemon is also responsible for signal handling, starting, stopping,
 # running the agent on demand, and reloading the entire process. It ensures
@@ -21,11 +19,18 @@ require 'puppet/scheduler'
 #
 # @api private
 class Puppet::Daemon
-  attr_accessor :agent, :server, :argv
+  SIGNAL_CHECK_INTERVAL = 5
 
-  def initialize(pidfile, scheduler = Puppet::Scheduler::Scheduler.new())
+  attr_accessor :argv
+  attr_reader :signals, :agent
+
+  def initialize(agent, pidfile, scheduler = Puppet::Scheduler::Scheduler.new())
+    raise Puppet::DevError, _("Daemons must have an agent") unless agent
+
     @scheduler = scheduler
     @pidfile = pidfile
+    @agent = agent
+    @signals = []
   end
 
   def daemonname
@@ -34,7 +39,8 @@ class Puppet::Daemon
 
   # Put the daemon into the background.
   def daemonize
-    if pid = fork
+    pid = fork
+    if pid
       Process.detach(pid)
       exit(0)
     end
@@ -52,7 +58,7 @@ class Puppet::Daemon
 
   # Close stdin/stdout/stderr so that we can finish our transition into 'daemon' mode.
   # @return nil
-  def self.close_streams()
+  def self.close_streams
     Puppet.debug("Closing streams for daemon mode")
     begin
       $stdin.reopen "/dev/null"
@@ -62,7 +68,7 @@ class Puppet::Daemon
       Puppet.debug("Finished closing streams for daemon mode")
     rescue => detail
       Puppet.err "Could not start #{Puppet.run_mode.name}: #{detail}"
-      Puppet::Util::replace_file("/tmp/daemonout", 0644) do |f|
+      Puppet::Util.replace_file("/tmp/daemonout", 0644) do |f|
         f.puts "Could not start #{Puppet.run_mode.name}: #{detail}"
       end
       exit(12)
@@ -70,12 +76,13 @@ class Puppet::Daemon
   end
 
   # Convenience signature for calling Puppet::Daemon.close_streams
-  def close_streams()
+  def close_streams
     Puppet::Daemon.close_streams
   end
 
   def reexec
-    raise Puppet::DevError, "Cannot reexec unless ARGV arguments are set" unless argv
+    raise Puppet::DevError, _("Cannot reexec unless ARGV arguments are set") unless argv
+
     command = $0 + " " + argv.join(" ")
     Puppet.notice "Restarting with '#{command}'"
     stop(:exit => false)
@@ -83,18 +90,14 @@ class Puppet::Daemon
   end
 
   def reload
-    return unless agent
-    if agent.running?
-      Puppet.notice "Not triggering already-running agent"
-      return
-    end
-
-    agent.run({:splay => false})
+    agent.run({ :splay => false })
+  rescue Puppet::LockError
+    Puppet.notice "Not triggering already-running agent"
   end
 
   def restart
     Puppet::Application.restart!
-    reexec unless agent and agent.running?
+    reexec
   end
 
   def reopen_logs
@@ -104,22 +107,28 @@ class Puppet::Daemon
   # Trap a couple of the main signals.  This should probably be handled
   # in a way that anyone else can register callbacks for traps, but, eh.
   def set_signal_traps
-    signals = {:INT => :stop, :TERM => :stop }
-    # extended signals not supported under windows
-    signals.update({:HUP => :restart, :USR1 => :reload, :USR2 => :reopen_logs }) unless Puppet.features.microsoft_windows?
-    signals.each do |signal, method|
+    [:INT, :TERM].each do |signal|
       Signal.trap(signal) do
-        Puppet.notice "Caught #{signal}; calling #{method}"
-        send(method)
+        Puppet.notice "Caught #{signal}; exiting"
+        stop
+      end
+    end
+
+    # extended signals not supported under windows
+    if !Puppet::Util::Platform.windows?
+      signals = { :HUP => :restart, :USR1 => :reload, :USR2 => :reopen_logs }
+      signals.each do |signal, method|
+        Signal.trap(signal) do
+          Puppet.notice "Caught #{signal}; storing #{method}"
+          @signals << method
+        end
       end
     end
   end
 
   # Stop everything
-  def stop(args = {:exit => true})
+  def stop(args = { :exit => true })
     Puppet::Application.stop!
-
-    server.stop if server
 
     remove_pidfile
 
@@ -129,19 +138,8 @@ class Puppet::Daemon
   end
 
   def start
-    set_signal_traps
-
     create_pidfile
-
-    raise Puppet::DevError, "Daemons must have an agent, server, or both" unless agent or server
-
-    # Start the listening server, if required.
-    server.start if server
-
-    # Finally, loop forever running events - or, at least, until we exit.
     run_event_loop
-
-    server.wait_for_shutdown if server
   end
 
   private
@@ -157,6 +155,7 @@ class Puppet::Daemon
     @pidfile.unlock
   end
 
+  # Loop forever running events - or, at least, until we exit.
   def run_event_loop
     agent_run = Puppet::Scheduler.create_job(Puppet[:runinterval], Puppet[:splay], Puppet[:splaylimit]) do
       # Splay for the daemon is handled in the scheduler
@@ -173,10 +172,15 @@ class Puppet::Daemon
       end
     end
 
-    reparse_run.disable if Puppet[:filetimeout] == 0
-    agent_run.disable unless agent
+    signal_loop = Puppet::Scheduler.create_job(SIGNAL_CHECK_INTERVAL) do
+      while method = @signals.shift # rubocop:disable Lint/AssignmentInCondition
+        Puppet.notice "Processing #{method}"
+        send(method)
+      end
+    end
 
-    @scheduler.run_loop([reparse_run, agent_run])
+    reparse_run.disable if Puppet[:filetimeout] == 0
+
+    @scheduler.run_loop([reparse_run, agent_run, signal_loop])
   end
 end
-

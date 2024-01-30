@@ -1,8 +1,10 @@
+# frozen_string_literal: true
+
 Puppet::Type.type(:package).provide :urpmi, :parent => :rpm, :source => :rpm do
   desc "Support via `urpmi`."
   commands :urpmi => "urpmi", :urpmq => "urpmq", :rpm => "rpm", :urpme => "urpme"
 
-  defaultfor :operatingsystem => [:mandriva, :mandrake]
+  defaultfor 'os.name' => [:mandriva, :mandrake]
 
   has_feature :versionable
 
@@ -23,7 +25,7 @@ Puppet::Type.type(:package).provide :urpmi, :parent => :rpm, :source => :rpm do
     urpmi "--auto", wanted
 
     unless self.query
-      raise Puppet::Error, "Package #{self.name} was not present after trying to install it"
+      raise Puppet::Error, _("Package %{name} was not present after trying to install it") % { name: self.name }
     end
   end
 

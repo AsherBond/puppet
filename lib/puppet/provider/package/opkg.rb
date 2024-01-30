@@ -1,12 +1,14 @@
-require 'puppet/provider/package'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/provider/package'
 
 Puppet::Type.type(:package).provide :opkg, :source => :opkg, :parent => Puppet::Provider::Package do
   desc "Opkg packaging support. Common on OpenWrt and OpenEmbedded platforms"
 
   commands :opkg => "opkg"
 
-  confine     :operatingsystem => :openwrt
-  defaultfor  :operatingsystem => :openwrt
+  confine     'os.name' => :openwrt
+  defaultfor  'os.name' => :openwrt
 
   def self.instances
     packages = []
@@ -16,13 +18,14 @@ Puppet::Type.type(:package).provide :opkg, :source => :opkg, :parent => Puppet::
       hash = {}
 
       process.each_line { |line|
-        if match = regex.match(line)
-          fields.zip(match.captures) { |field,value| hash[field] = value }
+        match = regex.match(line)
+        if match
+          fields.zip(match.captures) { |field, value| hash[field] = value }
           hash[:provider] = self.name
           packages << new(hash)
           hash = {}
         else
-          warning("Failed to match line %s" % line)
+          warning(_("Failed to match line %{line}") % { line: line })
         end
       }
     end
@@ -32,7 +35,7 @@ Puppet::Type.type(:package).provide :opkg, :source => :opkg, :parent => Puppet::
   end
 
   def latest
-    output = opkg( "list", @resource[:name])
+    output = opkg("list", @resource[:name])
     matches = /^(\S+) - (\S+)/.match(output).captures
     matches[1]
   end
@@ -40,17 +43,17 @@ Puppet::Type.type(:package).provide :opkg, :source => :opkg, :parent => Puppet::
   def install
     # OpenWrt package lists are ephemeral, make sure we have at least
     # some entries in the list directory for opkg to use
-    opkg('update') if Dir.entries('/var/opkg-lists/').size <= 2
+    opkg('update') if package_lists.size <= 2
 
     if @resource[:source]
-      opkg( '--force-overwrite', 'install', @resource[:source] )
+      opkg('--force-overwrite', 'install', @resource[:source])
     else
-      opkg( '--force-overwrite', 'install', @resource[:name] )
+      opkg('--force-overwrite', 'install', @resource[:name])
     end
   end
 
   def uninstall
-    opkg( 'remove', @resource[:name] )
+    opkg('remove', @resource[:name])
   end
 
   def update
@@ -59,10 +62,11 @@ Puppet::Type.type(:package).provide :opkg, :source => :opkg, :parent => Puppet::
 
   def query
     # list out our specific package
-    output = opkg( 'list-installed', @resource[:name] )
+    output = opkg('list-installed', @resource[:name])
     if output =~ /^(\S+) - (\S+)/
       return { :ensure => $2 }
     end
+
     nil
   rescue Puppet::ExecutionFailure
     return {
@@ -73,4 +77,9 @@ Puppet::Type.type(:package).provide :opkg, :source => :opkg, :parent => Puppet::
     }
   end
 
+  private
+
+  def package_lists
+    Dir.entries('/var/opkg-lists/')
+  end
 end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 Puppet::Type.type(:package).provide :fink, :parent => :dpkg, :source => :dpkg do
   # Provide sorting functionality
   include Puppet::Util::Package
@@ -37,17 +39,22 @@ Puppet::Type.type(:package).provide :fink, :parent => :dpkg, :source => :dpkg do
 
     cmd << :install << str
 
-    finkcmd(cmd)
+    self.unhold if self.properties[:mark] == :hold
+    begin
+      finkcmd(cmd)
+    ensure
+      self.hold if @resource[:mark] == :hold
+    end
   end
 
   # What's the latest package version available?
   def latest
-    output = aptcache :policy,  @resource[:name]
+    output = aptcache :policy, @resource[:name]
 
     if output =~ /Candidate:\s+(\S+)\s/
       return $1
     else
-      self.err "Could not find latest version"
+      self.err _("Could not find latest version")
       return nil
     end
   end
@@ -56,12 +63,13 @@ Puppet::Type.type(:package).provide :fink, :parent => :dpkg, :source => :dpkg do
   # preseeds answers to dpkg-set-selection from the "responsefile"
   #
   def run_preseed
-    if response = @resource[:responsefile] and Puppet::FileSystem.exist?(response)
-      self.info("Preseeding #{response} to debconf-set-selections")
+    response = @resource[:responsefile]
+    if response && Puppet::FileSystem.exist?(response)
+      self.info(_("Preseeding %{response} to debconf-set-selections") % { response: response })
 
       preseed response
     else
-      self.info "No responsefile specified or non existant, not preseeding anything"
+      self.info _("No responsefile specified or non existent, not preseeding anything")
     end
   end
 
@@ -70,10 +78,22 @@ Puppet::Type.type(:package).provide :fink, :parent => :dpkg, :source => :dpkg do
   end
 
   def uninstall
-    finkcmd "-y", "-q", :remove, @model[:name]
+    self.unhold if self.properties[:mark] == :hold
+    begin
+      finkcmd "-y", "-q", :remove, @model[:name]
+    rescue StandardError, LoadError => e
+      self.hold if self.properties[:mark] == :hold
+      raise e
+    end
   end
 
   def purge
-    aptget '-y', '-q', 'remove', '--purge', @resource[:name]
+    self.unhold if self.properties[:mark] == :hold
+    begin
+      aptget '-y', '-q', 'remove', '--purge', @resource[:name]
+    rescue StandardError, LoadError => e
+      self.hold if self.properties[:mark] == :hold
+      raise e
+    end
   end
 end

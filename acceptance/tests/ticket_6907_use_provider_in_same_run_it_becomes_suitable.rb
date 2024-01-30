@@ -1,5 +1,9 @@
 test_name "providers should be useable in the same run they become suitable"
 
+tag 'audit:high',       # autoloader, core puppet agent run functionality
+    'audit:refactor',    # Use block style `test_name`
+    'audit:integration' # does not require packages, probably implicitly assumed in many other places
+
 agents.each do |agent|
   dir = agent.tmpdir('provider-6907')
 
@@ -15,7 +19,7 @@ TYPE
   on agent, "cat > #{dir}/lib/puppet/provider/test6907/only.rb", :stdin => <<PROVIDER
 Puppet::Type.type(:test6907).provide(:only) do
   # The name of the file is chosen to be *.exe so it works on windows and *nix
-  # becasue windows inspects the PATHEXT environment variable in 1.9.3 and later.
+  # because windows inspects the PATHEXT environment variable in 1.9.3 and later.
   commands :anything => "#{dir}/must_exist.exe"
   require 'fileutils'
 
@@ -35,10 +39,10 @@ PROVIDER
   }
 
   # The name of the file is chosen to be *.exe so it works on windows and *nix
-  # becasue windows inspects the PATHEXT environment variable in 1.9.3 and later.
+  # because windows inspects the PATHEXT environment variable in 1.9.3 and later.
   file { "#{dir}/must_exist.exe":
     ensure => file,
-    mode => 0755,
+    mode => "0755",
   }
 MANIFEST
 

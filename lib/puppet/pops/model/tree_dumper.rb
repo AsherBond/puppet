@@ -1,9 +1,12 @@
+# frozen_string_literal: true
+
 # Base class for formatted textual dump of a "model"
 #
 class Puppet::Pops::Model::TreeDumper
   attr_accessor :indent_count
+
   def initialize initial_indentation = 0
-    @@dump_visitor ||= Puppet::Pops::Visitor.new(nil,"dump",0,0)
+    @@dump_visitor ||= Puppet::Pops::Visitor.new(nil, "dump", 0, 0)
     @indent_count = initial_indentation
   end
 
@@ -12,7 +15,7 @@ class Puppet::Pops::Model::TreeDumper
   end
 
   def do_dump(o)
-    @@dump_visitor.visit_this(self, o)
+    @@dump_visitor.visit_this_0(self, o)
   end
 
   def indent
@@ -20,12 +23,12 @@ class Puppet::Pops::Model::TreeDumper
   end
 
   def format(x)
-    result = ""
+    result = ''.dup
     parts = format_r(x)
     parts.each_index do |i|
       if i > 0
-        # separate with space unless previous ends with whitepsace or (
-        result << ' ' if parts[i] != ")" && parts[i-1] !~ /.*(?:\s+|\()$/ && parts[i] !~ /^\s+/
+        # separate with space unless previous ends with whitespace or (
+        result << ' ' if parts[i] != ")" && parts[i - 1] !~ /.*(?:\s+|\()$/ && parts[i] !~ /^\s+/
       end
       result << parts[i].to_s
     end
@@ -43,7 +46,7 @@ class Puppet::Pops::Model::TreeDumper
       @indent_count -= 1
     when Array
       result << '('
-      result += x.collect {|a| format_r(a) }.flatten
+      result += x.collect { |a| format_r(a) }.flatten
       result << ')'
     when Symbol
       result << x.to_s # Allows Symbols in arrays e.g. ["text", =>, "text"]

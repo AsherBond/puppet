@@ -18,27 +18,25 @@ module EvaluatorRspecHelper
     node = Puppet::Node.new('localhost')
     compiler = Puppet::Parser::Compiler.new(node)
 
-    # Compiler must create the top scope
-#    compiler.send(:evaluate_main)
-
     # compiler creates the top scope if one is not present
     top_scope = compiler.topscope()
     # top_scope = Puppet::Parser::Scope.new(compiler)
 
     evaluator = Puppet::Pops::Evaluator::EvaluatorImpl.new
-    result = evaluator.evaluate(in_top_scope.current, top_scope)
-    if in_named_scope
-      other_scope = Puppet::Parser::Scope.new(compiler)
-      other_scope.add_namespace(scopename)
-      result = evaluator.evaluate(in_named_scope.current, other_scope)
+    Puppet.override(:loaders => compiler.loaders) do
+      result = evaluator.evaluate(in_top_scope.model, top_scope)
+      if in_named_scope
+        other_scope = Puppet::Parser::Scope.new(compiler)
+        result = evaluator.evaluate(in_named_scope.model, other_scope)
+      end
+      if in_top_scope_again
+        result = evaluator.evaluate(in_top_scope_again.model, top_scope)
+      end
+      if block_given?
+        block.call(top_scope)
+      end
+      result
     end
-    if in_top_scope_again
-      result = evaluator.evaluate(in_top_scope_again.current, top_scope)
-    end
-    if block_given?
-      block.call(top_scope)
-    end
-    result
   end
 
   # Evaluate a Factory wrapper round a model object in top scope + local scope
@@ -56,20 +54,22 @@ module EvaluatorRspecHelper
     top_scope = compiler.topscope()
 
     evaluator = Puppet::Pops::Evaluator::EvaluatorImpl.new
-    result = evaluator.evaluate(in_top_scope.current, top_scope)
-    if in_local_scope
-      # This is really bad in 3.x scope
-      elevel = top_scope.ephemeral_level
-      top_scope.new_ephemeral(true)
-      result = evaluator.evaluate(in_local_scope.current, top_scope)
-      top_scope.unset_ephemeral_var(elevel)
+    Puppet.override(:loaders => compiler.loaders) do
+      result = evaluator.evaluate(in_top_scope.model, top_scope)
+      if in_local_scope
+        # This is really bad in 3.x scope
+        top_scope.with_guarded_scope do
+          top_scope.new_ephemeral(true)
+          result = evaluator.evaluate(in_local_scope.model, top_scope)
+        end
+      end
+      if in_top_scope_again
+        result = evaluator.evaluate(in_top_scope_again.model, top_scope)
+      end
+      if block_given?
+        block.call(top_scope)
+      end
+      result
     end
-    if in_top_scope_again
-      result = evaluator.evaluate(in_top_scope_again.current, top_scope)
-    end
-    if block_given?
-      block.call(top_scope)
-    end
-    result
   end
 end

@@ -1,24 +1,25 @@
-# This doesn't get stored in trac, since it changes every time.
+# frozen_string_literal: true
+
 providers = Puppet::Util::Reference.newreference :providers, :title => "Provider Suitability Report", :depth => 1, :dynamic => true, :doc => "Which providers are valid for this machine" do
   types = []
   Puppet::Type.loadall
   Puppet::Type.eachtype do |klass|
-    next unless klass.providers.length > 0
+    next unless klass && klass.providers.length > 0
+
     types << klass
   end
-  types.sort! { |a,b| a.name.to_s <=> b.name.to_s }
+  types.sort! { |a, b| a.name.to_s <=> b.name.to_s }
 
   command_line = Puppet::Util::CommandLine.new
-  types.reject! { |type| ! command_line.args.include?(type.name.to_s) } unless command_line.args.empty?
+  types.reject! { |type| !command_line.args.include?(type.name.to_s) } unless command_line.args.empty?
 
   ret = "Details about this host:\n\n"
 
   # Throw some facts in there, so we know where the report is from.
-  ["Ruby Version", "Puppet Version", "Operating System", "Operating System Release"].each do |label|
-    name = label.gsub(/\s+/, '')
-    value = Facter.value(name)
-    ret << option(label, value)
-  end
+  ret << option('Ruby Version', Facter.value('ruby.version'))
+  ret << option('Puppet Version', Facter.value('puppetversion'))
+  ret << option('Operating System', Facter.value('os.name'))
+  ret << option('Operating System Release', Facter.value('os.release.full'))
   ret << "\n"
 
   count = 1
@@ -33,19 +34,18 @@ providers = Puppet::Util::Reference.newreference :providers, :title => "Provider
 
     table_data = {}
 
-    functional = false
     notes = []
     default = type.defaultprovider ? type.defaultprovider.name : 'none'
-    type.providers.sort { |a,b| a.to_s <=> b.to_s }.each do |pname|
+    type.providers.sort_by(&:to_s).each do |pname|
       data = []
       table_data[pname] = data
       provider = type.provider(pname)
 
       # Add the suitability note
-      if missing = provider.suitable?(false) and missing.empty?
+      missing = provider.suitable?(false)
+      if missing && missing.empty?
         data << "*X*"
         suit = true
-        functional = true
       else
         data << "[#{count}]_" # A pointer to the appropriate footnote
         suit = false
@@ -57,21 +57,21 @@ providers = Puppet::Util::Reference.newreference :providers, :title => "Provider
         missing.each do |test, values|
           case test
           when :exists
-            details << "  - Missing files #{values.join(", ")}\n"
+            details << _("  - Missing files %{files}\n") % { files: values.join(", ") }
           when :variable
             values.each do |name, facts|
               if Puppet.settings.valid?(name)
-                details << "  - Setting #{name} (currently #{Puppet.settings.value(name).inspect}) not in list #{facts.join(", ")}\n"
+                details << _("  - Setting %{name} (currently %{value}) not in list %{facts}\n") % { name: name, value: Puppet.settings.value(name).inspect, facts: facts.join(", ") }
               else
-                details << "  - Fact #{name} (currently #{Facter.value(name).inspect}) not in list #{facts.join(", ")}\n"
+                details << _("  - Fact %{name} (currently %{value}) not in list %{facts}\n") % { name: name, value: Puppet.runtime[:facter].value(name).inspect, facts: facts.join(", ") }
               end
             end
           when :true
-            details << "  - Got #{values} true tests that should have been false\n"
+            details << _("  - Got %{values} true tests that should have been false\n") % { values: values }
           when :false
-            details << "  - Got #{values} false tests that should have been true\n"
+            details << _("  - Got %{values} false tests that should have been true\n") % { values: values }
           when :feature
-            details << "  - Missing features #{values.collect { |f| f.to_s }.join(",")}\n"
+            details << _("  - Missing features %{values}\n") % { values: values.collect { |f| f.to_s }.join(",") }
           end
         end
         notes << details
@@ -91,7 +91,7 @@ providers = Puppet::Util::Reference.newreference :providers, :title => "Provider
 
     ret << markdown_header(type.name.to_s + "_", 2)
 
-    ret << "[#{type.name}](#{"http://docs.puppetlabs.com/references/stable/type.html##{type.name}"})\n\n"
+    ret << "[#{type.name}](https://puppet.com/docs/puppet/latest/type.html##{type.name})\n\n"
     ret << option("Default provider", default)
     ret << doctable(headers, table_data)
 

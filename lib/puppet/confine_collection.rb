@@ -1,6 +1,8 @@
+# frozen_string_literal: true
+
 # Manage a collection of confines, returning a boolean or
 # helpful information.
-require 'puppet/confine'
+require_relative '../puppet/confine'
 
 class Puppet::ConfineCollection
   def confine(hash)
@@ -11,7 +13,8 @@ class Puppet::ConfineCollection
       for_binary = false
     end
     hash.each do |test, values|
-      if klass = Puppet::Confine.test(test)
+      klass = Puppet::Confine.test(test)
+      if klass
         @confines << klass.new(values)
         @confines[-1].for_binary = true if for_binary
       else
@@ -24,6 +27,7 @@ class Puppet::ConfineCollection
   end
 
   attr_reader :label
+
   def initialize(label)
     @label = label
     @confines = []
@@ -38,13 +42,13 @@ class Puppet::ConfineCollection
     confines.each do |klass, list|
       value = klass.summarize(list)
       next if (value.respond_to?(:length) and value.length == 0) or (value == 0)
-      result[klass.name] = value
 
+      result[klass.name] = value
     end
     result
   end
 
   def valid?
-    ! @confines.detect { |c| ! c.valid? }
+    !@confines.detect { |c| !c.valid? }
   end
 end

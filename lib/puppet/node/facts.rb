@@ -1,21 +1,23 @@
+# frozen_string_literal: true
+
 require 'time'
 
-require 'puppet/node'
-require 'puppet/indirector'
-
-require 'puppet/util/pson'
+require_relative '../../puppet/node'
+require_relative '../../puppet/indirector'
+require_relative '../../puppet/util/psych_support'
 
 # Manage a given node's facts.  This either accepts facts and stores them, or
 # returns facts for a given node.
 class Puppet::Node::Facts
+  include Puppet::Util::PsychSupport
+
   # Set up indirection, so that nodes can be looked for in
   # the node sources.
   extend Puppet::Indirector
-  extend Puppet::Util::Pson
 
   # We want to expire any cached nodes if the facts are saved.
   module NodeExpirer
-    def save(instance, key = nil, options={})
+    def save(instance, key = nil, options = {})
       Puppet::Node.indirection.expire(instance.name, options)
       super
     end
@@ -23,7 +25,7 @@ class Puppet::Node::Facts
 
   indirects :facts, :terminus_setting => :facts_terminus, :extend => NodeExpirer
 
-  attr_accessor :name, :values
+  attr_accessor :name, :values, :timestamp
 
   def add_local_facts
     values["clientcert"] = Puppet.settings[:certname]
@@ -41,16 +43,16 @@ class Puppet::Node::Facts
   def initialize_from_hash(data)
     @name = data['name']
     @values = data['values']
-    # Timestamp will be here in YAML
-    timestamp = data['values']['_timestamp']
-    @values.delete_if do |key, val|
-      key =~ /^_/
-    end
-
-    #Timestamp will be here in pson
+    # Timestamp will be here in YAML, e.g. when reading old reports
+    timestamp = @values.delete('_timestamp')
+    # Timestamp will be here in JSON
     timestamp ||= data['timestamp']
-    timestamp = Time.parse(timestamp) if timestamp.is_a? String
-    self.timestamp = timestamp
+
+    if timestamp.is_a? String
+      @timestamp = Time.parse(timestamp)
+    else
+      @timestamp = timestamp
+    end
 
     self.expiration = data['expiration']
     if expiration.is_a? String
@@ -58,14 +60,16 @@ class Puppet::Node::Facts
     end
   end
 
-  # Convert all fact values into strings.
-  def stringify
-    values.each do |fact, value|
-      values[fact] = value.to_s
-    end
+  # Add extra values, such as facts given to lookup on the command line. The
+  # extra values will override existing values.
+  # @param extra_values [Hash{String=>Object}] the values to add
+  # @api private
+  def add_extra_values(extra_values)
+    @values.merge!(extra_values)
+    nil
   end
 
-  # Sanitize fact values by converting everything not a string, boolean
+  # Sanitize fact values by converting everything not a string, Boolean
   # numeric, array or hash into strings.
   def sanitize
     values.each do |fact, value|
@@ -75,7 +79,8 @@ class Puppet::Node::Facts
 
   def ==(other)
     return false unless self.name == other.name
-    strip_internal == other.send(:strip_internal)
+
+    values == other.values
   end
 
   def self.from_data_hash(data)
@@ -84,22 +89,17 @@ class Puppet::Node::Facts
     new_facts
   end
 
-  def self.from_pson(data)
-    Puppet.deprecation_warning("from_pson is being removed in favour of from_data_hash.")
-    self.from_data_hash(data)
-  end
-
   def to_data_hash
     result = {
       'name' => name,
-      'values' => strip_internal,
+      'values' => values
     }
 
-    if timestamp
-      if timestamp.is_a? Time
-        result['timestamp'] = timestamp.iso8601(9)
+    if @timestamp
+      if @timestamp.is_a? Time
+        result['timestamp'] = @timestamp.iso8601(9)
       else
-        result['timestamp'] = timestamp
+        result['timestamp'] = @timestamp
       end
     end
 
@@ -114,42 +114,51 @@ class Puppet::Node::Facts
     result
   end
 
-  # Add internal data to the facts for storage.
   def add_timestamp
-    self.timestamp = Time.now
+    @timestamp = Time.now
   end
 
-  def timestamp=(time)
-    self.values['_timestamp'] = time
-  end
-
-  def timestamp
-    self.values['_timestamp']
-  end
-
-  # Strip out that internal data.
-  def strip_internal
-    newvals = values.dup
-    newvals.find_all { |name, value| name.to_s =~ /^_/ }.each { |name, value| newvals.delete(name) }
-    newvals
+  def to_yaml
+    facts_to_display = Psych.parse_stream(YAML.dump(self))
+    quote_special_strings(facts_to_display)
   end
 
   private
 
+  def quote_special_strings(fact_hash)
+    fact_hash.grep(Psych::Nodes::Scalar).each do |node|
+      next unless node.value =~ /:/
+
+      node.plain  = false
+      node.quoted = true
+      node.style  = Psych::Nodes::Scalar::DOUBLE_QUOTED
+    end
+
+    fact_hash.yaml
+  end
+
   def sanitize_fact(fact)
-    if fact.is_a? Hash then
+    case fact
+    when Hash
       ret = {}
-      fact.each_pair { |k,v| ret[sanitize_fact k]=sanitize_fact v }
+      fact.each_pair { |k, v| ret[sanitize_fact k] = sanitize_fact v }
       ret
-    elsif fact.is_a? Array then
+    when Array
       fact.collect { |i| sanitize_fact i }
-    elsif fact.is_a? Numeric \
-      or fact.is_a? TrueClass \
-      or fact.is_a? FalseClass \
-      or fact.is_a? String
+    when Numeric, TrueClass, FalseClass, String
       fact
     else
-      fact.to_s
+      result = fact.to_s
+      # The result may be ascii-8bit encoded without being a binary (low level object.inspect returns ascii-8bit string)
+      if result.encoding == Encoding::ASCII_8BIT
+        begin
+          result = result.encode(Encoding::UTF_8)
+        rescue
+          # return the ascii-8bit - it will be taken as a binary
+          result
+        end
+      end
+      result
     end
   end
 end

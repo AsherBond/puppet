@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/interface'
 
@@ -15,9 +14,6 @@ describe Puppet::Interface::Action do
 
   describe "#when_invoked=" do
     it "should fail if the block has arity 0" do
-      pending "Ruby 1.8 (painfully) treats argument-free blocks as arity -1" if
-        RUBY_VERSION =~ /^1\.8/
-
       expect {
         Puppet::Interface.new(:action_when_invoked, '1.0.0') do
           action :foo do
@@ -34,7 +30,7 @@ describe Puppet::Interface::Action do
         end
       end
       # -1, because we use option defaulting. :(
-      face.method(:foo).arity.should == -1
+      expect(face.method(:foo).arity).to eq(-1)
     end
 
     it "should work with arity 2 blocks" do
@@ -44,7 +40,7 @@ describe Puppet::Interface::Action do
         end
       end
       # -2, because we use option defaulting. :(
-      face.method(:foo).arity.should == -2
+      expect(face.method(:foo).arity).to eq(-2)
     end
 
     it "should work with arity 1 blocks that collect arguments" do
@@ -54,7 +50,7 @@ describe Puppet::Interface::Action do
         end
       end
       # -1, because we use only varargs
-      face.method(:foo).arity.should == -1
+      expect(face.method(:foo).arity).to eq(-1)
     end
 
     it "should work with arity 2 blocks that collect arguments" do
@@ -64,7 +60,7 @@ describe Puppet::Interface::Action do
         end
       end
       # -2, because we take one mandatory argument, and one varargs
-      face.method(:foo).arity.should == -2
+      expect(face.method(:foo).arity).to eq(-2)
     end
   end
 
@@ -79,8 +75,8 @@ describe Puppet::Interface::Action do
           when_invoked { |options| "the value of foo is '#{foo}'" }
         end
       end
-      face.foo.should == 25
-      face.bar.should == "the value of foo is '25'"
+      expect(face.foo).to eq(25)
+      expect(face.bar).to eq("the value of foo is '25'")
     end
 
     # bar is a class action calling a class action
@@ -111,11 +107,11 @@ describe Puppet::Interface::Action do
           when_invoked { |options| baz }
         end
       end
-      face.foo.should  == 25
-      face.bar.should  == "the value of foo is '25'"
-      face.quux.should == "qux told me the value of foo in baz is '25'"
-      face.baz.should  == "the value of foo in baz is '25'"
-      face.qux.should  == "the value of foo in baz is '25'"
+      expect(face.foo).to  eq(25)
+      expect(face.bar).to  eq("the value of foo is '25'")
+      expect(face.quux).to eq("qux told me the value of foo in baz is '25'")
+      expect(face.baz).to  eq("the value of foo in baz is '25'")
+      expect(face.qux).to  eq("the value of foo in baz is '25'")
     end
 
     context "when calling the Ruby API" do
@@ -132,16 +128,16 @@ describe Puppet::Interface::Action do
 
       it "should work when no options are supplied" do
         options = face.bar
-        options.should == {}
+        expect(options).to eq({})
       end
 
       it "should work when options are supplied" do
         options = face.bar(:bar => "beer")
-        options.should == { :bar => "beer" }
+        expect(options).to eq({ :bar => "beer" })
       end
 
       it "should call #validate_and_clean on the action when invoked" do
-        face.get_action(:bar).expects(:validate_and_clean).with({}).returns({})
+        expect(face.get_action(:bar)).to receive(:validate_and_clean).with({}).and_return({})
         face.bar 1, :two, 'three'
       end
     end
@@ -158,8 +154,8 @@ describe Puppet::Interface::Action do
         end
       end
 
-      face.should_not be_option :bar
-      face.get_action(:foo).should be_option :bar
+      expect(face).not_to be_option :bar
+      expect(face.get_action(:foo)).to be_option :bar
     end
 
     it "should return only action level options when there are no face options" do
@@ -170,7 +166,7 @@ describe Puppet::Interface::Action do
         end
       end
 
-      face.get_action(:foo).options.should =~ [:bar]
+      expect(face.get_action(:foo).options).to match_array([:bar])
     end
 
     describe "option aliases" do
@@ -186,13 +182,13 @@ describe Puppet::Interface::Action do
       end
 
       it "should only list options and not aliases" do
-        action.options.should =~ [:bar]
+        expect(action.options).to match_array([:bar])
       end
 
       it "should use the canonical option name when passed aliases" do
         name = option.name
         option.aliases.each do |input|
-          face.foo(input => 1).should == { name => 1 }
+          expect(face.foo(input => 1)).to eq({ name => 1 })
         end
       end
     end
@@ -207,7 +203,7 @@ describe Puppet::Interface::Action do
       end
 
       it "should return combined face and action options" do
-        face.get_action(:foo).options.should =~ [:bar, :quux]
+        expect(face.get_action(:foo).options).to match_array([:bar, :quux])
       end
 
       it "should fetch options that the face inherited" do
@@ -222,25 +218,25 @@ describe Puppet::Interface::Action do
         end
 
         action = child.get_action(:action)
-        action.should be
+        expect(action).to be
 
         [:baz, :bar, :foo].each do |name|
-          action.get_option(name).should be_an_instance_of Puppet::Interface::Option
+          expect(action.get_option(name)).to be_an_instance_of Puppet::Interface::Option
         end
       end
 
       it "should get an action option when asked" do
-        face.get_action(:foo).get_option(:bar).
-          should be_an_instance_of Puppet::Interface::Option
+        expect(face.get_action(:foo).get_option(:bar)).
+          to be_an_instance_of Puppet::Interface::Option
       end
 
       it "should get a face option when asked" do
-        face.get_action(:foo).get_option(:quux).
-          should be_an_instance_of Puppet::Interface::Option
+        expect(face.get_action(:foo).get_option(:quux)).
+          to be_an_instance_of Puppet::Interface::Option
       end
 
       it "should return options only for this action" do
-        face.get_action(:baz).options.should =~ [:bim, :quux]
+        expect(face.get_action(:baz).options).to match_array([:bim, :quux])
       end
     end
 
@@ -249,7 +245,7 @@ describe Puppet::Interface::Action do
         face = Puppet::Interface.new(:with_options, '0.0.1') do
           action(:foo) do
             when_invoked do |options| true end
-            self.instance_eval &block
+            self.instance_eval(&block)
           end
         end
         face.get_action(:foo)
@@ -307,7 +303,7 @@ describe Puppet::Interface::Action do
         end
 
         face.boo :foo => 1, :bar => 1, :quux => 1, :f => 1, :baz => 1
-        face.reported.should == [ :foo, :bar, :quux, :f, :baz ]
+        expect(face.reported).to eq([ :foo, :bar, :quux, :f, :baz ])
       end
 
       it "should execute after advice on action options in declaration order" do
@@ -321,7 +317,7 @@ describe Puppet::Interface::Action do
         end
 
         face.boo :foo => 1, :bar => 1, :quux => 1, :f => 1, :baz => 1
-        face.reported.should == [ :foo, :bar, :quux, :f, :baz ].reverse
+        expect(face.reported).to eq([ :foo, :bar, :quux, :f, :baz ].reverse)
       end
 
       it "should execute before advice on face options in declaration order" do
@@ -332,10 +328,10 @@ describe Puppet::Interface::Action do
           option("-f")           { before_action { |_,_,_| report :f    } }
           option("--baz")        { before_action { |_,_,_| report :baz  } }
         end
-        face.script(:boo) {|options| }
+        face.action(:boo) { when_invoked { |options| } }
 
         face.boo :foo => 1, :bar => 1, :quux => 1, :f => 1, :baz => 1
-        face.reported.should == [ :foo, :bar, :quux, :f, :baz ]
+        expect(face.reported).to eq([ :foo, :bar, :quux, :f, :baz ])
       end
 
       it "should execute after advice on face options in declaration order" do
@@ -346,10 +342,10 @@ describe Puppet::Interface::Action do
           option("-f")           { after_action { |_,_,_| report :f    } }
           option("--baz")        { after_action { |_,_,_| report :baz  } }
         end
-        face.script(:boo) {|options| }
+        face.action(:boo) { when_invoked { |options| } }
 
         face.boo :foo => 1, :bar => 1, :quux => 1, :f => 1, :baz => 1
-        face.reported.should == [ :foo, :bar, :quux, :f, :baz ].reverse
+        expect(face.reported).to eq([ :foo, :bar, :quux, :f, :baz ].reverse)
       end
 
       it "should execute before advice on face options before action options" do
@@ -372,7 +368,7 @@ describe Puppet::Interface::Action do
         expected_calls = [ :face_foo, :face_bar, :face_quux, :f, :face_baz,
                            :action_foo, :action_bar, :action_quux, :a, :action_baz ]
         face.boo Hash[ *expected_calls.zip([]).flatten ]
-        face.reported.should == expected_calls
+        expect(face.reported).to eq(expected_calls)
       end
 
       it "should execute after advice on face options in declaration order" do
@@ -395,12 +391,12 @@ describe Puppet::Interface::Action do
         expected_calls = [ :face_foo, :face_bar, :face_quux, :f, :face_baz,
                            :action_foo, :action_bar, :action_quux, :a, :action_baz ]
         face.boo Hash[ *expected_calls.zip([]).flatten ]
-        face.reported.should == expected_calls.reverse
+        expect(face.reported).to eq(expected_calls.reverse)
       end
 
       it "should not invoke a decorator if the options are empty" do
         face.option("--foo FOO") { before_action { |_,_,_| report :before_action } }
-        face.expects(:report).never
+        expect(face).not_to receive(:report)
         face.bar
       end
 
@@ -412,17 +408,17 @@ describe Puppet::Interface::Action do
 
         it "should invoke only foo's advice when passed only 'foo'" do
           face.bar(:foo => true)
-          face.reported.should == [ :foo ]
+          expect(face.reported).to eq([ :foo ])
         end
 
         it "should invoke only bar's advice when passed only 'bar'" do
           face.bar(:bar => true)
-          face.reported.should == [ :bar ]
+          expect(face.reported).to eq([ :bar ])
         end
 
         it "should invoke advice for all passed options" do
           face.bar(:foo => true, :bar => true)
-          face.reported.should == [ :foo, :bar ]
+          expect(face.reported).to eq([ :foo, :bar ])
         end
       end
     end
@@ -430,7 +426,7 @@ describe Puppet::Interface::Action do
     context "and inheritance" do
       let :parent do
         Class.new(Puppet::Interface) do
-          script(:on_parent) {|options| :on_parent }
+          action(:on_parent) { when_invoked { |options| :on_parent } }
 
           def reported; @reported; end
           def report(arg)
@@ -441,7 +437,7 @@ describe Puppet::Interface::Action do
 
       let :child do
         parent.new(:inherited_decorators, '0.0.1') do
-          script(:on_child) {|options| :on_child }
+          action(:on_child) { when_invoked { |options| :on_child } }
         end
       end
 
@@ -452,13 +448,13 @@ describe Puppet::Interface::Action do
         end
 
         it "should be invoked when calling a child action" do
-          subject.on_child(:foo => true).should == :on_child
-          subject.reported.should == [ :child_before ]
+          expect(subject.on_child(:foo => true)).to eq(:on_child)
+          expect(subject.reported).to eq([ :child_before ])
         end
 
         it "should be invoked when calling a parent action" do
-          subject.on_parent(:foo => true).should == :on_parent
-          subject.reported.should == [ :child_before ]
+          expect(subject.on_parent(:foo => true)).to eq(:on_parent)
+          expect(subject.reported).to eq([ :child_before ])
         end
       end
 
@@ -469,13 +465,13 @@ describe Puppet::Interface::Action do
         end
 
         it "should be invoked when calling a child action" do
-          subject.on_child(:foo => true).should == :on_child
-          subject.reported.should == [ :parent_before ]
+          expect(subject.on_child(:foo => true)).to eq(:on_child)
+          expect(subject.reported).to eq([ :parent_before ])
         end
 
         it "should be invoked when calling a parent action" do
-          subject.on_parent(:foo => true).should == :on_parent
-          subject.reported.should == [ :parent_before ]
+          expect(subject.on_parent(:foo => true)).to eq(:on_parent)
+          expect(subject.reported).to eq([ :parent_before ])
         end
       end
 
@@ -504,27 +500,27 @@ describe Puppet::Interface::Action do
             after_action  { |action, args, options| report :b_after  }
           end
 
-          child.script(:decorations) { |options| report :invoked }
+          child.action(:decorations) { when_invoked {  |options| report :invoked } }
 
           child
         end
 
         it "should invoke all decorations when calling a child action" do
           subject.decorations(:a => 1, :b => 1, :c => 1, :d => 1)
-          subject.reported.should == [
+          expect(subject.reported).to eq([
             :a_before, :b_before, :c_before, :d_before,
             :invoked,
             :d_after, :c_after, :b_after, :a_after
-          ]
+          ])
         end
 
         it "should invoke all decorations when calling a parent action" do
           subject.decorations(:a => 1, :b => 1, :c => 1, :d => 1)
-          subject.reported.should == [
+          expect(subject.reported).to eq([
             :a_before, :b_before, :c_before, :d_before,
             :invoked,
             :d_after, :c_after, :b_after, :a_after
-          ]
+          ])
         end
       end
     end
@@ -541,19 +537,10 @@ describe Puppet::Interface::Action do
     end
   end
 
-  context "#when_rendering" do
-    it "should fail if no type is given when_rendering"
-    it "should accept a when_rendering block"
-    it "should accept multiple when_rendering blocks"
-    it "should fail if when_rendering gets a non-symbol identifier"
-    it "should fail if a second block is given for the same type"
-    it "should return the block if asked"
-  end
-
   context "#validate_and_clean" do
     subject do
       Puppet::Interface.new(:validate_args, '1.0.0') do
-        script :test do |options| options end
+        action(:test) { when_invoked { |options| options } }
       end
     end
 
@@ -580,7 +567,7 @@ describe Puppet::Interface::Action do
 
     it "should accept 'global' options from settings" do
       expect {
-        subject.test(:certname => "true").should == { :certname => "true" }
+        expect(subject.test(:certname => "true")).to eq({ :certname => "true" })
       }.not_to raise_error
     end
   end
@@ -600,32 +587,32 @@ describe Puppet::Interface::Action do
     let :option do action.get_option :foo end
 
     it "should not add options without defaults" do
-      subject.foo.should == {}
+      expect(subject.foo).to eq({})
     end
 
     it "should not add options without defaults, if options are given" do
-      subject.foo(:bar => 1).should == { :bar => 1 }
+      expect(subject.foo(:bar => 1)).to eq({ :bar => 1 })
     end
 
     it "should add the option default value when set" do
       option.default = proc { 12 }
-      subject.foo.should == { :foo => 12 }
+      expect(subject.foo).to eq({ :foo => 12 })
     end
 
     it "should add the option default value when set, if other options are given" do
       option.default = proc { 12 }
-      subject.foo(:bar => 1).should == { :foo => 12, :bar => 1 }
+      expect(subject.foo(:bar => 1)).to eq({ :foo => 12, :bar => 1 })
     end
 
     it "should invoke the same default proc every time called" do
       option.default = proc { @foo ||= {} }
-      subject.foo[:foo].object_id.should == subject.foo[:foo].object_id
+      expect(subject.foo[:foo].object_id).to eq(subject.foo[:foo].object_id)
     end
 
     [nil, 0, 1, true, false, {}, []].each do |input|
       it "should not override a passed option (#{input.inspect})" do
         option.default = proc { :fail }
-        subject.foo(:foo => input).should == { :foo => input }
+        expect(subject.foo(:foo => input)).to eq({ :foo => input })
       end
     end
   end
@@ -642,9 +629,42 @@ describe Puppet::Interface::Action do
     let :action do subject.get_action :foo end
 
     it "should be the face default action if default is set true" do
-      subject.get_default_action.should be_nil
+      expect(subject.get_default_action).to be_nil
       action.default = true
-      subject.get_default_action.should == action
+      expect(subject.get_default_action).to eq(action)
+    end
+  end
+
+  context "when deprecating a face action" do
+    let :face do
+      Puppet::Interface.new(:foo, '1.0.0') do
+        action :bar do
+          option "--bar"
+          when_invoked do |options| options end
+        end
+      end
+    end
+
+    let :action do face.get_action :bar end
+
+    describe "#deprecate" do
+      it "should set the deprecated value to true" do
+        expect(action).not_to be_deprecated
+        action.deprecate
+        expect(action).to be_deprecated
+      end
+    end
+
+    describe "#deprecated?" do
+      it "should return a nil (falsey) value by default" do
+        expect(action.deprecated?).to be_falsey
+      end
+
+      it "should return true if the action has been deprecated" do
+        expect(action).not_to be_deprecated
+        action.deprecate
+        expect(action).to be_deprecated
+      end
     end
   end
 end

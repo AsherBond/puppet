@@ -1,13 +1,20 @@
-require 'puppet/util/windows'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/windows'
 
 Puppet::Type.type(:group).provide :windows_adsi do
   desc "Local group management for Windows. Group members can be both users and groups.
     Additionally, local groups can contain domain users."
 
-  defaultfor :operatingsystem => :windows
-  confine    :operatingsystem => :windows
+  defaultfor 'os.name' => :windows
+  confine    'os.name' => :windows
 
   has_features :manages_members
+
+  def initialize(value = {})
+    super(value)
+    @deleted = false
+  end
 
   def members_insync?(current, should)
     return false unless current
@@ -17,27 +24,44 @@ Puppet::Type.type(:group).provide :windows_adsi do
 
     # Cannot use munge of the group property to canonicalize @should
     # since the default array_matching comparison is not commutative
-    should_empty = should.nil? or should.empty?
-
-    return false if current.empty? != should_empty
 
     # dupes automatically weeded out when hashes built
-    Puppet::Util::Windows::ADSI::Group.name_sid_hash(current) == Puppet::Util::Windows::ADSI::Group.name_sid_hash(should)
+    current_members = Puppet::Util::Windows::ADSI::Group.name_sid_hash(current, true)
+    specified_members = Puppet::Util::Windows::ADSI::Group.name_sid_hash(should)
+
+    current_sids = current_members.keys.to_a
+    specified_sids = specified_members.keys.to_a
+
+    if @resource[:auth_membership]
+      current_sids.sort == specified_sids.sort
+    else
+      (specified_sids & current_sids) == specified_sids
+    end
   end
 
   def members_to_s(users)
     return '' if users.nil? or !users.kind_of?(Array)
+
     users = users.map do |user_name|
-      sid = Puppet::Util::Windows::SID.name_to_sid_object(user_name)
+      sid = Puppet::Util::Windows::SID.name_to_principal(user_name)
+      if !sid
+        resource.debug("#{user_name} (unresolvable to SID)")
+        next user_name
+      end
+
       if sid.account =~ /\\/
         account, _ = Puppet::Util::Windows::ADSI::User.parse_name(sid.account)
       else
         account = sid.account
       end
-      resource.debug("#{sid.domain}\\#{account} (#{sid.to_s})")
-      "#{sid.domain}\\#{account}"
+      resource.debug("#{sid.domain}\\#{account} (#{sid.sid})")
+      sid.domain ? "#{sid.domain}\\#{account}" : account
     end
     return users.join(',')
+  end
+
+  def member_valid?(user_name)
+    !Puppet::Util::Windows::SID.name_to_principal(user_name).nil?
   end
 
   def group
@@ -45,11 +69,15 @@ Puppet::Type.type(:group).provide :windows_adsi do
   end
 
   def members
-    group.members
+    @members ||= Puppet::Util::Windows::ADSI::Group.name_sid_hash(group.members, true)
+
+    # @members.keys returns an array of SIDs. We need to convert those SIDs into
+    # names so that `puppet resource` prints the right output.
+    members_to_s(@members.keys).split(',')
   end
 
   def members=(members)
-    group.set_members(members)
+    group.set_members(members, @resource[:auth_membership])
   end
 
   def create
@@ -65,11 +93,13 @@ Puppet::Type.type(:group).provide :windows_adsi do
 
   def delete
     Puppet::Util::Windows::ADSI::Group.delete(@resource[:name])
+
+    @deleted = true
   end
 
   # Only flush if we created or modified a group, not deleted
   def flush
-    @group.commit if @group
+    @group.commit if @group && !@deleted
   end
 
   def gid

@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/util/autoload'
@@ -24,6 +23,8 @@ require 'puppet_spec/files'
 describe Puppet::Util::Autoload do
   include PuppetSpec::Files
 
+  let(:env) { Puppet::Node::Environment.create(:foo, []) }
+
   def with_file(name, *path)
     path = File.join(*path)
     # Now create a file to load
@@ -48,21 +49,16 @@ describe Puppet::Util::Autoload do
     AutoloadIntegrator.clear
   end
 
-  it "should make instances available by the loading class" do
-    loader = Puppet::Util::Autoload.new("foo", "bar")
-    Puppet::Util::Autoload["foo"].should == loader
-  end
-
   it "should not fail when asked to load a missing file" do
-    Puppet::Util::Autoload.new("foo", "bar").load(:eh).should be_false
+    expect(Puppet::Util::Autoload.new("foo", "bar").load(:eh, env)).to be_falsey
   end
 
   it "should load and return true when it successfully loads a file" do
     with_loader("foo", "bar") { |dir,loader|
       with_file(:mything, dir, "mything.rb") {
-        loader.load(:mything).should be_true
-        loader.class.should be_loaded("bar/mything")
-        AutoloadIntegrator.should be_thing(:mything)
+        expect(loader.load(:mything, env)).to be_truthy
+        expect(loader.class).to be_loaded("bar/mything")
+        expect(AutoloadIntegrator).to be_thing(:mything)
       }
     }
   end
@@ -70,8 +66,8 @@ describe Puppet::Util::Autoload do
   it "should consider a file loaded when asked for the name without an extension" do
     with_loader("foo", "bar") { |dir,loader|
       with_file(:noext, dir, "noext.rb") {
-        loader.load(:noext)
-        loader.class.should be_loaded("bar/noext")
+        loader.load(:noext, env)
+        expect(loader.class).to be_loaded("bar/noext")
       }
     }
   end
@@ -79,15 +75,15 @@ describe Puppet::Util::Autoload do
   it "should consider a file loaded when asked for the name with an extension" do
     with_loader("foo", "bar") { |dir,loader|
       with_file(:noext, dir, "withext.rb") {
-        loader.load(:withext)
-        loader.class.should be_loaded("bar/withext.rb")
+        loader.load(:withext, env)
+        expect(loader.class).to be_loaded("bar/withext.rb")
       }
     }
   end
 
   it "should be able to load files directly from modules" do
     ## modulepath can't be used until after app settings are initialized, so we need to simulate that:
-    Puppet.settings.expects(:app_defaults_initialized?).returns(true).at_least_once
+    expect(Puppet.settings).to receive(:app_defaults_initialized?).and_return(true).at_least(:once)
 
     modulepath = tmpfile("autoload_module_testing")
     libdir = File.join(modulepath, "mymod", "lib", "foo")
@@ -95,11 +91,12 @@ describe Puppet::Util::Autoload do
 
     file = File.join(libdir, "plugin.rb")
 
-    Puppet.override(:environments => Puppet::Environments::Static.new(Puppet::Node::Environment.create(:production, [modulepath]))) do
+    env = Puppet::Node::Environment.create(:production, [modulepath])
+    Puppet.override(:environments => Puppet::Environments::Static.new(env)) do
       with_loader("foo", "foo") do |dir, loader|
         with_file(:plugin, file.split("/")) do
-          loader.load(:plugin)
-          loader.class.should be_loaded("foo/plugin.rb")
+          loader.load(:plugin, env)
+          expect(loader.class).to be_loaded("foo/plugin.rb")
         end
       end
     end

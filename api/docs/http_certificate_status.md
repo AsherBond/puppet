@@ -5,14 +5,15 @@ The `certificate status` endpoint allows a client to read or alter the
 status of a certificate or pending certificate request. It is only
 useful on the CA.
 
-In all requests the `:environment` must be given, but it has no bearing
-on the request. Certificates are global.
+Under Puppet Server's CA service, the `environment` parameter is ignored and can
+be omitted. Under a Rack or WEBrick Puppet master, `environment` is required and
+must be a valid environment, but it has no effect on the response.
 
 Find
 ----
 
-    GET /:environment/certificate_status/:certname
-    Accept: pson
+    GET /puppet-ca/v1/certificate_status/:certname?environment=:environment
+    Accept: application/json, text/pson
 
 Retrieve information about the specified certificate. Similar to `puppet
 cert --list :certname`.
@@ -20,8 +21,8 @@ cert --list :certname`.
 Search
 -----
 
-    GET /:environment/certificate_statuses/:any_key
-    Accept: pson
+    GET /puppet-ca/v1/certificate_statuses/:any_key?environment=:environment
+    Accept: application/json, text/pson
 
 Retrieve information about all known certificates. Similar to `puppet
 cert --list --all`. A key is required but is ignored.
@@ -29,7 +30,7 @@ cert --list --all`. A key is required but is ignored.
 Save
 ----
 
-    PUT /:environment/certificate_status/:certname
+    PUT /puppet-ca/v1/certificate_status/:certname?environment=:environment
     Content-Type: text/pson
 
 Change the status of the specified certificate. The desired state
@@ -45,8 +46,8 @@ host - see the DELETE request for more information.
 Delete
 -----
 
-    DELETE /:environment/certificate_status/:hostname
-    Accept: pson
+    DELETE /puppet-ca/v1/certificate_status/:hostname?environment=:environment
+    Accept: application/json, text/pson
 
 Cause the certificate authority to discard all SSL information regarding
 a host (including any certificates, certificate requests, and keys).
@@ -74,7 +75,7 @@ GET, PUT, DELETE
 
 ### Supported Response Formats
 
-PSON
+`application/json`, `text/pson`, `pson`
 
 This endpoint can produce yaml as well, but the returned data is
 incomplete.
@@ -83,9 +84,9 @@ incomplete.
 
 #### Certificate information
 
-    GET /env/certificate_status/mycertname
+    GET /puppet-ca/v1/certificate_status/mycertname?environment=env
 
-    HTTP/1.1 200 OK 
+    HTTP/1.1 200 OK
     Content-Type: text/pson
 
     {
@@ -104,7 +105,7 @@ incomplete.
 
 #### Revoking a certificate
 
-    PUT /production/certificate_status/mycertname HTTP/1.1
+    PUT /puppet-ca/v1/certificate_status/mycertname?environment=production HTTP/1.1
     Content-Type: text/pson
     Content-Length: 27
 
@@ -115,7 +116,7 @@ This has no meaningful return value.
 
 #### Deleting the certificate information
 
-    DELETE /production/certificate_status/mycertname HTTP/1.1
+    DELETE /puppet-ca/v1/certificate_status/mycertname?environment=production HTTP/1.1
 
 Gets the response:
 
@@ -125,5 +126,4 @@ Schema
 -----
 
 Find and search operations return objects which
-conform to the json schema at {file:api/schemas/host.json
-api/schemas/host.json}.
+conform to [the host schema.](../schemas/host.json)

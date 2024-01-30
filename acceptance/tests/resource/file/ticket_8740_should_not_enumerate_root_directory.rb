@@ -1,14 +1,23 @@
 test_name "#8740: should not enumerate root directory"
+
 confine :except, :platform => 'windows'
+confine :except, :platform => 'osx'
+
+tag 'audit:high',
+    'audit:refactor',   # Use block style `test_name`
+    'audit:acceptance'
 
 target = "/test-socket-#{$$}"
+
+require 'puppet/acceptance/common_utils'
+extend Puppet::Acceptance::CommandUtils
 
 agents.each do |agent|
   step "clean up the system before we begin"
   on(agent, "rm -f #{target}")
 
   step "create UNIX domain socket"
-  on(agent, %Q{#{agent['puppetbindir']}/ruby -e "require 'socket'; UNIXServer::new('#{target}').close"})
+  on(agent, "#{ruby_command(agent)} -e \"require 'socket'; UNIXServer::new('#{target}').close\"")
 
   step "query for all files, which should return nothing"
   on(agent, puppet_resource('file'), :acceptable_exit_codes => [1]) do

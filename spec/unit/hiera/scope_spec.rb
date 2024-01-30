@@ -11,37 +11,42 @@ describe Hiera::Scope do
 
   describe "#initialize" do
     it "should store the supplied puppet scope" do
-      scope.real.should == real
+      expect(scope.real).to eq(real)
     end
   end
 
   describe "#[]" do
-    it "should return nil when no value is found" do
-      scope["foo"].should == nil
+    it "should return nil when no value is found and strict mode is off" do
+      Puppet[:strict] = :warning
+      expect(scope["foo"]).to eq(nil)
+    end
+
+    it "should raise error by default when no value is found" do
+      expect { scope["foo"] }.to raise_error(/Undefined variable 'foo'/)
     end
 
     it "should treat '' as nil" do
       real["foo"] = ""
 
-      scope["foo"].should == nil
+      expect(scope["foo"]).to eq(nil)
     end
 
     it "should return found data" do
       real["foo"] = "bar"
 
-      scope["foo"].should == "bar"
+      expect(scope["foo"]).to eq("bar")
     end
 
     it "preserves the case of a string that is found" do
       real["foo"] = "CAPITAL!"
 
-      scope["foo"].should == "CAPITAL!"
+      expect(scope["foo"]).to eq("CAPITAL!")
     end
 
     it "aliases $module_name as calling_module" do
       real["module_name"] = "the_module"
 
-      scope["calling_module"].should == "the_module"
+      expect(scope["calling_module"]).to eq("the_module")
     end
 
     it "uses the name of the of the scope's class as the calling_class" do
@@ -49,7 +54,7 @@ describe Hiera::Scope do
                                                "testing",
                                                :module_name => "the_module")
 
-      scope["calling_class"].should == "testing"
+      expect(scope["calling_class"]).to eq("testing")
     end
 
     it "downcases the calling_class" do
@@ -57,7 +62,7 @@ describe Hiera::Scope do
                                                "UPPER CASE",
                                                :module_name => "the_module")
 
-      scope["calling_class"].should == "upper case"
+      expect(scope["calling_class"]).to eq("upper case")
     end
 
     it "looks for the class which includes the defined type as the calling_class" do
@@ -70,20 +75,31 @@ describe Hiera::Scope do
                                                "definition_name",
                                                :module_name => "definition_module")
 
-      scope["calling_class"].should == "name_of_the_class_including_the_definition"
+      expect(scope["calling_class"]).to eq("name_of_the_class_including_the_definition")
     end
   end
 
-  describe "#include?" do
+  describe "#exist?" do
     it "should correctly report missing data" do
-      real["foo"] = ""
+      real["nil_value"] = nil
+      real["blank_value"] = ""
 
-      scope.include?("foo").should == false
+      expect(scope.exist?("nil_value")).to eq(true)
+      expect(scope.exist?("blank_value")).to eq(true)
+      expect(scope.exist?("missing_value")).to eq(false)
     end
 
     it "should always return true for calling_class and calling_module" do
-      scope.include?("calling_class").should == true
-      scope.include?("calling_module").should == true
+      expect(scope.include?("calling_class")).to eq(true)
+      expect(scope.include?("calling_class_path")).to eq(true)
+      expect(scope.include?("calling_module")).to eq(true)
+    end
+  end
+
+  describe "#call_function" do
+    it "should delegate a call to call_function to the real scope" do
+      expect(real).to receive(:call_function).once
+      scope.call_function('some_function', [1,2,3])
     end
   end
 end

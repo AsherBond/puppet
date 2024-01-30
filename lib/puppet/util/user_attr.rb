@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 class UserAttr
   def self.get_attributes_by_name(name)
     attributes = nil
@@ -8,7 +10,7 @@ class UserAttr
       token = line.split(':')
 
       if token[0] == name
-        attributes = {:name => name}
+        attributes = { :name => name }
         token[4].split(';').each do |attr|
           key_value = attr.split('=')
           attributes[key_value[0].intern] = key_value[1].strip

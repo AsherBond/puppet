@@ -1,4 +1,6 @@
-require 'puppet/file_system'
+# frozen_string_literal: true
+
+require_relative '../../puppet/file_system'
 require 'delegate'
 require 'tmpdir'
 
@@ -19,12 +21,14 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
     f = new(identifier)
     yield f
   ensure
-    f.close!
+    if f
+      f.close!
+    end
   end
 
   def initialize(basename, *rest)
-    create_tmpname(basename, *rest) do |tmpname, n, opts|
-      mode = File::RDWR|File::CREAT|File::EXCL
+    create_tmpname(basename, *rest) do |tmpname, _n, opts|
+      mode = File::RDWR | File::CREAT | File::EXCL
       perm = 0600
       if opts
         mode |= opts.delete(:mode) || 0
@@ -37,7 +41,7 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
         @tmpfile = File.open(tmpname, mode, opts)
         @tmpname = tmpname
       end
-      @mode = mode & ~(File::CREAT|File::EXCL)
+      @mode = mode & ~(File::CREAT | File::EXCL)
       perm or opts.freeze
       @opts = opts
     end
@@ -61,7 +65,7 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
   end
   protected :_close
 
-  def close(unlink_now=false)
+  def close(unlink_now = false)
     if unlink_now
       close!
     else
@@ -76,6 +80,7 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
 
   def unlink
     return unless @tmpname
+
     begin
       File.unlink(@tmpname)
     rescue Errno::ENOENT
@@ -97,14 +102,14 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
 
   def make_tmpname(prefix_suffix, n)
     case prefix_suffix
-      when String
-        prefix = prefix_suffix
-        suffix = ""
-      when Array
-        prefix = prefix_suffix[0]
-        suffix = prefix_suffix[1]
-      else
-        raise ArgumentError, "unexpected prefix_suffix: #{prefix_suffix.inspect}"
+    when String
+      prefix = prefix_suffix
+      suffix = ""
+    when Array
+      prefix = prefix_suffix[0]
+      suffix = prefix_suffix[1]
+    else
+      raise ArgumentError, _("unexpected prefix_suffix: %{value}") % { value: prefix_suffix.inspect }
     end
     t = Time.now.strftime("%Y%m%d")
     path = "#{prefix}#{t}-#{$$}-#{rand(0x100000000).to_s(36)}"
@@ -113,7 +118,8 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
   end
 
   def create_tmpname(basename, *rest)
-    if opts = try_convert_to_hash(rest[-1])
+    opts = try_convert_to_hash(rest[-1])
+    if opts
       opts = opts.dup if rest.pop.equal?(opts)
       max_try = opts.delete(:max_try)
       opts = [opts]
@@ -121,20 +127,16 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
       opts = []
     end
     tmpdir, = *rest
-    if $SAFE > 0 and tmpdir.tainted?
-      tmpdir = '/tmp'
-    else
-      tmpdir ||= tmpdir()
-    end
+    tmpdir ||= tmpdir()
     n = nil
     begin
-      path = File.expand_path(make_tmpname(basename, n), tmpdir)
+      path = File.join(tmpdir, make_tmpname(basename, n))
       yield(path, n, *opts)
     rescue Errno::EEXIST
       n ||= 0
       n += 1
       retry if !max_try or n < max_try
-      raise "cannot generate temporary name using `#{basename}' under `#{tmpdir}'"
+      raise _("cannot generate temporary name using `%{basename}' under `%{tmpdir}'") % { basename: basename, tmpdir: tmpdir }
     end
     path
   end
@@ -142,7 +144,7 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
   def try_convert_to_hash(h)
     begin
       h.to_hash
-    rescue NoMethodError => e
+    rescue NoMethodError
       nil
     end
   end
@@ -151,19 +153,15 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
 
   def tmpdir
     tmp = '.'
-    if $SAFE > 0
-      tmp = @@systmpdir
-    else
-      for dir in [ENV['TMPDIR'], ENV['TMP'], ENV['TEMP'], @@systmpdir, '/tmp']
-        if dir and stat = File.stat(dir) and stat.directory? and stat.writable?
-          tmp = dir
-          break
-        end rescue nil
-      end
-      File.expand_path(tmp)
+    for dir in [ENV['TMPDIR'], ENV['TMP'], ENV['TEMP'], @@systmpdir, '/tmp']
+      stat = File.stat(dir) if dir
+      if stat && stat.directory? && stat.writable?
+        tmp = dir
+        break
+      end rescue nil
     end
+    File.expand_path(tmp)
   end
-
 
   class << self
     # yields with locking for +tmpname+ and returns the result of the
@@ -172,8 +170,12 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
       lock = tmpname + '.lock'
       mkdir(lock)
       yield
+    rescue Errno::ENOENT => e
+      ex = Errno::ENOENT.new("A directory component in #{lock} does not exist or is a dangling symbolic link")
+      ex.set_backtrace(e.backtrace)
+      raise ex
     ensure
-      rmdir(lock) if lock
+      rmdir(lock) if Puppet::FileSystem.exist?(lock)
     end
 
     def mkdir(*args)
@@ -184,5 +186,4 @@ class Puppet::FileSystem::Uniquefile < DelegateClass(File)
       Dir.rmdir(*args)
     end
   end
-
 end

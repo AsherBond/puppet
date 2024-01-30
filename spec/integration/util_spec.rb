@@ -1,35 +1,11 @@
-#!/usr/bin/env ruby
-
+# coding: utf-8
 require 'spec_helper'
 
 describe Puppet::Util do
   include PuppetSpec::Files
 
-  describe "#execute" do
-    it "should properly allow stdout and stderr to share a file" do
-      command = "ruby -e '(1..10).each {|i| (i%2==0) ? $stdout.puts(i) : $stderr.puts(i)}'"
-
-      Puppet::Util::Execution.execute(command, :combine => true).split.should =~ [*'1'..'10']
-    end
-
-    it "should return output and set $CHILD_STATUS" do
-      command = "ruby -e 'puts \"foo\"; exit 42'"
-
-      output = Puppet::Util::Execution.execute(command, {:failonfail => false})
-
-      output.should == "foo\n"
-      $CHILD_STATUS.exitstatus.should == 42
-    end
-
-    it "should raise an error if non-zero exit status is returned" do
-      command = "ruby -e 'exit 43'"
-
-      expect { Puppet::Util::Execution.execute(command) }.to raise_error(Puppet::ExecutionFailure, /Execution of '#{command}' returned 43: /)
-      $CHILD_STATUS.exitstatus.should == 43
-    end
-
-    it "replace_file should preserve original ACEs from existing replaced file on Windows",
-      :if => Puppet.features.microsoft_windows? do
+  describe "#replace_file on Windows", :if => Puppet::Util::Platform.windows? do
+    it "replace_file should preserve original ACEs from existing replaced file on Windows" do
 
       file = tmpfile("somefile")
       FileUtils.touch(file)
@@ -51,11 +27,10 @@ describe Puppet::Util do
 
       replaced_sd = Puppet::Util::Windows::Security.get_security_descriptor(file)
 
-      replaced_sd.dacl.should == expected_sd.dacl
+      expect(replaced_sd.dacl).to eq(expected_sd.dacl)
     end
 
-    it "replace_file should use reasonable default ACEs on a new file on Windows",
-      :if => Puppet.features.microsoft_windows? do
+    it "replace_file should use reasonable default ACEs on a new file on Windows" do
 
       dir = tmpdir('DACL_playground')
       protected_sd = Puppet::Util::Windows::Security.get_security_descriptor(dir)
@@ -74,38 +49,56 @@ describe Puppet::Util do
 
       new_sd = Puppet::Util::Windows::Security.get_security_descriptor(new_file_path)
 
-      new_sd.dacl.should == expected_sd.dacl
+      expect(new_sd.dacl).to eq(expected_sd.dacl)
+    end
+
+    it "replace_file should work with filenames that include - and . (PUP-1389)" do
+      expected_content = 'some content'
+      dir = tmpdir('ReplaceFile_playground')
+      destination_file = File.join(dir, 'some-file.xml')
+
+      Puppet::Util.replace_file(destination_file, nil) do |temp_file|
+          temp_file.open
+          temp_file.write(expected_content)
+      end
+
+      actual_content = File.read(destination_file)
+      expect(actual_content).to eq(expected_content)
+    end
+
+    it "replace_file should work with filenames that include special characters (PUP-1389)" do
+      expected_content = 'some content'
+      dir = tmpdir('ReplaceFile_playground')
+      # http://www.fileformat.info/info/unicode/char/00e8/index.htm
+      # dest_name = "somèfile.xml"
+      dest_name = "som\u00E8file.xml"
+      destination_file = File.join(dir, dest_name)
+
+      Puppet::Util.replace_file(destination_file, nil) do |temp_file|
+          temp_file.open
+          temp_file.write(expected_content)
+      end
+
+      actual_content = File.read(destination_file)
+      expect(actual_content).to eq(expected_content)
     end
   end
 
-  it "replace_file should work with filenames that include - and . (PUP-1389)", :if => Puppet.features.microsoft_windows? do
-    expected_content = 'some content'
-    dir = tmpdir('ReplaceFile_playground')
-    destination_file = File.join(dir, 'some-file.xml')
+  describe "#which on Windows", :if => Puppet::Util::Platform.windows? do
+    let (:rune_utf8) { "\u16A0\u16C7\u16BB\u16EB\u16D2\u16E6\u16A6\u16EB\u16A0\u16B1\u16A9\u16A0\u16A2\u16B1\u16EB\u16A0\u16C1\u16B1\u16AA\u16EB\u16B7\u16D6\u16BB\u16B9\u16E6\u16DA\u16B3\u16A2\u16D7" }
+    let (:filename) { 'foo.exe' }
 
-    Puppet::Util.replace_file(destination_file, nil) do |temp_file|
-        temp_file.open
-        temp_file.write(expected_content)
+    it "should be able to use UTF8 characters in the path" do
+      utf8 = tmpdir(rune_utf8)
+      Puppet::FileSystem.mkpath(utf8)
+
+      filepath = File.join(utf8, filename)
+      Puppet::FileSystem.touch(filepath)
+
+      path = [utf8, "c:\\windows\\system32", "c:\\windows"].join(File::PATH_SEPARATOR)
+      Puppet::Util.withenv("PATH" => path) do
+        expect(Puppet::Util.which(filename)).to eq(filepath)
+      end
     end
-
-    actual_content = File.read(destination_file)
-    actual_content.should == expected_content
-  end
-
-  it "replace_file should work with filenames that include special characters (PUP-1389)", :if => Puppet.features.microsoft_windows? do
-    expected_content = 'some content'
-    dir = tmpdir('ReplaceFile_playground')
-    # http://www.fileformat.info/info/unicode/char/00e8/index.htm
-    # dest_name = "somèfile.xml"
-    dest_name = "som\u00E8file.xml"
-    destination_file = File.join(dir, dest_name)
-
-    Puppet::Util.replace_file(destination_file, nil) do |temp_file|
-        temp_file.open
-        temp_file.write(expected_content)
-    end
-
-    actual_content = File.read(destination_file)
-    actual_content.should == expected_content
   end
 end

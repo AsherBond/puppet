@@ -1,4 +1,6 @@
-require 'puppet/provider/nameservice/pw'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/provider/nameservice/pw'
 require 'open3'
 
 Puppet::Type.type(:user).provide :pw, :parent => Puppet::Provider::NameService::PW do
@@ -7,7 +9,8 @@ Puppet::Type.type(:user).provide :pw, :parent => Puppet::Provider::NameService::
   commands :pw => "pw"
   has_features :manages_homedir, :allows_duplicates, :manages_passwords, :manages_expiry, :manages_shell
 
-  defaultfor :operatingsystem => [:freebsd, :dragonfly]
+  defaultfor 'os.name' => [:freebsd, :dragonfly]
+  confine    'os.name' => [:freebsd, :dragonfly]
 
   options :home, :flag => "-d", :method => :dir
   options :comment, :method => :gecos
@@ -16,7 +19,6 @@ Puppet::Type.type(:user).provide :pw, :parent => Puppet::Provider::NameService::
     value = '0000-00-00' if value == :absent
     value.split("-").reverse.join("-")
   }
-
 
   verify :gid, "GID must be an integer" do |value|
     value.is_a? Integer
@@ -30,8 +32,10 @@ Puppet::Type.type(:user).provide :pw, :parent => Puppet::Provider::NameService::
     cmd = [command(:pw), "useradd", @resource[:name]]
     @resource.class.validproperties.each do |property|
       next if property == :ensure or property == :password
-      if value = @resource.should(property) and value != ""
-        cmd << flag(property) << munge(property,value)
+
+      value = @resource.should(property)
+      if value and value != ""
+        cmd << flag(property) << munge(property, value)
       end
     end
 
@@ -65,11 +69,11 @@ Puppet::Type.type(:user).provide :pw, :parent => Puppet::Provider::NameService::
 
   # use pw to update password hash
   def password=(cryptopw)
-    Puppet.debug "change password for user '#{@resource[:name]}' method called with hash '#{cryptopw}'"
-    stdin, stdout, stderr = Open3.popen3("pw user mod #{@resource[:name]} -H 0")
+    Puppet.debug "change password for user '#{@resource[:name]}' method called with hash [redacted]"
+    stdin, _, _ = Open3.popen3("pw user mod #{@resource[:name]} -H 0")
     stdin.puts(cryptopw)
     stdin.close
-    Puppet.debug "finished password for user '#{@resource[:name]}' method called with hash '#{cryptopw}'"
+    Puppet.debug "finished password for user '#{@resource[:name]}' method called with hash [redacted]"
   end
 
   # get password from /etc/master.passwd
@@ -77,8 +81,17 @@ Puppet::Type.type(:user).provide :pw, :parent => Puppet::Provider::NameService::
     Puppet.debug "checking password for user '#{@resource[:name]}' method called"
     current_passline = `getent passwd #{@resource[:name]}`
     current_password = current_passline.chomp.split(':')[1] if current_passline
-    Puppet.debug "finished password for user '#{@resource[:name]}' method called : '#{current_password}'"
+    Puppet.debug "finished password for user '#{@resource[:name]}' method called : [redacted]"
     current_password
+  end
+
+  def has_sensitive_data?(property = nil)
+    # Check for sensitive values?
+    properties = property ? [property] : Puppet::Type.type(:user).validproperties
+    properties.any? do |prop|
+      p = @resource.parameter(prop)
+      p && p.respond_to?(:is_sensitive) && p.is_sensitive
+    end
   end
 
   # Get expiry from system and convert to Puppet-style date
@@ -94,4 +107,3 @@ Puppet::Type.type(:user).provide :pw, :parent => Puppet::Provider::NameService::
     expiry
   end
 end
-

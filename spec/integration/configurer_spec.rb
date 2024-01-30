@@ -1,10 +1,11 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
+require 'puppet_spec/network'
 require 'puppet/configurer'
 
 describe Puppet::Configurer do
   include PuppetSpec::Files
+  include PuppetSpec::Network
 
   describe "when running" do
     before(:each) do
@@ -20,11 +21,11 @@ describe Puppet::Configurer do
     end
 
     it "should send a transaction report with valid data" do
-
-      @configurer.stubs(:save_last_run_summary)
-      Puppet::Transaction::Report.indirection.expects(:save).with do |report, x|
-        report.time.class == Time and report.logs.length > 0
-      end
+      allow(@configurer).to receive(:save_last_run_summary)
+      expect(Puppet::Transaction::Report.indirection).to receive(:save) do |report, x|
+        expect(report.time).to be_a(Time)
+        expect(report.logs.length).to be > 0
+      end.twice
 
       Puppet[:report] = true
 
@@ -32,8 +33,8 @@ describe Puppet::Configurer do
     end
 
     it "should save a correct last run summary" do
-      report = Puppet::Transaction::Report.new("apply")
-      Puppet::Transaction::Report.indirection.stubs(:save)
+      report = Puppet::Transaction::Report.new
+      allow(Puppet::Transaction::Report.indirection).to receive(:save)
 
       Puppet[:lastrunfile] = tmpfile("lastrunfile")
       Puppet.settings.setting(:lastrunfile).mode = 0666
@@ -47,21 +48,119 @@ describe Puppet::Configurer do
       t2 = Time.now.tv_sec
 
       # sticky bit only applies to directories in windows
-      file_mode = Puppet.features.microsoft_windows? ? '666' : '100666'
+      file_mode = Puppet::Util::Platform.windows? ? '666' : '100666'
 
-      Puppet::FileSystem.stat(Puppet[:lastrunfile]).mode.to_s(8).should == file_mode
+      expect(Puppet::FileSystem.stat(Puppet[:lastrunfile]).mode.to_s(8)).to eq(file_mode)
 
-      summary = nil
-      File.open(Puppet[:lastrunfile], "r") do |fd|
-        summary = YAML.load(fd.read)
-      end
+      summary = Puppet::Util::Yaml.safe_load_file(Puppet[:lastrunfile])
 
-      summary.should be_a(Hash)
+      expect(summary).to be_a(Hash)
       %w{time changes events resources}.each do |key|
-        summary.should be_key(key)
+        expect(summary).to be_key(key)
       end
-      summary["time"].should be_key("notify")
-      summary["time"]["last_run"].should be_between(t1, t2)
+      expect(summary["time"]).to be_key("notify")
+      expect(summary["time"]["last_run"]).to be_between(t1, t2)
+    end
+
+    it "applies a cached catalog if pluginsync fails when usecacheonfailure is true and environment is valid" do
+      expect(@configurer).to receive(:valid_server_environment?).and_return(true)
+      Puppet[:ignore_plugin_errors] = false
+
+      Puppet[:use_cached_catalog] = false
+      Puppet[:usecacheonfailure] = true
+
+      report = Puppet::Transaction::Report.new
+      expect_any_instance_of(Puppet::Configurer::Downloader).to receive(:evaluate).and_raise(Puppet::Error, 'Failed to retrieve: some file')
+      expect(Puppet::Resource::Catalog.indirection).to receive(:find).and_return(@catalog)
+
+      @configurer.run(pluginsync: true, report: report)
+      expect(report.cached_catalog_status).to eq('on_failure')
+    end
+
+    it "applies a cached catalog if pluginsync fails when usecacheonfailure is true and environment is invalid" do
+      expect(@configurer).to receive(:valid_server_environment?).and_return(false)
+      Puppet[:ignore_plugin_errors] = false
+
+      Puppet[:use_cached_catalog] = false
+      Puppet[:usecacheonfailure] = true
+
+      report = Puppet::Transaction::Report.new
+      expect(Puppet::Resource::Catalog.indirection).to receive(:find).and_raise(Puppet::Error, 'Cannot compile remote catalog')
+      expect(Puppet::Resource::Catalog.indirection).to receive(:find).and_return(@catalog)
+
+      @configurer.run(pluginsync: true, report: report)
+      expect(report.cached_catalog_status).to eq('on_failure')
+    end
+
+    describe 'resubmitting facts' do
+      context 'when resubmit_facts is set to false' do
+        it 'should not send data' do
+          expect(@configurer).to receive(:resubmit_facts).never
+
+          @configurer.run(catalog: @catalog)
+        end
+      end
+
+      context 'when resubmit_facts is set to true' do
+        let(:test_facts) { Puppet::Node::Facts.new('configurer.test', {test_fact: 'test value'}) }
+
+        before(:each) do
+          Puppet[:resubmit_facts] = true
+
+          allow(@configurer).to receive(:find_facts).and_return(test_facts)
+        end
+
+        it 'uploads facts as application/json' do
+          stub_request(:put, "https://puppet:8140/puppet/v3/facts/configurer.test?environment=production").
+            with(
+              body: hash_including(
+                {
+                  "name" => "configurer.test",
+                  "values" => {"test_fact" => 'test value',},
+                }),
+              headers: {
+                'Accept'=>acceptable_content_types_string,
+                'Content-Type'=>'application/json',
+              })
+
+          @configurer.run(catalog: @catalog)
+        end
+
+        it 'logs errors that occur during fact generation' do
+          allow(@configurer).to receive(:find_facts).and_raise('error generating facts')
+          expect(Puppet).to receive(:log_exception).with(instance_of(RuntimeError),
+                                                         /^Failed to submit facts/)
+
+          @configurer.run(catalog: @catalog)
+        end
+
+        it 'logs errors that occur during fact submission' do
+          stub_request(:put, "https://puppet:8140/puppet/v3/facts/configurer.test?environment=production").to_return(status: 502)
+          expect(Puppet).to receive(:log_exception).with(Puppet::HTTP::ResponseError,
+                                                         /^Failed to submit facts/)
+
+          @configurer.run(catalog: @catalog)
+        end
+
+        it 'records time spent resubmitting facts' do
+          report = Puppet::Transaction::Report.new
+
+          stub_request(:put, "https://puppet:8140/puppet/v3/facts/configurer.test?environment=production").
+            with(
+              body: hash_including({
+                "name" => "configurer.test",
+                "values" => {"test_fact": "test value"},
+              }),
+              headers: {
+                'Accept'=>acceptable_content_types_string,
+                'Content-Type'=>'application/json',
+              }).to_return(status: 200)
+
+          @configurer.run(catalog: @catalog, report: report)
+
+          expect(report.metrics['time'].values).to include(["resubmit_facts", anything, Numeric])
+        end
+      end
     end
   end
 end

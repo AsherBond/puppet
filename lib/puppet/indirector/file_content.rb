@@ -1,5 +1,7 @@
+# frozen_string_literal: true
+
 # A stub class, so our constants work.
 class Puppet::Indirector::FileContent # :nodoc:
 end
 
-require 'puppet/file_serving/content'
+require_relative '../../puppet/file_serving/content'

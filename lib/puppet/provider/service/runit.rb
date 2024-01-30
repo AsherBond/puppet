@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Daemontools service management
 #
 # author Brice Figureau <brice-puppet@daysofwonder.com>
@@ -17,11 +19,11 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
     * `/etc/sv`
     * `/var/lib/service`
 
-    or this can be overriden in the service resource parameters::
+    or this can be overridden in the service resource parameters:
 
-        service { "myservice":
-          provider => "runit",
-          path => "/path/to/daemons",
+        service { 'myservice':
+          provider => 'runit',
+          path     => '/path/to/daemons',
         }
 
     This provider supports out of the box:
@@ -39,15 +41,9 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
   class << self
     # this is necessary to autodetect a valid resource
     # default path, since there is no standard for such directory.
-    def defpath(dummy_argument=:work_arround_for_ruby_GC_bug)
-      unless @defpath
-        ["/etc/sv", "/var/lib/service"].each do |path|
-          if Puppet::FileSystem.exist?(path)
-            @defpath = path
-            break
-          end
-        end
-        raise "Could not find the daemon directory (tested [/etc/sv,/var/lib/service])" unless @defpath
+    def defpath
+      @defpath ||= ["/var/lib/service", "/etc/sv"].find do |path|
+        Puppet::FileSystem.exist?(path) && FileTest.directory?(path)
       end
       @defpath
     end
@@ -56,7 +52,7 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
   # find the service dir on this node
   def servicedir
     unless @servicedir
-      ["/service", "/etc/service","/var/service"].each do |path|
+      ["/service", "/etc/service", "/var/service"].each do |path|
         if Puppet::FileSystem.exist?(path)
           @servicedir = path
           break
@@ -73,7 +69,7 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
       return :running if output =~ /^run: /
     rescue Puppet::ExecutionFailure => detail
       unless detail.message =~ /(warning: |runsv not running$)/
-        raise Puppet::Error.new( "Could not get status for service #{resource.ref}: #{detail}", detail )
+        raise Puppet::Error.new("Could not get status for service #{resource.ref}: #{detail}", detail)
       end
     end
     :stopped
@@ -85,12 +81,13 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
 
   def start
     if enabled? != :true
-        enable
-        # Work around issue #4480
-        # runsvdir takes up to 5 seconds to recognize
-        # the symlink created by this call to enable
-        Puppet.info "Waiting 5 seconds for runsvdir to discover service #{self.service}"
-        sleep 5
+      enable
+      # Work around issue #4480
+      # runsvdir takes up to 5 seconds to recognize
+      # the symlink created by this call to enable
+      # TRANSLATORS 'runsvdir' is a linux service name and should not be translated
+      Puppet.info _("Waiting 5 seconds for runsvdir to discover service %{service}") % { service: self.service }
+      sleep 5
     end
     sv "start", self.service
   end
@@ -108,4 +105,3 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
     Puppet::FileSystem.unlink(self.service) if Puppet::FileSystem.symlink?(self.service)
   end
 end
-

@@ -1,19 +1,18 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/confine/feature'
 
 describe Puppet::Confine::Feature do
   it "should be named :feature" do
-    Puppet::Confine::Feature.name.should == :feature
+    expect(Puppet::Confine::Feature.name).to eq(:feature)
   end
 
   it "should require a value" do
-    lambda { Puppet::Confine::Feature.new }.should raise_error(ArgumentError)
+    expect { Puppet::Confine::Feature.new }.to raise_error(ArgumentError)
   end
 
   it "should always convert values to an array" do
-    Puppet::Confine::Feature.new("/some/file").values.should be_instance_of(Array)
+    expect(Puppet::Confine::Feature.new("/some/file").values).to be_instance_of(Array)
   end
 
   describe "when testing values" do
@@ -23,22 +22,22 @@ describe Puppet::Confine::Feature do
     end
 
     it "should use the Puppet features instance to test validity" do
-      Puppet.features.expects(:myfeature?)
+      Puppet.features.add(:myfeature) do true end
       @confine.valid?
     end
 
     it "should return true if the feature is present" do
       Puppet.features.add(:myfeature) do true end
-      @confine.pass?("myfeature").should be_true
+      expect(@confine.pass?("myfeature")).to be_truthy
     end
 
     it "should return false if the value is false" do
       Puppet.features.add(:myfeature) do false end
-      @confine.pass?("myfeature").should be_false
+      expect(@confine.pass?("myfeature")).to be_falsey
     end
 
     it "should log that a feature is missing" do
-      @confine.message("myfeat").should be_include("missing")
+      expect(@confine.message("myfeat")).to be_include("missing")
     end
   end
 
@@ -48,10 +47,13 @@ describe Puppet::Confine::Feature do
     confines << Puppet::Confine::Feature.new(%w{two})
     confines << Puppet::Confine::Feature.new(%w{three four})
 
-    features = mock 'feature'
-    features.stub_everything
-    Puppet.stubs(:features).returns features
+    features = double('feature')
+    allow(features).to receive(:one?)
+    allow(features).to receive(:two?)
+    allow(features).to receive(:three?)
+    allow(features).to receive(:four?)
+    allow(Puppet).to receive(:features).and_return(features)
 
-    Puppet::Confine::Feature.summarize(confines).sort.should == %w{one two three four}.sort
+    expect(Puppet::Confine::Feature.summarize(confines).sort).to eq(%w{one two three four}.sort)
   end
 end

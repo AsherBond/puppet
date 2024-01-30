@@ -1,13 +1,6 @@
+# frozen_string_literal: true
+
 Puppet::Util::Reference.newreference :metaparameter, :doc => "All Puppet metaparameters and all their details" do
-  types = {}
-  Puppet::Type.loadall
-
-  Puppet::Type.eachtype { |type|
-    next if type.name == :puppet
-    next if type.name == :component
-    types[type.name] = type
-  }
-
   str = %{
 
 Metaparameters are attributes that work with any resource type, including custom
@@ -28,15 +21,13 @@ etc.), prevent Puppet from making changes (`noop`), and change logging verbosity
       params << param
     }
 
-    params.sort { |a,b|
-      a.to_s <=> b.to_s
-    }.each { |param|
+    params.sort_by(&:to_s).each { |param|
       str << markdown_header(param.to_s, 3)
       str << scrub(Puppet::Type.metaparamdoc(param))
       str << "\n\n"
     }
   rescue => detail
-    Puppet.log_exception(detail, "incorrect metaparams: #{detail}")
+    Puppet.log_exception(detail, _("incorrect metaparams: %{detail}") % { detail: detail })
     exit(1)
   end
 

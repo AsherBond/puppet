@@ -1,43 +1,75 @@
-test_name "Agent should use environment given by ENC for pluginsync"
+test_name "Agent should use environment given by ENC for pluginsync" do
 
-testdir = create_tmpdir_for_user master, 'respect_enc_test'
+  tag 'audit:high',
+      'audit:integration',
+      'audit:refactor', # This test should be rolled into use_enc_environment
+      'server'
 
-create_remote_file master, "#{testdir}/enc.rb", <<END
-#!#{master['puppetbindir']}/ruby
+  # Remove all traces of the last used environment
+  teardown do
+    agents.each do |agent|
+      on(agent, puppet('config print lastrunfile')) do |command_result|
+        agent.rm_rf(command_result.stdout)
+      end
+    end
+  end
+
+  testdir = create_tmpdir_for_user(master, 'respect_enc_test')
+
+  create_remote_file(master, "#{testdir}/enc.rb", <<END)
+#!#{master['privatebindir']}/ruby
 puts <<YAML
 parameters:
 environment: special
 YAML
 END
-on master, "chmod 755 #{testdir}/enc.rb"
+  on(master, "chmod 755 #{testdir}/enc.rb")
 
-master_opts = {
-  'master' => {
-    'node_terminus' => 'exec',
-    'external_nodes' => "#{testdir}/enc.rb"
-  },
-  'special' => {
-    'modulepath' => "#{testdir}/special"
+  apply_manifest_on(master, <<-MANIFEST, :catch_failures => true)
+  File {
+    ensure => directory,
+    mode => "0770",
+    owner => #{master.puppet['user']},
+    group => #{master.puppet['group']},
   }
-}
-if master.is_pe?
-  master_opts['special']['modulepath'] << ":#{master['sitemoduledir']}"
-end
+  file {
+    '#{testdir}/environments':;
+    '#{testdir}/environments/production':;
+    '#{testdir}/environments/special/':;
+    '#{testdir}/environments/special/modules':;
+    '#{testdir}/environments/special/modules/amod':;
+    '#{testdir}/environments/special/modules/amod/lib':;
+    '#{testdir}/environments/special/modules/amod/lib/puppet':;
+  }
+  file { '#{testdir}/environments/special/modules/amod/lib/puppet/foo.rb':
+    ensure => file,
+    mode => "0640",
+    content => "#special_version",
+  }
+  MANIFEST
 
-on master, "mkdir -p #{testdir}/modules"
-# Create a plugin file on the master
-on master, "mkdir -p #{testdir}/special/amod/lib/puppet"
-create_remote_file(master, "#{testdir}/special/amod/lib/puppet/foo.rb", "#special_version")
+  master_opts = {
+      'main'   => {
+          'environmentpath' => "#{testdir}/environments",
+      },
+      'master' => {
+          'node_terminus'  => 'exec',
+          'external_nodes' => "#{testdir}/enc.rb"
+      },
+  }
 
-on master, "chown -R #{master['user']}:#{master['group']} #{testdir}"
-on master, "chmod -R g+rwX #{testdir}"
+  with_puppet_running_on(master, master_opts, testdir) do
 
-with_puppet_running_on master, master_opts, testdir do
+    agents.each do |agent|
+      agent_vardir = agent.puppet['vardir']
+      teardown do
+        on(agent, "rm -rf '#{agent_vardir}/lib'")
+      end
 
-  agents.each do |agent|
-    run_agent_on(agent, "--no-daemonize --onetime --server #{master}")
-    on agent, "cat \"#{agent.puppet['vardir']}/lib/puppet/foo.rb\""
-    assert_match(/#special_version/, stdout, "The plugin from environment 'special' was not synced")
-    on agent, "rm -rf \"#{agent.puppet['vardir']}/lib\""
+      run_agent_on(agent, "-t --no-daemonize --onetime")
+      on(agent, "cat '#{agent_vardir}/lib/puppet/foo.rb'") do |result|
+        assert_match(/#special_version/, result.stdout, "The plugin from environment 'special' was not synced")
+      end
+    end
   end
 end

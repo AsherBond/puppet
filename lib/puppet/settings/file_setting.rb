@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # A file.
 class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
   class SettingError < StandardError; end
@@ -47,23 +49,19 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
       end
     end
 
-  private
+    private
+
     def safe_to_use_settings_value?
       @settings[:mkusers] or @settings.send(@available_method)
     end
   end
 
-  attr_accessor :mode, :create
+  attr_accessor :mode
 
   def initialize(args)
     @group = Unspecified.new
     @owner = Unspecified.new
     super(args)
-  end
-
-  # Should we create files, rather than just directories?
-  def create_files?
-    create
   end
 
   # @param value [String] the group to use on the created file (can only be "root" or "service")
@@ -125,7 +123,8 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
 
   # Turn our setting thing into a Puppet::Resource instance.
   def to_resource
-    return nil unless type = self.type
+    type = self.type
+    return nil unless type
 
     path = self.value
 
@@ -134,8 +133,8 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
     # Make sure the paths are fully qualified.
     path = File.expand_path(path)
 
-    return nil unless type == :directory or create_files? or Puppet::FileSystem.exist?(path)
-    return nil if path =~ /^\/dev/ or path =~ /^[A-Z]:\/dev/i
+    return nil unless type == :directory || Puppet::FileSystem.exist?(path)
+    return nil if path =~ /^\/dev/ || path =~ /^[A-Z]:\/dev/i
 
     resource = Puppet::Resource.new(:file, path)
 
@@ -156,7 +155,7 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
       end
 
       # REMIND fails on Windows because chown/chgrp functionality not supported yet
-      if Puppet.features.root? and !Puppet.features.microsoft_windows?
+      if Puppet.features.root? and !Puppet::Util::Platform.windows?
         resource[:owner] = self.owner if self.owner
         resource[:group] = self.group if self.group
       end
@@ -172,19 +171,12 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
     resource
   end
 
-  # Make sure any provided variables look up to something.
-  def validate(value)
-    return true unless value.is_a? String
-    value.scan(/\$(\w+)/) { |name|
-      name = $1
-      unless @settings.include?(name)
-        raise ArgumentError,
-          "Settings parameter '#{name}' is undefined"
-      end
-    }
-  end
-
   # @api private
+  # @param option [String] Extra file operation mode information to use
+  #   (defaults to read-only mode 'r')
+  #   This is the standard mechanism Ruby uses in the IO class, and therefore
+  #   encoding may be explicitly like fmode : encoding or fmode : "BOM|UTF-*"
+  #   for example, a:ASCII or w+:UTF-8
   def exclusive_open(option = 'r', &block)
     controlled_access do |mode|
       Puppet::FileSystem.exclusive_open(file(), mode, option, &block)
@@ -192,6 +184,11 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
   end
 
   # @api private
+  # @param option [String] Extra file operation mode information to use
+  #   (defaults to read-only mode 'r')
+  #   This is the standard mechanism Ruby uses in the IO class, and therefore
+  #   encoding may be explicitly like fmode : encoding or fmode : "BOM|UTF-*"
+  #   for example, a:ASCII or w+:UTF-8
   def open(option = 'r', &block)
     controlled_access do |mode|
       Puppet::FileSystem.open(file, mode, option, &block)
@@ -205,7 +202,7 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
   end
 
   def unknown_value(parameter, value)
-    raise SettingError, "The #{parameter} parameter for the setting '#{name}' must be either 'root' or 'service', not '#{value}'"
+    raise SettingError, _("The %{parameter} parameter for the setting '%{name}' must be either 'root' or 'service', not '%{value}'") % { parameter: parameter, name: name, value: value }
   end
 
   def controlled_access(&block)
@@ -219,15 +216,16 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
     Puppet::Util::SUIDManager.asuser(*chown) do
       # Update the umask to make non-executable files
       Puppet::Util.withumask(File.umask ^ 0111) do
-        mode = case mode.class
-                 when String
-                   mode.to_i(8)
-                 when NilClass
-                   0640
-                 else
-                   mode
-                 end
-        yield mode
+        yielded_value = case self.mode
+                        when String
+                          self.mode.to_i(8)
+                        when NilClass
+                          0640
+                        else
+                          self.mode
+                        end
+
+        yield yielded_value
       end
     end
   end

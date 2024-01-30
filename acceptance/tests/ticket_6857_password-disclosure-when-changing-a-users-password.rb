@@ -1,8 +1,15 @@
 test_name "#6857: redact password hashes when applying in noop mode"
 
+tag 'audit:high',
+    'audit:refactor',    # Use block style `test_name`
+    'audit:integration'
+
+require 'puppet/acceptance/common_utils'
+extend Puppet::Acceptance::CommandUtils
+
 hosts_to_test = agents.reject do |agent|
-  if agent['platform'].match /(?:ubuntu|centos|debian|el-|fedora)/
-    result = on(agent, %Q{#{agent['puppetbindir']}/ruby -e 'require "shadow" or raise'}, :acceptable_exit_codes => [0,1])
+  if agent['platform'].match(/(?:ubuntu|centos|debian|el-|fedora)/)
+    result = on(agent, "#{ruby_command(agent)} -e \"require 'shadow' or raise\"", :acceptable_exit_codes => [0,1])
     result.exit_code != 0
   else
     # Non-linux platforms do not rely on ruby-libshadow for password management
@@ -12,24 +19,34 @@ hosts_to_test = agents.reject do |agent|
 end
 skip_test "No suitable hosts found" if hosts_to_test.empty?
 
+username = "pl#{rand(99999).to_i}"
+
+teardown do
+  step "Teardown: Ensure test user is removed"
+  hosts_to_test.each do |host|
+    on agent, puppet('resource', 'user', username, 'ensure=absent')
+    on agent, puppet('resource', 'group', username, 'ensure=absent')
+  end
+end
+
 adduser_manifest = <<MANIFEST
-user { 'passwordtestuser':
+user { '#{username}':
   ensure   => 'present',
-  password => 'apassword',
+  password => 'Apassw0rd!',
 }
 MANIFEST
 
 changepass_manifest = <<MANIFEST
-user { 'passwordtestuser':
+user { '#{username}':
   ensure   => 'present',
-  password => 'newpassword',
+  password => 'Anewpassw0rd!',
   noop     => true,
 }
 MANIFEST
 
-apply_manifest_on(hosts_to_test, adduser_manifest )
-results = apply_manifest_on(hosts_to_test, changepass_manifest )
-
-results.each do |result|
-  assert_match( /current_value \[old password hash redacted\], should be \[new password hash redacted\]/ , "#{result.host}: #{result.stdout}" )
+hosts_to_test.each do |host|
+  apply_manifest_on(host, adduser_manifest )
+  apply_manifest_on(host, changepass_manifest ) do |result|
+    assert_match( /current_value \[redacted\], should be \[redacted\]/ , "#{result.host}: #{result.stdout}" ) unless host['locale'] == 'ja'
+  end
 end

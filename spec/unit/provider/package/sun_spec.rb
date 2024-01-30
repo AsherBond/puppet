@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 describe Puppet::Type.type(:package).provider(:sun) do
@@ -6,15 +5,15 @@ describe Puppet::Type.type(:package).provider(:sun) do
   let(:provider) { resource.provider }
 
   describe 'provider features' do
-    it { should be_installable }
-    it { should be_uninstallable }
-    it { should be_upgradeable }
-    it { should_not be_versionable }
+    it { is_expected.to be_installable }
+    it { is_expected.to be_uninstallable }
+    it { is_expected.to be_upgradeable }
+    it { is_expected.not_to be_versionable }
   end
 
   [:install, :uninstall, :latest, :query, :update].each do |method|
     it "should have a #{method} method" do
-      provider.should respond_to(method)
+      expect(provider).to respond_to(method)
     end
   end
 
@@ -22,14 +21,14 @@ describe Puppet::Type.type(:package).provider(:sun) do
     it "should install a package" do
       resource[:ensure] = :installed
       resource[:source] = '/cdrom'
-      provider.expects(:pkgadd).with(['-d', '/cdrom', '-n', 'dummy'])
+      expect(provider).to receive(:pkgadd).with(['-d', '/cdrom', '-n', 'dummy'])
       provider.install
     end
 
     it "should install a package if it is not present on update" do
-      provider.expects(:pkginfo).with('-l', 'dummy').returns File.read(my_fixture('dummy.server'))
-      provider.expects(:pkgrm).with(['-n', 'dummy'])
-      provider.expects(:install)
+      expect(provider).to receive(:pkginfo).with('-l', 'dummy').and_return(File.read(my_fixture('dummy.server')))
+      expect(provider).to receive(:pkgrm).with(['-n', 'dummy'])
+      expect(provider).to receive(:install)
       provider.update
     end
 
@@ -37,37 +36,37 @@ describe Puppet::Type.type(:package).provider(:sun) do
       resource[:ensure] = :installed
       resource[:source] = '/cdrom'
       resource[:install_options] = '-G'
-      provider.expects(:pkgadd).with(['-d', '/cdrom', '-G', '-n', 'dummy'])
+      expect(provider).to receive(:pkgadd).with(['-d', '/cdrom', '-G', '-n', 'dummy'])
       provider.install
     end
   end
 
   context '#uninstall' do
     it "should uninstall a package" do
-      provider.expects(:pkgrm).with(['-n','dummy'])
+      expect(provider).to receive(:pkgrm).with(['-n','dummy'])
       provider.uninstall
     end
   end
 
   context '#update' do
     it "should call uninstall if not :absent on info2hash" do
-      provider.stubs(:info2hash).returns({:name => 'SUNWdummy', :ensure => "11.11.0,REV=2010.10.12.04.23"})
-      provider.expects(:uninstall)
-      provider.expects(:install)
+      allow(provider).to receive(:info2hash).and_return({:name => 'SUNWdummy', :ensure => "11.11.0,REV=2010.10.12.04.23"})
+      expect(provider).to receive(:uninstall)
+      expect(provider).to receive(:install)
       provider.update
     end
 
     it "should not call uninstall if :absent on info2hash" do
-      provider.stubs(:info2hash).returns({:name => 'SUNWdummy', :ensure => :absent})
-      provider.expects(:install)
+      allow(provider).to receive(:info2hash).and_return({:name => 'SUNWdummy', :ensure => :absent})
+      expect(provider).to receive(:install)
       provider.update
     end
   end
 
   context '#query' do
     it "should find the package on query" do
-      provider.expects(:pkginfo).with('-l', 'dummy').returns File.read(my_fixture('dummy.server'))
-      provider.query.should == {
+      expect(provider).to receive(:pkginfo).with('-l', 'dummy').and_return(File.read(my_fixture('dummy.server')))
+      expect(provider.query).to eq({
         :name     => 'SUNWdummy',
         :category=>"system",
         :platform=>"i386",
@@ -75,40 +74,39 @@ describe Puppet::Type.type(:package).provider(:sun) do
         :root=>"/",
         :description=>"Dummy server (9.6.1-P3)",
         :vendor => "Oracle Corporation",
-      }
+      })
     end
 
     it "shouldn't find the package on query if it is not present" do
-      provider.expects(:pkginfo).with('-l', 'dummy').raises Puppet::ExecutionFailure, "Execution of 'pkginfo -l dummy' returned 3: ERROR: information for \"dummy\" not found."
-      provider.query.should == {:ensure => :absent}
+      expect(provider).to receive(:pkginfo).with('-l', 'dummy').and_raise(Puppet::ExecutionFailure, "Execution of 'pkginfo -l dummy' returned 3: ERROR: information for \"dummy\" not found.")
+      expect(provider.query).to eq({:ensure => :absent})
     end
 
     it "unknown message should raise error." do
-      provider.expects(:pkginfo).with('-l', 'dummy').returns 'RANDOM'
+      expect(provider).to receive(:pkginfo).with('-l', 'dummy').and_return('RANDOM')
       expect { provider.query }.to raise_error Puppet::Error
     end
   end
 
   context '#instance' do
     it "should list instances when there are packages in the system" do
-      described_class.expects(:pkginfo).with('-l').returns File.read(my_fixture('simple'))
+      expect(described_class).to receive(:pkginfo).with('-l').and_return(File.read(my_fixture('simple')))
       instances = provider.class.instances.map { |p| {:name => p.get(:name), :ensure => p.get(:ensure)} }
-      instances.size.should == 2
-      instances[0].should == {
+      expect(instances.size).to eq(2)
+      expect(instances[0]).to eq({
         :name     => 'SUNWdummy',
         :ensure   => "11.11.0,REV=2010.10.12.04.23",
-      }
-      instances[1].should == {
+      })
+      expect(instances[1]).to eq({
         :name     => 'SUNWdummyc',
         :ensure   => "11.11.0,REV=2010.10.12.04.24",
-      }
+      })
     end
 
     it "should return empty if there were no packages" do
-      described_class.expects(:pkginfo).with('-l').returns ''
+      expect(described_class).to receive(:pkginfo).with('-l').and_return('')
       instances = provider.class.instances
-      instances.size.should == 0
+      expect(instances.size).to eq(0)
     end
-
   end
 end

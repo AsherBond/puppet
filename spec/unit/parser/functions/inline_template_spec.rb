@@ -1,17 +1,12 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 describe "the inline_template function" do
-  before :all do
-    Puppet::Parser::Functions.autoloader.loadall
-  end
-
   let(:node) { Puppet::Node.new('localhost') }
   let(:compiler) { Puppet::Parser::Compiler.new(node) }
   let(:scope) { Puppet::Parser::Scope.new(compiler) }
 
   it "should concatenate template wrapper outputs for multiple templates" do
-    inline_template("template1", "template2").should == "template1template2"
+    expect(inline_template("template1", "template2")).to eq("template1template2")
   end
 
   it "should raise an error if the template raises an error" do
@@ -20,12 +15,19 @@ describe "the inline_template function" do
 
   it "is not interfered with by a variable called 'string' (#14093)" do
     scope['string'] = "this is a variable"
-    inline_template("this is a template").should == "this is a template"
+    expect(inline_template("this is a template")).to eq("this is a template")
   end
 
   it "has access to a variable called 'string' (#14093)" do
     scope['string'] = "this is a variable"
-    inline_template("string was: <%= @string %>").should == "string was: this is a variable"
+    expect(inline_template("string was: <%= @string %>")).to eq("string was: this is a variable")
+  end
+
+  it 'is not available when --tasks is on' do
+    Puppet[:tasks] = true
+    expect {
+      inline_template("<%= lookupvar('myvar') %>")
+    }.to raise_error(Puppet::ParseError, /is only available when compiling a catalog/)
   end
 
   def inline_template(*templates)

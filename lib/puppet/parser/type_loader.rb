@@ -1,10 +1,13 @@
+# frozen_string_literal: true
+
 require 'find'
 require 'forwardable'
-require 'puppet/node/environment'
-require 'puppet/parser/parser_factory'
+require_relative '../../puppet/parser/parser_factory'
 
 class Puppet::Parser::TypeLoader
-  extend  Forwardable
+  extend Forwardable
+
+  class TypeLoaderError < StandardError; end
 
   # Import manifest files that match a given file glob pattern.
   #
@@ -14,12 +17,10 @@ class Puppet::Parser::TypeLoader
   #   found in a module
   # @api private
   def import(pattern, dir)
-    return if Puppet[:ignoreimport]
-
     modname, files = Puppet::Parser::Files.find_manifests_in_modules(pattern, environment)
     if files.empty?
       abspat = File.expand_path(pattern, dir)
-      file_pattern = abspat + (File.extname(abspat).empty? ? '{.pp,.rb}' : '' )
+      file_pattern = abspat + (File.extname(abspat).empty? ? '.pp' : '')
 
       files = Dir.glob(file_pattern).uniq.reject { |f| FileTest.directory?(f) }
       modname = nil
@@ -55,7 +56,7 @@ class Puppet::Parser::TypeLoader
 
   def environment=(env)
     if env.is_a?(String) or env.is_a?(Symbol)
-      @environment = Puppet.lookup(:environments).get(env)
+      @environment = Puppet.lookup(:environments).get!(env)
     else
       @environment = env
     end
@@ -64,15 +65,17 @@ class Puppet::Parser::TypeLoader
   # Try to load the object with the given fully qualified name.
   def try_load_fqname(type, fqname)
     return nil if fqname == "" # special-case main.
+
     files_to_try_for(fqname).each do |filename|
       begin
         imported_types = import_from_modules(filename)
-        if result = imported_types.find { |t| t.type == type and t.name == fqname }
-          Puppet.debug "Automatically imported #{fqname} from #{filename} into #{environment}"
+        result = imported_types.find { |t| t.type == type and t.name == fqname }
+        if result
+          Puppet.debug { "Automatically imported #{fqname} from #{filename} into #{environment}" }
           return result
         end
-      rescue Puppet::ImportError => detail
-        # I'm not convienced we should just drop these errors, but this
+      rescue TypeLoaderError
+        # I'm not convinced we should just drop these errors, but this
         # preserves existing behaviours.
       end
     end
@@ -81,8 +84,8 @@ class Puppet::Parser::TypeLoader
   end
 
   def parse_file(file)
-    Puppet.debug("importing '#{file}' in environment #{environment}")
-    parser = Puppet::Parser::ParserFactory.parser(environment)
+    Puppet.debug { "importing '#{file}' in environment #{environment}" }
+    parser = Puppet::Parser::ParserFactory.parser
     parser.file = file
     return parser.parse
   end
@@ -99,28 +102,26 @@ class Puppet::Parser::TypeLoader
   end
 
   def raise_no_files_found(pattern)
-    raise Puppet::ImportError, "No file(s) found for import of '#{pattern}'"
+    raise TypeLoaderError, _("No file(s) found for import of '%{pattern}'") % { pattern: pattern }
   end
 
   def load_files(modname, files)
     @loaded ||= {}
     loaded_asts = []
     files.reject { |file| @loaded[file] }.each do |file|
-      # NOTE: This ugly implementation will be replaced in Puppet 3.5.
-      # The implementation now makes use of a global variable because the context support is
-      # not available until Puppet 3.5.
-      # The use case is that parsing for the purpose of searching for information
-      # should not abort. There is currently one such use case in indirector/resourcetype/parser
+      # The squelch_parse_errors use case is for parsing for the purpose of searching
+      # for information and it should not abort.
+      # There is currently one user in indirector/resourcetype/parser
       #
-    if Puppet.lookup(:squelch_parse_errors) {|| false }
+      if Puppet.lookup(:squelch_parse_errors) { || false }
         begin
           loaded_asts << parse_file(file)
         rescue => e
-          # Resume from errors so that all parseable files would
+          # Resume from errors so that all parseable files may
           # still be parsed. Mark this file as loaded so that
           # it would not be parsed next time (handle it as if
           # it was successfully parsed).
-          Puppet.debug("Unable to parse '#{file}': #{e.message}")
+          Puppet.debug { "Unable to parse '#{file}': #{e.message}" }
         end
       else
         loaded_asts << parse_file(file)

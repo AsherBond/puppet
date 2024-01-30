@@ -1,23 +1,87 @@
-require 'puppet/util/windows'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/windows'
 
 Puppet::Type.type(:user).provide :windows_adsi do
   desc "Local user management for Windows."
 
-  defaultfor :operatingsystem => :windows
-  confine    :operatingsystem => :windows
+  defaultfor 'os.name' => :windows
+  confine    'os.name' => :windows
 
-  has_features :manages_homedir, :manages_passwords
+  has_features :manages_homedir, :manages_passwords, :manages_roles
+
+  def initialize(value = {})
+    super(value)
+    @deleted = false
+  end
 
   def user
     @user ||= Puppet::Util::Windows::ADSI::User.new(@resource[:name])
   end
 
+  def roles
+    Puppet::Util::Windows::User.get_rights(@resource[:name])
+  end
+
+  def roles=(value)
+    current = roles.split(',')
+    should  = value.split(',')
+
+    add_list = should - current
+    Puppet::Util::Windows::User.set_rights(@resource[:name], add_list) unless add_list.empty?
+
+    if @resource[:role_membership] == :inclusive
+      remove_list = current - should
+      Puppet::Util::Windows::User.remove_rights(@resource[:name], remove_list) unless remove_list.empty?
+    end
+  end
+
   def groups
-    user.groups.join(',')
+    @groups ||= Puppet::Util::Windows::ADSI::Group.name_sid_hash(user.groups)
+    @groups.keys
   end
 
   def groups=(groups)
     user.set_groups(groups, @resource[:membership] == :minimum)
+  end
+
+  def groups_insync?(current, should)
+    return false unless current
+
+    # By comparing account SIDs we don't have to worry about case
+    # sensitivity, or canonicalization of account names.
+
+    # Cannot use munge of the group property to canonicalize @should
+    # since the default array_matching comparison is not commutative
+
+    # dupes automatically weeded out when hashes built
+    current_groups = Puppet::Util::Windows::ADSI::Group.name_sid_hash(current)
+    specified_groups = Puppet::Util::Windows::ADSI::Group.name_sid_hash(should)
+
+    current_sids = current_groups.keys.to_a
+    specified_sids = specified_groups.keys.to_a
+
+    if @resource[:membership] == :inclusive
+      current_sids.sort == specified_sids.sort
+    else
+      (specified_sids & current_sids) == specified_sids
+    end
+  end
+
+  def groups_to_s(groups)
+    return '' if groups.nil? || !groups.kind_of?(Array)
+
+    groups = groups.map do |group_name|
+      sid = Puppet::Util::Windows::SID.name_to_principal(group_name)
+      if sid.account =~ /\\/
+        account, _ = Puppet::Util::Windows::ADSI::Group.parse_name(sid.account)
+      else
+        account = sid.account
+      end
+      resource.debug("#{sid.domain}\\#{account} (#{sid.sid})")
+      "#{sid.domain}\\#{account}"
+    end
+    return groups.join(',')
   end
 
   def create
@@ -47,11 +111,13 @@ Puppet::Type.type(:user).provide :windows_adsi do
     if sid
       Puppet::Util::Windows::ADSI::UserProfile.delete(sid)
     end
+
+    @deleted = true
   end
 
   # Only flush if we created or modified a user, not deleted
   def flush
-    @user.commit if @user
+    @user.commit if @user && !@deleted
   end
 
   def comment
@@ -71,10 +137,21 @@ Puppet::Type.type(:user).provide :windows_adsi do
   end
 
   def password
-    user.password_is?( @resource[:password] ) ? @resource[:password] : :absent
+    # avoid a LogonUserW style password check when the resource is not yet
+    # populated with a password (as is the case with `puppet resource user`)
+    return nil if @resource[:password].nil?
+
+    user.password_is?(@resource[:password]) ? @resource[:password] : nil
   end
 
   def password=(value)
+    if user.disabled?
+      info _("The user account '%s' is disabled; The password will still be changed" % @resource[:name])
+    elsif user.locked_out?
+      info _("The user account '%s' is locked out; The password will still be changed" % @resource[:name])
+    elsif user.expired?
+      info _("The user account '%s' is expired; The password will still be changed" % @resource[:name])
+    end
     user.password = value
   end
 
@@ -88,7 +165,7 @@ Puppet::Type.type(:user).provide :windows_adsi do
 
   [:gid, :shell].each do |prop|
     define_method(prop) { nil }
-    define_method("#{prop}=") do |v|
+    define_method("#{prop}=") do |_v|
       fail "No support for managing property #{prop} of user #{@resource[:name]} on Windows"
     end
   end

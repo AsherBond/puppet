@@ -1,144 +1,134 @@
-Puppet::Parser::Functions.newfunction(:lookup, :type => :rvalue, :arity => -2, :doc => <<-'ENDHEREDOC') do |args|
-Looks up data defined using Puppet Bindings and Hiera.
-The function is callable with one to three arguments and optionally with a code block to further process the result.
+# frozen_string_literal: true
 
-The lookup function can be called in one of these ways:
+module Puppet::Parser::Functions
+  newfunction(:lookup, :type => :rvalue, :arity => -2, :doc => <<~'ENDHEREDOC') do |_args|
+    Uses the Puppet lookup system to retrieve a value for a given key. By default,
+    this returns the first value found (and fails compilation if no values are
+    available), but you can configure it to merge multiple values into one, fail
+    gracefully, and more.
 
-    lookup(name)
-    lookup(name, type)
-    lookup(name, type, default)
-    lookup(options_hash)
-    lookup(name, options_hash)
+    When looking up a key, Puppet will search up to three tiers of data, in the
+    following order:
 
-The function may optionally be called with a code block / lambda with the following signatures:
+    1. Hiera.
+    2. The current environment's data provider.
+    3. The indicated module's data provider, if the key is of the form
+       `<MODULE NAME>::<SOMETHING>`.
 
-    lookup(...) |$result| { ... }
-    lookup(...) |$name, $result| { ... }
-    lookup(...) |$name, $result, $default| { ... }
+    #### Arguments
 
-The longer signatures are useful when the block needs to raise an error (it can report the name), or
-if it needs to know if the given default value was selected.
+    You must provide the name of a key to look up, and can optionally provide other
+    arguments. You can combine these arguments in the following ways:
 
-The code block receives the following three arguments:
+    * `lookup( <NAME>, [<VALUE TYPE>], [<MERGE BEHAVIOR>], [<DEFAULT VALUE>] )`
+    * `lookup( [<NAME>], <OPTIONS HASH> )`
+    * `lookup( as above ) |$key| { # lambda returns a default value }`
 
-* The `$name` is the last name that was looked up (*the* name if only one name was looked up)
-* The `$result` is the looked up value (or the default value if not found).
-* The `$default` is the given default value (`undef` if not given).
+    Arguments in `[square brackets]` are optional.
 
-The block, if present, is called with the result from the lookup. The value produced by the block is also what is
-produced by the `lookup` function.
-When a block is used, it is the users responsibility to call `error` if the result does not meet additional
-criteria, or if an undef value is not acceptable. If a value is not found, and a default has been
-specified, the default value is given to the block.
+    The arguments accepted by `lookup` are as follows:
 
-The content of the options hash is:
+    1. `<NAME>` (string or array) --- The name of the key to look up.
+        * This can also be an array of keys. If Puppet doesn't find anything for the
+        first key, it will try again with the subsequent ones, only resorting to a
+        default value if none of them succeed.
+    2. `<VALUE TYPE>` (data type) --- A
+    [data type](https://puppet.com/docs/puppet/latest/lang_data_type.html)
+    that must match the retrieved value; if not, the lookup (and catalog
+    compilation) will fail. Defaults to `Data` (accepts any normal value).
+    3. `<MERGE BEHAVIOR>` (string or hash; see **"Merge Behaviors"** below) ---
+    Whether (and how) to combine multiple values. If present, this overrides any
+    merge behavior specified in the data sources. Defaults to no value; Puppet will
+    use merge behavior from the data sources if present, and will otherwise do a
+    first-found lookup.
+    4. `<DEFAULT VALUE>` (any normal value) --- If present, `lookup` returns this
+    when it can't find a normal value. Default values are never merged with found
+    values. Like a normal value, the default must match the value type. Defaults to
+    no value; if Puppet can't find a normal value, the lookup (and compilation) will
+    fail.
+    5. `<OPTIONS HASH>` (hash) --- Alternate way to set the arguments above, plus
+    some less-common extra options. If you pass an options hash, you can't combine
+    it with any regular arguments (except `<NAME>`). An options hash can have the
+    following keys:
+        * `'name'` --- Same as `<NAME>` (argument 1). You can pass this as an
+        argument or in the hash, but not both.
+        * `'value_type'` --- Same as `<VALUE TYPE>` (argument 2).
+        * `'merge'` --- Same as `<MERGE BEHAVIOR>` (argument 3).
+        * `'default_value'` --- Same as `<DEFAULT VALUE>` (argument 4).
+        * `'default_values_hash'` (hash) --- A hash of lookup keys and default
+        values. If Puppet can't find a normal value, it will check this hash for the
+        requested key before giving up. You can combine this with `default_value` or
+        a lambda, which will be used if the key isn't present in this hash. Defaults
+        to an empty hash.
+        * `'override'` (hash) --- A hash of lookup keys and override values. Puppet
+        will check for the requested key in the overrides hash _first;_ if found, it
+        returns that value as the _final_ value, ignoring merge behavior. Defaults
+        to an empty hash.
 
-* `name` - The name or array of names to lookup (first found is returned)
-* `type` - The type to assert (a Type or a type specification in string form)
-* `default` - The default value if there was no value found (must comply with the data type)
-* `accept_undef` - (default `false`) An `undef` result is accepted if this options is set to `true`.
-* `override` - a hash with map from names to values that are used instead of the underlying bindings. If the name
-  is found here it wins. Defaults to an empty hash.
-* `extra` - a hash with map from names to values that are used as a last resort to obtain a value. Defaults to an
-  empty hash.
+    Finally, `lookup` can take a lambda, which must accept a single parameter.
+    This is yet another way to set a default value for the lookup; if no results are
+    found, Puppet will pass the requested key to the lambda and use its result as
+    the default value.
 
-When the call is on the form `lookup(name, options_hash)`, or `lookup(name, type, options_hash)`, the given name
-argument wins over the `options_hash['name']`.
+    #### Merge Behaviors
 
-The search order is `override` (if given), then `binder`, then `hiera` and finally `extra` (if given). The first to produce
-a value other than undef for a given name wins.
+    Puppet lookup uses a hierarchy of data sources, and a given key might have
+    values in multiple sources. By default, Puppet returns the first value it finds,
+    but it can also continue searching and merge all the values together.
 
-The type specification is one of:
+    > **Note:** Data sources can use the special `lookup_options` metadata key to
+    request a specific merge behavior for a key. The `lookup` function will use that
+    requested behavior unless you explicitly specify one.
 
-  * A type in the Puppet Type System, e.g.:
-    * `Integer`, an integral value with optional range e.g.:
-      * `Integer[0, default]` - 0 or positive
-      * `Integer[default, -1]` - negative, 
-      * `Integer[1,100]` - value between 1 and 100 inclusive
-    * `String`- any string
-    * `Float` - floating point number (same signature as for Integer for `Integer` ranges)
-    * `Boolean` - true of false (strict)
-    * `Array` - an array (of Data by default), or parameterized as `Array[<element_type>]`, where
-      `<element_type>` is the expected type of elements
-    * `Hash`,  - a hash (of default `Literal` keys and `Data` values), or parameterized as
-      `Hash[<value_type>]`, `Hash[<key_type>, <value_type>]`, where `<key_type>`, and
-      `<value_type>` are the types of the keys and values respectively
-      (key is `Literal` by default).
-    * `Data` - abstract type representing any `Literal`, `Array[Data]`, or `Hash[Literal, Data]`
-    * `Pattern[<p1>, <p2>, ..., <pn>]` - an enumeration of valid patterns (one or more) where
-       a pattern is a regular expression string or regular expression,
-       e.g. `Pattern['.com$', '.net$']`, `Pattern[/[a-z]+[0-9]+/]` 
-    * `Enum[<s1>, <s2>, ..., <sn>]`, - an enumeration of exact string values (one or more)
-       e.g. `Enum[blue, red, green]`.
-    * `Variant[<t1>, <t2>,...<tn>]` - matches one of the listed types (at least one must be given)
-      e.g. `Variant[Integer[8000,8999], Integer[20000, 99999]]` to accept a value in either range
-    * `Regexp`- a regular expression (i.e. the result is a regular expression, not a string
-       matching a regular expression).
-  * A string containing a type description - one of the types as shown above but in string form.
+    The valid merge behaviors are:
 
-If the function is called without specifying a default value, and nothing is bound to the given name 
-an error is raised unless the option `accept_undef` is true. If a block is given it must produce an acceptable
-value (or call `error`). If the block does not produce an acceptable value an error is
-raised.
+    * `'first'` --- Returns the first value found, with no merging. Puppet lookup's
+    default behavior.
+    * `'unique'` (called "array merge" in classic Hiera) --- Combines any number of
+    arrays and scalar values to return a merged, flattened array with all duplicate
+    values removed. The lookup will fail if any hash values are found.
+    * `'hash'` --- Combines the keys and values of any number of hashes to return a
+    merged hash. If the same key exists in multiple source hashes, Puppet will use
+    the value from the highest-priority data source; it won't recursively merge the
+    values.
+    * `'deep'` --- Combines the keys and values of any number of hashes to return a
+    merged hash. If the same key exists in multiple source hashes, Puppet will
+    recursively merge hash or array values (with duplicate values removed from
+    arrays). For conflicting scalar values, the highest-priority value will win.
+    * `{'strategy' => 'first|unique|hash'}` --- Same as the string versions of these
+    merge behaviors.
+    * `{'strategy' => 'deep', <DEEP OPTION> => <VALUE>, ...}` --- Same as `'deep'`,
+    but can adjust the merge with additional options. The available options are:
+        * `'knockout_prefix'` (string or undef) --- A string prefix to indicate a
+        value should be _removed_ from the final result. Defaults to `undef`, which
+        disables this feature.
+        * `'sort_merged_arrays'` (boolean) --- Whether to sort all arrays that are
+        merged together. Defaults to `false`.
+        * `'merge_hash_arrays'` (boolean) --- Whether to merge hashes within arrays.
+        Defaults to `false`.
 
-Examples:
+    #### Examples
 
-When called with one argument; **the name**, it
-returns the bound value with the given name after having  asserted it has the default datatype `Data`:
+    Look up a key and return the first value found:
 
-    lookup('the_name')
+        lookup('ntp::service_name')
 
-When called with two arguments; **the name**, and **the expected type**, it
-returns the bound value with the given name after having asserted it has the given data
-type ('String' in the example):
+    Do a unique merge lookup of class names, then add all of those classes to the
+    catalog (like `hiera_include`):
 
-    lookup('the_name', 'String') # 3.x
-    lookup('the_name', String)   # parser future
+        lookup('classes', Array[String], 'unique').include
 
-When called with three arguments, **the name**, the **expected type**, and a **default**, it
-returns the bound value with the given name, or the default after having asserted the value
-has the given data type (`String` in the example above):
+    Do a deep hash merge lookup of user data, but let higher priority sources
+    remove values by prefixing them with `--`:
 
-    lookup('the_name', 'String', 'Fred') # 3x
-    lookup('the_name', String, 'Fred')   # parser future
+        lookup( { 'name'  => 'users',
+                  'merge' => {
+                    'strategy'        => 'deep',
+                    'knockout_prefix' => '--',
+                  },
+        })
 
-Using a lambda to process the looked up result - asserting that it starts with an upper case letter:
-
-    # only with parser future
-    lookup('the_size', Integer[1,100]) |$result| {
-      if $large_value_allowed and $result > 10
-        { error 'Values larger than 10 are not allowed'}
-      $result
-    }
-
-Including the name in the error
-
-    # only with parser future
-    lookup('the_size', Integer[1,100]) |$name, $result| {
-      if $large_value_allowed and $result > 10
-        { error 'The bound value for '${name}' can not be larger than 10 in this configuration'}
-      $result
-    }
-
-When using a block, the value it produces is also asserted against the given type, and it may not be
-`undef` unless the option `'accept_undef'` is `true`.
-
-All options work as the corresponding (direct) argument. The `first_found` option and
-`accept_undef` are however only available as options.
-
-Using first_found semantics option to return the first name that has a bound value:
-
-    lookup(['apache::port', 'nginx::port'], 'Integer', 80)
-
-If you want to make lookup return undef when no value was found instead of raising an error:
-
-     $are_you_there = lookup('peekaboo', { accept_undef => true} )
-     $are_you_there = lookup('peekaboo', { accept_undef => true}) |$result| { $result }
-
-ENDHEREDOC
-
-  unless Puppet[:binder] || Puppet[:parser] == 'future'
-    raise Puppet::ParseError, "The lookup function is only available with settings --binder true, or --parser future"
+  ENDHEREDOC
+    Error.is4x('lookup')
   end
-  Puppet::Pops::Binder::Lookup.lookup(self, args)
 end

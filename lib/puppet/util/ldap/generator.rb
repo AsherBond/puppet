@@ -1,4 +1,6 @@
-require 'puppet/util/ldap'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/ldap'
 
 class Puppet::Util::Ldap::Generator
   # Declare the attribute we'll use to generate the value.

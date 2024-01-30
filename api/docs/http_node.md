@@ -13,7 +13,7 @@ Find
 
 Retrieve data for a node
 
-  GET /:environment/node/:certname
+    GET /puppet/v3/node/:certname?environment=:environment&transaction_uuid=:transaction_uuid&configured_environment=:environment
 
 
 ### Supported HTTP Methods
@@ -22,36 +22,44 @@ GET
 
 ### Supported Response Formats
 
-PSON
+`application/json`
+
+### Parameters
+
+One parameter should be provided to the GET:
+
+- `transaction_uuid`: a transaction uuid identifying the entire transaction (shows up in the report as well)
+
+An optional parameter can be provided to the GET to notify a node classifier that the client requested a specific
+environment, which might differ from what the client believes is its current environment:
+
+- `configured_environment`: the environment configured on the client
 
 ### Examples
 
-    > GET /production/node/mycertname HTTP/1.1
-    > Accept: pson, b64_zlib_yaml, yaml, raw
+    > GET /puppet/v3/node/mycertname?environment=production&transaction_uuid=aff261a2-1a34-4647-8c20-ff662ec11c4c&configured_environment=production HTTP/1.1
+    > Accept: application/json
 
     < HTTP/1.1 200 OK
-    < Content-Type: text/pson
+    < Content-Type: application/json
     < Content-Length: 4630
 
     {
-      "document_type":"Node",
-      "data":{
-        "name":"thinky.corp.puppetlabs.net",
-        "parameters":{
-          "architecture":"amd64",
-          "kernel":"Linux",
-          "blockdevices":"sda,sr0",
-          "clientversion":"3.3.1",
-          "clientnoop":"false",
-          "environment":"production",
-          ...
-        },
-        "environment":"production"
-      }
+      "name":"thinky.corp.puppetlabs.net",
+      "parameters":{
+        "architecture":"amd64",
+        "kernel":"Linux",
+        "blockdevices":"sda,sr0",
+        "clientversion":"3.3.1",
+        "clientnoop":"false",
+        "environment":"production",
+        ...
+      },
+      "environment":"production"
     }
 
 Schema
 ------
 
-Returned node objects conform to the json schema at
-{file:api/schemas/node.json api/schemas/node.json}.
+A node response body conforms to
+[the node schema.](../schemas/node.json)

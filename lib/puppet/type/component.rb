@@ -1,7 +1,8 @@
+# frozen_string_literal: true
 
-require 'puppet'
-require 'puppet/type'
-require 'puppet/transaction'
+require_relative '../../puppet'
+require_relative '../../puppet/type'
+require_relative '../../puppet/transaction'
 
 Puppet::Type.newtype(:component) do
   include Enumerable
@@ -14,15 +15,21 @@ Puppet::Type.newtype(:component) do
   # Override how parameters are handled so that we support the extra
   # parameters that are used with defined resource types.
   def [](param)
-    return super if self.class.valid_parameter?(param)
-    @extra_parameters[param.to_sym]
+    if self.class.valid_parameter?(param)
+      super
+    else
+      @extra_parameters[param.to_sym]
+    end
   end
 
   # Override how parameters are handled so that we support the extra
   # parameters that are used with defined resource types.
   def []=(param, value)
-    return super if self.class.valid_parameter?(param)
-    @extra_parameters[param.to_sym] = value
+    if self.class.valid_parameter?(param)
+      super
+    else
+      @extra_parameters[param.to_sym] = value
+    end
   end
 
   # Initialize a new component
@@ -38,7 +45,8 @@ Puppet::Type.newtype(:component) do
     else
       myname = reference.to_s
     end
-    if p = self.parent
+    p = self.parent
+    if p
       return [p.pathbuilder, myname]
     else
       return [myname]
@@ -62,13 +70,24 @@ Puppet::Type.newtype(:component) do
     catalog.adjacent(self).each do |child|
       if child.respond_to?(:refresh)
         child.refresh
-        child.log "triggering #{:refresh}"
+        child.log "triggering refresh"
       end
     end
   end
 
   def to_s
     reference.to_s
+  end
+
+  # Overrides the default implementation to do nothing.
+  # This type contains data from class/define parameters, but does
+  # not have actual parameters or properties at the Type level. We can
+  # simply ignore anything flagged as sensitive here, since any
+  # contained resources will handle that sensitivity themselves. There
+  # is no risk of this information leaking into reports, since no
+  # Component instances survive the graph transmutation.
+  #
+  def set_sensitive_parameters(sensitive_parameters)
   end
 
   private

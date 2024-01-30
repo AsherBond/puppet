@@ -1,4 +1,6 @@
-require 'puppet/property/list'
+# frozen_string_literal: true
+
+require_relative '../../puppet/property/list'
 
 module Puppet
   class Property
@@ -10,12 +12,11 @@ module Puppet
     # For an unordered list see {Puppet::Property::List}.
     #
     class OrderedList < List
-
       def add_should_with_current(should, current)
         if current.is_a?(Array)
-          #tricky trick
-          #Preserve all the current items in the list
-          #but move them to the back of the line
+          # tricky trick
+          # Preserve all the current items in the list
+          # but move them to the back of the line
           should = should + (current - should)
         end
         should

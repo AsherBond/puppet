@@ -1,9 +1,10 @@
-Puppet::Type.type(:service).provide :freebsd, :parent => :init do
+# frozen_string_literal: true
 
+Puppet::Type.type(:service).provide :freebsd, :parent => :init do
   desc "Provider for FreeBSD and DragonFly BSD. Uses the `rcvar` argument of init scripts and parses/edits rc files."
 
-  confine :operatingsystem => [:freebsd, :dragonfly]
-  defaultfor :operatingsystem => [:freebsd, :dragonfly]
+  confine 'os.name' => [:freebsd, :dragonfly]
+  defaultfor 'os.name' => [:freebsd, :dragonfly]
 
   def rcconf()        '/etc/rc.conf' end
   def rcconf_local()  '/etc/rc.conf.local' end
@@ -22,7 +23,7 @@ Puppet::Type.type(:service).provide :freebsd, :parent => :init do
   def rcvar
     rcvar = execute([self.initscript, :rcvar], :failonfail => true, :combine => false, :squelch => false)
     rcvar = rcvar.split("\n")
-    rcvar.delete_if {|str| str =~ /^#\s*$/}
+    rcvar.delete_if { |str| str =~ /^#\s*$/ }
     rcvar[1] = rcvar[1].gsub(/^\$/, '')
     rcvar
   end
@@ -39,7 +40,7 @@ Puppet::Type.type(:service).provide :freebsd, :parent => :init do
 
   # Extract service name
   def service_name
-    extract_value_name('service', 0, /# (.*)/, '\1')
+    extract_value_name('service', 0, /# (\S+).*/, '\1')
   end
 
   # Extract rcvar name
@@ -74,7 +75,7 @@ Puppet::Type.type(:service).provide :freebsd, :parent => :init do
       if Puppet::FileSystem.exist?(filename)
         s = File.read(filename)
         if s.gsub!(/^(#{rcvar}(_enable)?)=\"?(YES|NO)\"?/, "\\1=\"#{yesno}\"")
-          File.open(filename, File::WRONLY) { |f| f << s }
+          Puppet::FileSystem.replace_file(filename) { |f| f << s }
           self.debug("Replaced in #{filename}")
           success = true
         end
@@ -88,21 +89,21 @@ Puppet::Type.type(:service).provide :freebsd, :parent => :init do
     append = "\# Added by Puppet\n#{rcvar}_enable=\"#{yesno}\"\n"
     # First, try the one-file-per-service style
     if Puppet::FileSystem.exist?(rcconf_dir)
-      File.open(rcconf_dir + "/#{service}", File::WRONLY | File::APPEND | File::CREAT, 0644) {
-        |f| f << append
+      File.open(rcconf_dir + "/#{service}", File::WRONLY | File::APPEND | File::CREAT, 0644) { |f|
+        f << append
         self.debug("Appended to #{f.path}")
       }
     else
       # Else, check the local rc file first, but don't create it
       if Puppet::FileSystem.exist?(rcconf_local)
-        File.open(rcconf_local, File::WRONLY | File::APPEND) {
-          |f| f << append
+        File.open(rcconf_local, File::WRONLY | File::APPEND) { |f|
+          f << append
           self.debug("Appended to #{f.path}")
         }
       else
         # At last use the standard rc.conf file
-        File.open(rcconf, File::WRONLY | File::APPEND | File::CREAT, 0644) {
-          |f| f << append
+        File.open(rcconf, File::WRONLY | File::APPEND | File::CREAT, 0644) { |f|
+          f << append
           self.debug("Appended to #{f.path}")
         }
       end
@@ -139,5 +140,4 @@ Puppet::Type.type(:service).provide :freebsd, :parent => :init do
   def statuscmd
     [self.initscript, :onestatus]
   end
-
 end

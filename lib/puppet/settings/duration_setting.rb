@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # A setting that represents a span of time, and evaluates to an integer
 # number of seconds after being parsed
 class Puppet::Settings::DurationSetting < Puppet::Settings::BaseSetting
@@ -21,12 +23,12 @@ class Puppet::Settings::DurationSetting < Puppet::Settings::BaseSetting
   # Convert the value to an integer, parsing numeric string with units if necessary.
   def munge(value)
     case
-    when value.is_a?(Integer)
+    when value.is_a?(Integer) || value.nil?
       value
     when (value.is_a?(String) and value =~ FORMAT)
       $1.to_i * UNITMAP[$2 || 's']
     else
-      raise Puppet::Settings::ValidationError, "Invalid duration format '#{value.inspect}' for parameter: #{@name}"
+      raise Puppet::Settings::ValidationError, _("Invalid duration format '%{value}' for parameter: %{name}") % { value: value.inspect, name: @name }
     end
   end
 end

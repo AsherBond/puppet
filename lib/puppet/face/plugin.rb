@@ -1,9 +1,13 @@
-require 'puppet/face'
-Puppet::Face.define(:plugin, '0.0.1') do
-  copyright "Puppet Labs", 2011
-  license   "Apache 2 license; see COPYING"
+# frozen_string_literal: true
 
-  summary "Interact with the Puppet plugin system."
+require_relative '../../puppet/face'
+require_relative '../../puppet/configurer/plugin_handler'
+
+Puppet::Face.define(:plugin, '0.0.1') do
+  copyright "Puppet Inc.", 2011
+  license   _("Apache 2 license; see COPYING")
+
+  summary _("Interact with the Puppet plugin system.")
   description <<-'EOT'
     This subcommand provides network access to the puppet master's store of
     plugins.
@@ -15,13 +19,13 @@ Puppet::Face.define(:plugin, '0.0.1') do
   EOT
 
   action :download do
-    summary "Download plugins from the puppet master."
+    summary _("Download plugins from the puppet master.")
     description <<-'EOT'
       Downloads plugins from the configured puppet master. Any plugins
       downloaded in this way will be used in all subsequent Puppet activity.
       This action modifies files on disk.
     EOT
-    returns <<-'EOT'
+    returns _(<<-'EOT')
       A list of the files downloaded, or a confirmation that no files were
       downloaded. When used from the Ruby API, this action returns an array of
       the files downloaded, which will be empty if none were retrieved.
@@ -36,29 +40,22 @@ Puppet::Face.define(:plugin, '0.0.1') do
       $ Puppet::Face[:plugin, '0.0.1'].download
     EOT
 
-    when_invoked do |options|
-      require 'puppet/configurer/downloader'
+    when_invoked do |_options|
       remote_environment_for_plugins = Puppet::Node::Environment.remote(Puppet[:environment])
-      result = Puppet::Configurer::Downloader.new("plugin",
-                                         Puppet[:plugindest],
-                                         Puppet[:pluginsource],
-                                         Puppet[:pluginsignore],
-                                         remote_environment_for_plugins).evaluate
-      if Puppet.features.external_facts?
-          result += Puppet::Configurer::Downloader.new("pluginfacts",
-                                             Puppet[:pluginfactdest],
-                                             Puppet[:pluginfactsource],
-                                             Puppet[:pluginsignore],
-                                             remote_environment_for_plugins).evaluate
+
+      begin
+        handler = Puppet::Configurer::PluginHandler.new
+        handler.download_plugins(remote_environment_for_plugins)
+      ensure
+        Puppet.runtime[:http].close
       end
-      result
     end
 
     when_rendering :console do |value|
       if value.empty? then
-        "No plugins downloaded."
+        _("No plugins downloaded.")
       else
-        "Downloaded these plugins: #{value.join(', ')}"
+        _("Downloaded these plugins: %{plugins}") % { plugins: value.join(', ') }
       end
     end
   end

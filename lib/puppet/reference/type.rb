@@ -1,11 +1,13 @@
+# frozen_string_literal: true
+
 Puppet::Util::Reference.newreference :type, :doc => "All Puppet resource types and all their details" do
   types = {}
   Puppet::Type.loadall
 
   Puppet::Type.eachtype { |type|
-    next if type.name == :puppet
     next if type.name == :component
     next if type.name == :whit
+
     types[type.name] = type
   }
 
@@ -21,9 +23,9 @@ Puppet::Util::Reference.newreference :type, :doc => "All Puppet resource types a
   In the following code:
 
       file { "/etc/passwd":
-        owner => root,
-        group => root,
-        mode  => 644
+        owner => "root",
+        group => "root",
+        mode  => "0644"
       }
 
   `/etc/passwd` is considered the title of the file object (used for things like
@@ -37,7 +39,7 @@ Puppet::Util::Reference.newreference :type, :doc => "All Puppet resource types a
 - *Providers* provide low-level functionality for a given resource type.  This is
   usually in the form of calling out to external commands.
 
-  When required binaries are specified for providers, fully qualifed paths
+  When required binaries are specified for providers, fully qualified paths
   indicate that the binary must exist at that specific path and unqualified
   binaries indicate that Puppet will search for the binary using the shell
   path.
@@ -48,66 +50,59 @@ Puppet::Util::Reference.newreference :type, :doc => "All Puppet resource types a
   Resource types define features they can use, and providers can be tested to see
   which features they provide.
 
-    }
+  }
 
-    types.sort { |a,b|
-      a.to_s <=> b.to_s
-    }.each { |name,type|
-
-      str << "
+  types.sort_by(&:to_s).each { |name, type|
+    str << "
 
 ----------------
 
 "
 
-  str << markdown_header(name, 3)
-  str << scrub(type.doc) + "\n\n"
+    str << markdown_header(name, 3)
+    str << scrub(type.doc) + "\n\n"
 
-  # Handle the feature docs.
-  if featuredocs = type.featuredocs
-    str << markdown_header("Features", 4)
-    str << featuredocs
+    # Handle the feature docs.
+    featuredocs = type.featuredocs
+    if featuredocs
+      str << markdown_header("Features", 4)
+      str << featuredocs
     end
 
     docs = {}
-    type.validproperties.sort { |a,b|
-      a.to_s <=> b.to_s
-    }.reject { |sname|
+    type.validproperties.sort_by(&:to_s).reject { |sname|
       property = type.propertybyname(sname)
       property.nodoc
     }.each { |sname|
       property = type.propertybyname(sname)
 
-      raise "Could not retrieve property #{sname} on type #{type.name}" unless property
+      raise _("Could not retrieve property %{sname} on type %{type_name}") % { sname: sname, type_name: type.name } unless property
 
-      doc = nil
-      unless doc = property.doc
-        $stderr.puts "No docs for #{type}[#{sname}]"
+      doc = property.doc
+      unless doc
+        $stderr.puts _("No docs for %{type}[%{sname}]") % { type: type, sname: sname }
         next
       end
       doc = doc.dup
       tmp = doc
       tmp = scrub(tmp)
 
-      docs[sname]  = tmp
+      docs[sname] = tmp
     }
 
     str << markdown_header("Parameters", 4) + "\n"
-    type.parameters.sort { |a,b|
-      a.to_s <=> b.to_s
-    }.each { |name,param|
-      #docs[name] = indent(scrub(type.paramdoc(name)), $tab)
-      docs[name] = scrub(type.paramdoc(name))
+    type.parameters.sort_by(&:to_s).each { |type_name, _param|
+      docs[type_name] = scrub(type.paramdoc(type_name))
     }
 
     additional_key_attributes = type.key_attributes - [:name]
     docs.sort { |a, b|
       a[0].to_s <=> b[0].to_s
-    }.each { |name, doc|
-      if additional_key_attributes.include?(name)
+    }.each { |type_name, doc|
+      if additional_key_attributes.include?(type_name)
         doc = "(**Namevar:** If omitted, this parameter's value defaults to the resource's title.)\n\n" + doc
       end
-      str << markdown_definitionlist(name, doc)
+      str << markdown_definitionlist(type_name, doc)
     }
     str << "\n"
   }

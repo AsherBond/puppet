@@ -1,4 +1,6 @@
-require 'puppet/confine'
+# frozen_string_literal: true
+
+require_relative '../../puppet/confine'
 
 # Require a specific value for a variable, either a Puppet setting
 # or a Facter value.  This class is a bit weird because the name
@@ -18,7 +20,7 @@ class Puppet::Confine::Variable < Puppet::Confine
 
   # Retrieve the value from facter
   def facter_value
-    @facter_value ||= ::Facter.value(name).to_s.downcase
+    @facter_value ||= Puppet.runtime[:facter].value(name).to_s.downcase
   end
 
   def initialize(values)

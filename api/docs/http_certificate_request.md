@@ -2,25 +2,27 @@ Certificate Request
 =============
 
 The `certificate_request` endpoint submits a Certificate Signing Request (CSR)
-to the master.  The master must be configured to be a CA.  The returned
+to the master. The master must be configured to be a CA. The returned
 CSR is always in the `.pem` format.
 
-In all requests the `:environment` must be given, but it has no bearing on the request. CSRs are not managed within environments, all CSRs are global.
+Under Puppet Server's CA service, the `environment` parameter is ignored and can
+be omitted. Under a Rack or WEBrick Puppet master, `environment` is required and
+must be a valid environment, but it has no effect on the response.
 
 Find
 ----
 
 Get a submitted CSR
 
-    GET /:environment/certificate_request/:nodename
-    Accept: s
+    GET /puppet-ca/v1/certificate_request/:nodename?environment=:environment
+    Accept: text/plain
 
 Save
 ----
 
 Submit a CSR
 
-    PUT /:environment/certificate_request/:nodename
+    PUT /puppet-ca/v1/certificate_request/:nodename?environment=:environment
     Content-Type: text/plain
 
 Note: The `:nodename` must match the Common Name on the submitted CSR.
@@ -31,10 +33,13 @@ specifically a CSR in PEM format.
 Search
 ----
 
+**Note:** The plural `certificate_requests` endpoint is a legacy feature. Puppet
+Server doesn't support it, and we don't plan to add support in the future.
+
 List submitted CSRs
 
-    GET /:environment/certificate_requests/:ignored_pattern
-    Accept: s
+    GET /puppet-ca/v1/certificate_requests/:ignored_pattern?environment=:environment
+    Accept: text/plain
 
 The `:ignored_pattern` parameter is not used, but must still be provided.
 
@@ -43,20 +48,20 @@ Destroy
 
 Delete a submitted CSR
 
-    DELETE /:environment/certificate_request/:nodename
-    Accept: s
+    DELETE /puppet-ca/v1/certificate_request/:nodename?environment=:environment
+    Accept: text/plain
 
 ### Supported HTTP Methods
 
 The default configuration only allows requests that result in a Find and a
-Save. You need to modify auth.conf in order to allow clients to use Search and
+Save. You need to modify Puppet Server's `auth.conf` in order to allow clients to use Search and
 Destroy actions. It is not recommended that you change the default settings.
 
 GET, PUT, DELETE
 
 ### Supported Response Formats
 
-s (denotes a string of text)
+`text/plain`
 
 The returned CSR is always in the `.pem` format.
 
@@ -68,7 +73,7 @@ None
 
 #### CSR found
 
-    GET /env/certificate_request/agency
+    GET /puppet-ca/v1/certificate_request/agency?environment=env
 
     HTTP/1.1 200 OK
     Content-Type: text/plain
@@ -87,7 +92,7 @@ None
 
 #### CSR not found
 
-    GET /env/certificate_request/does_not_exist
+    GET /puppet-ca/v1/certificate_request/does_not_exist?environment=env
 
     HTTP/1.1 404 Not Found
     Content-Type: text/plain
@@ -96,16 +101,16 @@ None
 
 #### No node name given
 
-    GET /env/certificate_request/
+    GET /puppet-ca/v1/certificate_request?environment=env
 
     HTTP/1.1 400 Bad Request
     Content-Type: text/plain
 
-    No request key specified in /env/certificate_request/
+    No request key specified in /puppet-ca/v1/certificate_request
 
 #### Delete a CSR that exists
 
-    DELETE /production/certificate_request/agency
+    DELETE /puppet-ca/v1/certificate_request/agency?environment=production
     Accept: s
 
     HTTP/1.1 200 OK
@@ -115,7 +120,7 @@ None
 
 #### Delete a CSR that does not exists
 
-    DELETE /production/certificate_request/missing
+    DELETE /puppet-ca/v1/certificate_request/missing?environment=production
     Accept: s
 
     HTTP/1.1 200 OK
@@ -125,7 +130,7 @@ None
 
 #### Retrieve all CSRs
 
-     GET /production/certificate_requests/ignored
+     GET /puppet-ca/v1/certificate_requests/ignored?environment=production
      Accept: s
 
      HTTP/1.1 200 OK

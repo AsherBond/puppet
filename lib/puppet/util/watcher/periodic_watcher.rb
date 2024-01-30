@@ -1,8 +1,10 @@
+# frozen_string_literal: true
+
 # Monitor a given watcher for changes on a periodic interval.
 class Puppet::Util::Watcher::PeriodicWatcher
   # @param watcher [Puppet::Util::Watcher::ChangeWatcher] a watcher for the value to watch
-  # @param timer [Puppet::Util::Watcher::Timer] A timer to determin when to
-  #   recheck the watcher. If the timout of the timer is negative, then the
+  # @param timer [Puppet::Util::Watcher::Timer] A timer to determine when to
+  #   recheck the watcher. If the timeout of the timer is negative, then the
   #   watched value is always considered to be changed
   def initialize(watcher, timer)
     @watcher = watcher
@@ -34,4 +36,3 @@ class Puppet::Util::Watcher::PeriodicWatcher
     end
   end
 end
-

@@ -1,8 +1,20 @@
 test_name "NIM package provider should work correctly"
 
-confine :to, :platform => "aix"
+tag 'audit:high',
+    'audit:acceptance'  # OS specific by definition
 
-# NOTE: This test is duplicated in the pe_acceptance_tests repo
+# nim test is slow, confine to only aix 7.2 and recent puppet versions
+confine :to, :platform => "aix" do |aix|
+  version = on(aix, 'puppet --version').stdout
+  version &&
+    Gem::Version.new(version) > Gem::Version.new('6.4.0') &&
+    on(aix, 'facter os.release.full').stdout == '7.2'
+end
+
+teardown do
+    test_apply('cdrecord', 'absent', '')
+    test_apply('puppet.test.rte', 'absent', '')
+end
 
 def assert_package_version(package, expected_version)
   # The output of lslpp is a colon-delimited list like:
@@ -43,6 +55,9 @@ def test_apply(package_name, ensure_value, expected_version)
   end
 end
 
+# These two packages live in an LPP source on the NIM master. Details
+# on our nim masters are available at
+# https://confluence.puppetlabs.com/display/OPS/IBM+Power+LPARs
 package_types = {
     "RPM" => {
         :package_name    => "cdrecord",
@@ -50,11 +65,19 @@ package_types = {
         :new_version     => '1.9-9'
     },
     "BFF" => {
-        :package_name    => "bos.atm.atmle",
-        :old_version     => '6.1.7.0',
-        :new_version     => '7.1.2.0'
+        :package_name    => "puppet.test.rte",
+        :old_version     => '1.0.0.0',
+        :new_version     => '2.0.0.0'
     }
 }
+
+step "Setup: ensure test packages are not installed" do
+  pkgs = ['cdrecord', 'puppet.test.rte']
+  pkgs.each do |pkg|
+    on hosts, puppet_apply(["--detailed-exitcodes", "--verbose"]),
+       {:stdin => get_manifest(pkg, 'absent'), :acceptable_exit_codes => [0,2]}
+  end
+end
 
 package_types.each do |package_type, details|
   step "install a #{package_type} package via 'ensure=>present'" do
@@ -90,7 +113,7 @@ package_types.each do |package_type, details|
        { :stdin => manifest,
          :acceptable_exit_codes => [4,6] } do
 
-        assert_match(/NIM package provider is unable to downgrade packages/, stdout, "Didn't get an error about downgrading packages")
+        assert_match(/NIM package provider is unable to downgrade packages/, stderr, "Didn't get an error about downgrading packages")
     end
   end
 

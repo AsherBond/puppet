@@ -1,6 +1,8 @@
-require 'puppet'
+# frozen_string_literal: true
+
+require_relative '../../puppet'
 require 'fileutils'
-require 'puppet/util'
+require_relative '../../puppet/util'
 
 SEPARATOR = [Regexp.escape(File::SEPARATOR.to_s), Regexp.escape(File::ALT_SEPARATOR.to_s)].join
 
@@ -17,7 +19,7 @@ Puppet::Reports.register_report(:store) do
 
     dir = File.join(Puppet[:reportdir], host)
 
-    if ! Puppet::FileSystem.exist?(dir)
+    if !Puppet::FileSystem.exist?(dir)
       FileUtils.mkdir_p(dir)
       FileUtils.chmod_R(0750, dir)
     end
@@ -32,11 +34,11 @@ Puppet::Reports.register_report(:store) do
     file = File.join(dir, name)
 
     begin
-      Puppet::Util.replace_file(file, 0640) do |fh|
+      Puppet::FileSystem.replace_file(file, 0640) do |fh|
         fh.print to_yaml
       end
     rescue => detail
-       Puppet.log_exception(detail, "Could not write report for #{host} at #{file}: #{detail}")
+      Puppet.log_exception(detail, "Could not write report for #{host} at #{file}: #{detail}")
     end
 
     # Only testing cares about the return value
@@ -51,7 +53,8 @@ Puppet::Reports.register_report(:store) do
 
     if Puppet::FileSystem.exist?(dir)
       Dir.entries(dir).each do |file|
-        next if ['.','..'].include?(file)
+        next if ['.', '..'].include?(file)
+
         file = File.join(dir, file)
         Puppet::FileSystem.unlink(file) if File.file?(file)
       end
@@ -61,7 +64,7 @@ Puppet::Reports.register_report(:store) do
 
   def validate_host(host)
     if host =~ Regexp.union(/[#{SEPARATOR}]/, /\A\.\.?\Z/)
-      raise ArgumentError, "Invalid node name #{host.inspect}"
+      raise ArgumentError, _("Invalid node name %{host}") % { host: host.inspect }
     end
   end
   module_function :validate_host

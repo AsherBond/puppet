@@ -1,45 +1,67 @@
+# frozen_string_literal: true
+
+module Puppet::Pops
+module Evaluator
 # A module with bindings between the new evaluator and the 3x runtime.
 # The intention is to separate all calls into scope, compiler, resource, etc. in this module
 # to make it easier to later refactor the evaluator for better implementations of the 3x classes.
 #
 # @api private
-module Puppet::Pops::Evaluator::Runtime3Support
-
-  NAME_SPACE_SEPARATOR = '::'.freeze
+module Runtime3Support
+  NAME_SPACE_SEPARATOR = '::'
 
   # Fails the evaluation of _semantic_ with a given issue.
   #
-  # @param issue [Puppet::Pops::Issue] the issue to report
-  # @param semantic [Puppet::Pops::ModelPopsObject] the object for which evaluation failed in some way. Used to determine origin.
+  # @param issue [Issue] the issue to report
+  # @param semantic [ModelPopsObject] the object for which evaluation failed in some way. Used to determine origin.
   # @param options [Hash] hash of optional named data elements for the given issue
   # @return [!] this method does not return
   # @raise [Puppet::ParseError] an evaluation error initialized from the arguments (TODO: Change to EvaluationError?)
   #
-  def fail(issue, semantic, options={}, except=nil)
+  def fail(issue, semantic, options = {}, except = nil)
     optionally_fail(issue, semantic, options, except)
     # an error should have been raised since fail always fails
-    raise ArgumentError, "Internal Error: Configuration of runtime error handling wrong: should have raised exception"
+    raise ArgumentError, _("Internal Error: Configuration of runtime error handling wrong: should have raised exception")
   end
 
   # Optionally (based on severity) Fails the evaluation of _semantic_ with a given issue
   # If the given issue is configured to be of severity < :error it is only reported, and the function returns.
   #
-  # @param issue [Puppet::Pops::Issue] the issue to report
-  # @param semantic [Puppet::Pops::ModelPopsObject] the object for which evaluation failed in some way. Used to determine origin.
+  # @param issue [Issue] the issue to report
+  # @param semantic [ModelPopsObject] the object for which evaluation failed in some way. Used to determine origin.
   # @param options [Hash] hash of optional named data elements for the given issue
   # @return [!] this method does not return
   # @raise [Puppet::ParseError] an evaluation error initialized from the arguments (TODO: Change to EvaluationError?)
   #
-  def optionally_fail(issue, semantic, options={}, except=nil)
-    if except.nil?
+  def optionally_fail(issue, semantic, options = {}, except = nil)
+    if except.nil? && diagnostic_producer.severity_producer[issue] == :error
       # Want a stacktrace, and it must be passed as an exception
       begin
-       raise EvaluationError.new()
+        raise EvaluationError.new()
       rescue EvaluationError => e
         except = e
       end
     end
     diagnostic_producer.accept(issue, semantic, options, except)
+  end
+
+  # Optionally (based on severity) Fails the evaluation with a given issue
+  # If the given issue is configured to be of severity < :error it is only reported, and the function returns.
+  # The location the issue is reported against is found is based on the top file/line in the puppet call stack
+  #
+  # @param issue [Issue] the issue to report
+  # @param options [Hash] hash of optional named data elements for the given issue
+  # @return [!] this method may not return, nil if it does
+  # @raise [Puppet::ParseError] an evaluation error initialized from the arguments
+  #
+  def runtime_issue(issue, options = {})
+    # Get position from puppet runtime stack
+    file, line = Puppet::Pops::PuppetStack.top_of_stack
+
+    # Use a SemanticError as the sourcepos
+    semantic = Puppet::Pops::SemanticError.new(issue, nil, options.merge({ :file => file, :line => line }))
+    optionally_fail(issue, semantic)
+    nil
   end
 
   # Binds the given variable name to the given value in the given scope.
@@ -57,11 +79,15 @@ module Puppet::Pops::Evaluator::Runtime3Support
     # The error is not specific enough to allow catching it - need to check the actual message text.
     # TODO: Improve the messy implementation in Scope.
     #
+    if name == "server_facts"
+      fail(Issues::ILLEGAL_RESERVED_ASSIGNMENT, o, { :name => name })
+    end
+
     if scope.bound?(name)
       if Puppet::Parser::Scope::RESERVED_VARIABLE_NAMES.include?(name)
-        fail(Puppet::Pops::Issues::ILLEGAL_RESERVED_ASSIGNMENT, o, {:name => name} )
+        fail(Issues::ILLEGAL_RESERVED_ASSIGNMENT, o, { :name => name })
       else
-        fail(Puppet::Pops::Issues::ILLEGAL_REASSIGNMENT, o, {:name => name} )
+        fail(Issues::ILLEGAL_REASSIGNMENT, o, { :name => name })
       end
     end
     scope.setvar(name, value)
@@ -78,14 +104,15 @@ module Puppet::Pops::Evaluator::Runtime3Support
       # Must convert :undef back to nil - this can happen when an undefined variable is used in a
       # parameter's default value expression - there nil must be :undef to work with the rest of 3x.
       # Now that the value comes back to 4x it is changed to nil.
-      return (x == :undef) ? nil : x
+      return :undef.equal?(x) ? nil : x
     }
     # It is always ok to reference numeric variables even if they are not assigned. They are always undef
     # if not set by a match expression.
     #
     unless name =~ Puppet::Pops::Patterns::NUMERIC_VAR_NAME
-      fail(Puppet::Pops::Issues::UNKNOWN_VARIABLE, o, {:name => name})
+      optionally_fail(Puppet::Pops::Issues::UNKNOWN_VARIABLE, o, { :name => name })
     end
+    nil # in case unknown variable is configured as a warning or ignore
   end
 
   # Returns true if the variable of the given name is set in the given most nested scope. True is returned even if
@@ -119,7 +146,8 @@ module Puppet::Pops::Evaluator::Runtime3Support
     # case - it is just wrong, the error should be reported by the caller who knows in more detail where it
     # is in the source.
     #
-    raise ArgumentError, "Internal error - attempt to create a local scope without a hash" unless hash.is_a?(Hash)
+    raise ArgumentError, _("Internal error - attempt to create a local scope without a hash") unless hash.is_a?(Hash)
+
     scope.ephemeral_from(hash)
   end
 
@@ -134,10 +162,8 @@ module Puppet::Pops::Evaluator::Runtime3Support
   end
 
   def set_scope_nesting_level(scope, level)
-    # Yup, 3x uses this method to reset the level, it also supports passing :all to destroy all 
-    # ephemeral/local scopes - which is a sure way to create havoc.
-    #
-    scope.unset_ephemeral_var(level)
+    # 3x uses this method to reset the level,
+    scope.pop_ephemerals(level)
   end
 
   # Adds a relationship between the given `source` and `target` of the given `relationship_type`
@@ -194,20 +220,22 @@ module Puppet::Pops::Evaluator::Runtime3Support
     # And if that is not enough, a source/target may be a Collector (a baked query that will be evaluated by the
     # compiler - it is simply passed through here for processing by the compiler at the right time).
     #
-    if source.is_a?(Puppet::Parser::Collector)
+    if source.is_a?(Collectors::AbstractCollector)
       # use verbatim - behavior defined by 3x
       source_resource = source
     else
       # transform into the wonderful String representation in 3x
-      type, title = catalog_type_to_split_type_title(source)
+      type, title = Runtime3Converter.instance.catalog_type_to_split_type_title(source)
+      type = Runtime3ResourceSupport.find_resource_type(scope, type) unless type == 'class' || type == 'node'
       source_resource = Puppet::Resource.new(type, title)
     end
-    if target.is_a?(Puppet::Parser::Collector)
+    if target.is_a?(Collectors::AbstractCollector)
       # use verbatim - behavior defined by 3x
       target_resource = target
     else
       # transform into the wonderful String representation in 3x
-      type, title = catalog_type_to_split_type_title(target)
+      type, title = Runtime3Converter.instance.catalog_type_to_split_type_title(target)
+      type = Runtime3ResourceSupport.find_resource_type(scope, type) unless type == 'class' || type == 'node'
       target_resource = Puppet::Resource.new(type, title)
     end
     # Add the relationship to the compiler for later evaluation.
@@ -223,86 +251,97 @@ module Puppet::Pops::Evaluator::Runtime3Support
   # @return [Numeric] value `v` converted to Numeric.
   #
   def coerce_numeric(v, o, scope)
-    unless n = Puppet::Pops::Utils.to_n(v)
-      fail(Puppet::Pops::Issues::NOT_NUMERIC, o, {:value => v})
+    if v.is_a?(Numeric)
+      return v
     end
+
+    n = Utils.to_n(v)
+    unless n
+      fail(Issues::NOT_NUMERIC, o, { :value => v })
+    end
+
+    # this point is reached if there was a conversion
+    optionally_fail(Issues::NUMERIC_COERCION, o, { :before => v, :after => n })
     n
   end
 
-  def call_function(name, args, o, scope)
+  # Provides the ability to call a 3.x or 4.x function from the perspective of a 3.x function or ERB template.
+  # The arguments to the function must be an Array containing values compliant with the 4.x calling convention.
+  # If the targeted function is a 3.x function, the values will be transformed.
+  # @param name [String] the name of the function (without the 'function_' prefix used by scope)
+  # @param args [Array] arguments, may be empty
+  # @param scope [Object] the (runtime specific) scope where evaluation takes place
+  # @raise [ArgumentError] 'unknown function' if the function does not exist
+  #
+  def external_call_function(name, args, scope, &block)
     # Call via 4x API if the function exists there
     loaders = scope.compiler.loaders
-    # find the loader that loaded the code, or use the private_environment_loader (sees env + all modules)
-    adapter = Puppet::Pops::Utils.find_adapter(o, Puppet::Pops::Adapters::LoaderAdapter)
-    loader = adapter.nil? ? loaders.private_environment_loader : adapter.loader
-    if loader && func = loader.load(:function, name)
-      return func.call(scope, *args)
+    # Since this is a call from non puppet code, it is not possible to relate it to a module loader
+    # It is known where the call originates by using the scope associated module - but this is the calling scope
+    # and it does not defined the visibility of functions from a ruby function's perspective. Instead,
+    # this is done from the perspective of the environment.
+    loader = loaders.private_environment_loader
+    func = loader.load(:function, name) if loader
+    if func
+      Puppet::Util::Profiler.profile(name, [:functions, name]) do
+        return func.call(scope, *args, &block)
+      end
     end
 
     # Call via 3x API if function exists there
-    fail(Puppet::Pops::Issues::UNKNOWN_FUNCTION, o, {:name => name}) unless Puppet::Parser::Functions.function(name)
+    raise ArgumentError, _("Unknown function '%{name}'") % { name: name } unless Puppet::Parser::Functions.function(name)
 
     # Arguments must be mapped since functions are unaware of the new and magical creatures in 4x.
     # NOTE: Passing an empty string last converts nil/:undef to empty string
-    mapped_args = args.map {|a| convert(a, scope, '') }
-    result = scope.send("function_#{name}", mapped_args)
+    mapped_args = Runtime3FunctionArgumentConverter.map_args(args, scope, '')
+    result = scope.send("function_#{name}", mapped_args, &block)
     # Prevent non r-value functions from leaking their result (they are not written to care about this)
     Puppet::Parser::Functions.rvalue?(name) ? result : nil
+  end
+
+  def call_function(name, args, o, scope, &block)
+    file, line = extract_file_line(o)
+    loader = Adapters::LoaderAdapter.loader_for_model_object(o, file)
+    func = loader.load(:function, name) if loader
+    if func
+      Puppet::Util::Profiler.profile(name, [:functions, name]) do
+        # Add stack frame when calling.
+        return Puppet::Pops::PuppetStack.stack(file || '', line, func, :call, [scope, *args], &block)
+      end
+    end
+    # Call via 3x API if function exists there without having been autoloaded
+    fail(Issues::UNKNOWN_FUNCTION, o, { :name => name }) unless Puppet::Parser::Functions.function(name)
+
+    # Arguments must be mapped since functions are unaware of the new and magical creatures in 4x.
+    # NOTE: Passing an empty string last converts nil/:undef to empty string
+    mapped_args = Runtime3FunctionArgumentConverter.map_args(args, scope, '')
+    # The 3x function performs return value mapping and returns nil if it is not of rvalue type
+    Puppet::Pops::PuppetStack.stack(file, line, scope, "function_#{name}", [mapped_args], &block)
   end
 
   # The o is used for source reference
   def create_resource_parameter(o, scope, name, value, operator)
     file, line = extract_file_line(o)
     Puppet::Parser::Resource::Param.new(
-      :name   => name,
-      # Here we must convert nil values to :undef for the 3x logic to work
-      :value  => convert(value, scope, :undef), # converted to 3x since 4x supports additional objects / types
+      :name => name,
+      :value => convert(value, scope, nil), # converted to 3x since 4x supports additional objects / types
       :source => scope.source, :line => line, :file => file,
-      :add    => operator == :'+>'
+      :add => operator == '+>'
     )
   end
 
-  CLASS_STRING = 'class'.freeze
+  def convert(value, scope, undef_value)
+    Runtime3Converter.instance.convert(value, scope, undef_value)
+  end
 
   def create_resources(o, scope, virtual, exported, type_name, resource_titles, evaluated_parameters)
-
-    # TODO: Unknown resource causes creation of Resource to fail with ArgumentError, should give
-    # a proper Issue. Now the result is "Error while evaluating a Resource Statement" with the message
-    # from the raised exception. (It may be good enough).
-
-    # resolve in scope.
-    fully_qualified_type, resource_titles = scope.resolve_type_and_titles(type_name, resource_titles)
-
     # Not 100% accurate as this is the resource expression location and each title is processed separately
     # The titles are however the result of evaluation and they have no location at this point (an array
     # of positions for the source expressions are required for this to work).
     # TODO: Revisit and possible improve the accuracy.
     #
     file, line = extract_file_line(o)
-    # Build a resource for each title
-    resource_titles.map do |resource_title|
-        resource = Puppet::Parser::Resource.new(
-          fully_qualified_type, resource_title,
-          :parameters => evaluated_parameters,
-          :file => file,
-          :line => line,
-          :exported => exported,
-          :virtual => virtual,
-          # WTF is this? Which source is this? The file? The name of the context ?
-          :source => scope.source,
-          :scope => scope,
-          :strict => true
-        )
-
-        if resource.resource_type.is_a? Puppet::Resource::Type
-          resource.resource_type.instantiate_resource(scope, resource)
-        end
-        scope.compiler.add_resource(scope, resource)
-        scope.compiler.evaluate_classes([resource_title], scope, false, true) if fully_qualified_type == CLASS_STRING
-        # Turn the resource into a PType (a reference to a resource type)
-        # weed out nil's
-        resource_to_ptype(resource)
-    end
+    Runtime3ResourceSupport.create_resources(file, line, scope, virtual, exported, type_name, resource_titles, evaluated_parameters)
   end
 
   # Defines default parameters for a type with the given name.
@@ -313,7 +352,7 @@ module Puppet::Pops::Evaluator::Runtime3Support
     # for the type of the name.
     # Note, locations are available per parameter.
     #
-    scope.define_settings(capitalize_qualified_name(type_name), evaluated_parameters)
+    scope.define_settings(capitalize_qualified_name(type_name), evaluated_parameters.flatten)
   end
 
   # Capitalizes each segment of a qualified name
@@ -332,19 +371,23 @@ module Puppet::Pops::Evaluator::Runtime3Support
     # TODO: Revisit and possible improve the accuracy.
     #
     file, line = extract_file_line(o)
-
+    # A *=> results in an array of arrays
+    evaluated_parameters = evaluated_parameters.flatten
     evaluated_resources.each do |r|
-      unless r.is_a?(Puppet::Pops::Types::PResourceType) && r.type_name != 'class'
-        fail(Puppet::Pops::Issues::ILLEGAL_OVERRIDEN_TYPE, o, {:actual => r} )
+      unless r.is_a?(Types::PResourceType) && r.type_name != 'class'
+        fail(Issues::ILLEGAL_OVERRIDDEN_TYPE, o, { :actual => r })
       end
+
+      t = Runtime3ResourceSupport.find_resource_type(scope, r.type_name)
       resource = Puppet::Parser::Resource.new(
-      r.type_name, r.title,
-        :parameters => evaluated_parameters,
-        :file => file,
-        :line => line,
-        # WTF is this? Which source is this? The file? The name of the context ?
-        :source => scope.source,
-        :scope => scope
+        t, r.title, {
+          :parameters => evaluated_parameters,
+          :file => file,
+          :line => line,
+          # WTF is this? Which source is this? The file? The name of the context ?
+          :source => scope.source,
+          :scope => scope
+        }, false # defaults should not override
       )
 
       scope.compiler.add_override(resource)
@@ -377,7 +420,8 @@ module Puppet::Pops::Evaluator::Runtime3Support
       # The defaults must be looked up in the scope where the resource was created (not in the given
       # scope where the lookup takes place.
       resource_scope = resource.scope
-      if val.nil? && resource_scope && defaults = resource_scope.lookupdefaults(resource.type)
+      defaults = resource_scope.lookupdefaults(resource.type) if val.nil? && resource_scope
+      if defaults
         # NOTE: 3x resource keeps defaults as hash using symbol for name as key to Parameter which (again) holds
         # name and value.
         # NOTE: meta parameters that are unset ends up here, and there are no defaults for those encoded
@@ -394,6 +438,8 @@ module Puppet::Pops::Evaluator::Runtime3Support
   # Returns true, if the given name is the name of a resource parameter.
   #
   def is_parameter_of_resource?(scope, resource, name)
+    return false unless name.is_a?(String)
+
     resource.valid_parameter?(name)
   end
 
@@ -405,142 +451,35 @@ module Puppet::Pops::Evaluator::Runtime3Support
 
   # This is the same type of "truth" as used in the current Puppet DSL.
   #
-  def is_true? o
+  def is_true?(value, o)
     # Is the value true?  This allows us to control the definition of truth
     # in one place.
-    case o
+    case value
     # Support :undef since it may come from a 3x structure
     when :undef
       false
+    when String
+      true
     else
-      !!o
-    end
-  end
-
-  # Utility method for TrueClass || FalseClass
-  # @param x [Object] the object to test if it is instance of TrueClass or FalseClass
-  def is_boolean? x
-    x.is_a?(TrueClass) || x.is_a?(FalseClass)
-  end
-
-  def initialize
-    @@convert_visitor   ||= Puppet::Pops::Visitor.new(self, "convert", 2, 2)
-  end
-
-  # Converts 4x supported values to 3x values. This is required because
-  # resources and other objects do not know about the new type system, and does not support
-  # regular expressions. Unfortunately this has to be done for array and hash as well.
-  # A complication is that catalog types needs to be resolved against the scope.
-  #
-  def convert(o, scope, undef_value)
-    @@convert_visitor.visit_this_2(self, o, scope, undef_value)
-  end
-
-
-  def convert_NilClass(o, scope, undef_value)
-    undef_value
-  end
-
-  def convert_String(o, scope, undef_value)
-    # although wasteful, needed because user code may mutate these strings in Resources
-    o.frozen? ? o.dup : o
-  end
-
-  def convert_Object(o, scope, undef_value)
-    o
-  end
-
-  def convert_Array(o, scope, undef_value)
-    o.map {|x| convert(x, scope, undef_value) }
-  end
-
-  def convert_Hash(o, scope, undef_value)
-    result = {}
-    o.each {|k,v| result[convert(k, scope, undef_value)] = convert(v, scope, undef_value) }
-    result
-  end
-
-  def convert_Regexp(o, scope, undef_value)
-    # Puppet 3x cannot handle parameter values that are reqular expressions. Turn into regexp string in
-    # source form
-    o.inspect
-  end
-
-  def convert_Symbol(o, scope, undef_value)
-    case o
-    # Support :undef since it may come from a 3x structure
-    when :undef
-      undef_value  # 3x wants undef as either empty string or :undef
-    else
-      o   # :default, and all others are verbatim since they are new in future evaluator
-    end
-  end
-
-  def convert_PAnyType(o, scope, undef_value)
-    o
-  end
-
-  def convert_PCatalogEntryType(o, scope, undef_value)
-    # Since 4x does not support dynamic scoping, all names are absolute and can be
-    # used as is (with some check/transformation/mangling between absolute/relative form
-    # due to Puppet::Resource's idiosyncratic behavior where some references must be
-    # absolute and others cannot be.
-    # Thus there is no need to call scope.resolve_type_and_titles to do dynamic lookup.
-
-    Puppet::Resource.new(*catalog_type_to_split_type_title(o))
-  end
-
-  private
-
-  # Produces an array with [type, title] from a PCatalogEntryType
-  # This method is used to produce the arguments for creation of reference resource instances
-  # (used when 3x is operating on a resource).
-  # Ensures that resources are *not* absolute.
-  #
-  def catalog_type_to_split_type_title(catalog_type)
-    split_type = catalog_type.is_a?(Puppet::Pops::Types::PType) ? catalog_type.type : catalog_type
-    case split_type
-    when Puppet::Pops::Types::PHostClassType
-      class_name = split_type.class_name
-      ['class', class_name.nil? ? nil : class_name.sub(/^::/, '')]
-    when Puppet::Pops::Types::PResourceType
-      type_name = split_type.type_name
-      title = split_type.title
-      if type_name =~ /^(::)?[Cc]lass/
-        ['class', title.nil? ? nil : title.sub(/^::/, '')]
-      else
-        # Ensure that title is '' if nil
-        # Resources with absolute name always results in error because tagging does not support leading ::
-        [type_name.nil? ? nil : type_name.sub(/^::/, ''), title.nil? ? '' : title]
-      end
-    else
-      raise ArgumentError, "Cannot split the type #{catalog_type.class}, it represents neither a PHostClassType, nor a PResourceType."
+      !!value
     end
   end
 
   def extract_file_line(o)
-    source_pos = Puppet::Pops::Utils.find_closest_positioned(o)
-    return [nil, -1] unless source_pos
-    [source_pos.locator.file, source_pos.line]
-  end
-
-  def find_closest_positioned(o)
-    return nil if o.nil? || o.is_a?(Puppet::Pops::Model::Program)
-    o.offset.nil? ? find_closest_positioned(o.eContainer) : Puppet::Pops::Adapters::SourcePosAdapter.adapt(o)
+    o.is_a?(Model::Positioned) ? [o.file, o.line] : [nil, -1]
   end
 
   # Creates a diagnostic producer
   def diagnostic_producer
-    Puppet::Pops::Validation::DiagnosticProducer.new(
-      ExceptionRaisingAcceptor.new(),                   # Raises exception on all issues
+    Validation::DiagnosticProducer.new(
+      ExceptionRaisingAcceptor.new(), # Raises exception on all issues
       SeverityProducer.new(), # All issues are errors
-      Puppet::Pops::Model::ModelLabelProvider.new())
+      Model::ModelLabelProvider.new()
+    )
   end
 
   # Configure the severity of failures
-  class SeverityProducer < Puppet::Pops::Validation::SeverityProducer
-    Issues = Puppet::Pops::Issues
-
+  class SeverityProducer < Validation::SeverityProducer
     def initialize
       super
       p = self
@@ -551,23 +490,45 @@ module Puppet::Pops::Evaluator::Runtime3Support
         p[Issues::EMPTY_RESOURCE_SPECIALIZATION] = :ignore
       end
 
+      # if strict variables are on, an error is raised
+      # if strict variables are off, the Puppet[strict] defines what is done
+      #
+      if Puppet[:strict_variables]
+        p[Issues::UNKNOWN_VARIABLE] = :error
+      elsif Puppet[:strict] == :off
+        p[Issues::UNKNOWN_VARIABLE] = :ignore
+      else
+        p[Issues::UNKNOWN_VARIABLE] = Puppet[:strict]
+      end
+
       # Store config issues, ignore or warning
       p[Issues::RT_NO_STORECONFIGS_EXPORT]    = Puppet[:storeconfigs] ? :ignore : :warning
       p[Issues::RT_NO_STORECONFIGS]           = Puppet[:storeconfigs] ? :ignore : :warning
+      p[Issues::CLASS_NOT_VIRTUALIZABLE]      = :error
+      p[Issues::NUMERIC_COERCION]             = Puppet[:strict] == :off ? :ignore : Puppet[:strict]
+      p[Issues::SERIALIZATION_DEFAULT_CONVERTED_TO_STRING] = Puppet[:strict] == :off ? :warning : Puppet[:strict]
+      p[Issues::SERIALIZATION_UNKNOWN_CONVERTED_TO_STRING] = Puppet[:strict] == :off ? :warning : Puppet[:strict]
+      p[Issues::SERIALIZATION_UNKNOWN_KEY_CONVERTED_TO_STRING] = Puppet[:strict] == :off ? :warning : Puppet[:strict]
     end
   end
 
   # An acceptor of diagnostics that immediately raises an exception.
-  class ExceptionRaisingAcceptor < Puppet::Pops::Validation::Acceptor
+  class ExceptionRaisingAcceptor < Validation::Acceptor
     def accept(diagnostic)
       super
-      Puppet::Pops::IssueReporter.assert_and_report(self, {:message => "Evaluation Error:", :emit_warnings => true })
+      IssueReporter.assert_and_report(self, {
+                                        :message => "Evaluation Error:",
+                                        :emit_warnings => true, # log warnings
+                                        :exception_class => Puppet::PreformattedError
+                                      })
       if errors?
-        raise ArgumentError, "Internal Error: Configuration of runtime error handling wrong: should have raised exception"
+        raise ArgumentError, _("Internal Error: Configuration of runtime error handling wrong: should have raised exception")
       end
     end
   end
 
   class EvaluationError < StandardError
   end
+end
+end
 end

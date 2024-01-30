@@ -1,7 +1,11 @@
-require 'puppet/parser/type_loader'
-require 'puppet/util/file_watcher'
-require 'puppet/util/warnings'
+# frozen_string_literal: true
 
+require_relative '../../puppet/parser/type_loader'
+require_relative '../../puppet/util/file_watcher'
+require_relative '../../puppet/util/warnings'
+require_relative '../../puppet/concurrent/lock'
+
+# @api private
 class Puppet::Resource::TypeCollection
   attr_reader :environment
   attr_accessor :parse_failed
@@ -12,7 +16,6 @@ class Puppet::Resource::TypeCollection
     @hostclasses.clear
     @definitions.clear
     @nodes.clear
-    @watched_files.clear
     @notfound.clear
   end
 
@@ -22,11 +25,11 @@ class Puppet::Resource::TypeCollection
     @definitions = {}
     @nodes = {}
     @notfound = {}
+    # always lock the environment before acquiring this lock
+    @lock = Puppet::Concurrent::Lock.new
 
     # So we can keep a list and match the first-defined regex
     @node_list = []
-
-    @watched_files = Puppet::Util::FileWatcher.new
   end
 
   def import_ast(ast, modname)
@@ -36,31 +39,57 @@ class Puppet::Resource::TypeCollection
   end
 
   def inspect
-    "TypeCollection" + { :hostclasses => @hostclasses.keys, :definitions => @definitions.keys, :nodes => @nodes.keys }.inspect
+    "TypeCollection" + {
+      :hostclasses => @hostclasses.keys,
+      :definitions => @definitions.keys,
+      :nodes => @nodes.keys
+    }.inspect
   end
 
+  # @api private
   def <<(thing)
     add(thing)
     self
   end
 
   def add(instance)
-    if instance.type == :hostclass and other = @hostclasses[instance.name] and other.type == :hostclass
-      other.merge(instance)
-      return other
-    end
-    method = "add_#{instance.type}"
-    send(method, instance)
-    instance.resource_type_collection = self
-    instance
+    # return a merged instance, or the given
+    catch(:merged) {
+      send("add_#{instance.type}", instance)
+      instance.resource_type_collection = self
+      instance
+    }
   end
 
   def add_hostclass(instance)
-    dupe_check(instance, @hostclasses) { |dupe| "Class '#{instance.name}' is already defined#{dupe.error_context}; cannot redefine" }
-    dupe_check(instance, @definitions) { |dupe| "Definition '#{instance.name}' is already defined#{dupe.error_context}; cannot be redefined as a class" }
+    handle_hostclass_merge(instance)
+    dupe_check(instance, @hostclasses) { |dupe| _("Class '%{klass}' is already defined%{error}; cannot redefine") % { klass: instance.name, error: dupe.error_context } }
+    dupe_check(instance, @nodes)       { |dupe| _("Node '%{klass}' is already defined%{error}; cannot be redefined as a class") % { klass: instance.name, error: dupe.error_context } }
+    dupe_check(instance, @definitions) { |dupe| _("Definition '%{klass}' is already defined%{error}; cannot be redefined as a class") % { klass: instance.name, error: dupe.error_context } }
 
     @hostclasses[instance.name] = instance
     instance
+  end
+
+  def handle_hostclass_merge(instance)
+    # Only main class (named '') can be merged (for purpose of merging top-scopes).
+    return instance unless instance.name == ''
+
+    if instance.type == :hostclass && (other = @hostclasses[instance.name]) && other.type == :hostclass
+      other.merge(instance)
+      # throw is used to signal merge - avoids dupe checks and adding it to hostclasses
+      throw :merged, other
+    end
+  end
+
+  # Replaces the known settings with a new instance (that must be named 'settings').
+  # This is primarily needed for testing purposes. Also see PUP-5954 as it makes
+  # it illegal to merge classes other than the '' (main) class. Prior to this change
+  # settings where always merged rather than being defined from scratch for many testing scenarios
+  # not having a complete side effect free setup for compilation.
+  #
+  def replace_settings(instance)
+    @hostclasses['settings'] = instance
   end
 
   def hostclass(name)
@@ -68,7 +97,8 @@ class Puppet::Resource::TypeCollection
   end
 
   def add_node(instance)
-    dupe_check(instance, @nodes) { |dupe| "Node '#{instance.name}' is already defined#{dupe.error_context}; cannot redefine" }
+    dupe_check(instance, @nodes) { |dupe| _("Node '%{name}' is already defined%{error}; cannot redefine") % { name: instance.name, error: dupe.error_context } }
+    dupe_check(instance, @hostclasses) { |dupe| _("Class '%{klass}' is already defined%{error}; cannot be redefined as a node") % { klass: instance.name, error: dupe.error_context } }
 
     @node_list << instance
     @nodes[instance.name] = instance
@@ -82,13 +112,14 @@ class Puppet::Resource::TypeCollection
   def node(name)
     name = munge_name(name)
 
-    if node = @nodes[name]
+    node = @nodes[name]
+    if node
       return node
     end
 
-    @node_list.each do |node|
-      next unless node.name_is_regex?
-      return node if node.match(name)
+    @node_list.each do |n|
+      next unless n.name_is_regex?
+      return n if n.match(name)
     end
     nil
   end
@@ -102,8 +133,9 @@ class Puppet::Resource::TypeCollection
   end
 
   def add_definition(instance)
-    dupe_check(instance, @hostclasses) { |dupe| "'#{instance.name}' is already defined#{dupe.error_context} as a class; cannot redefine as a definition" }
-    dupe_check(instance, @definitions) { |dupe| "Definition '#{instance.name}' is already defined#{dupe.error_context}; cannot be redefined" }
+    dupe_check(instance, @hostclasses) { |dupe| _("'%{name}' is already defined%{error} as a class; cannot redefine as a definition") % { name: instance.name, error: dupe.error_context } }
+    dupe_check(instance, @definitions) { |dupe| _("Definition '%{name}' is already defined%{error}; cannot be redefined") % { name: instance.name, error: dupe.error_context } }
+
     @definitions[instance.name] = instance
   end
 
@@ -111,30 +143,28 @@ class Puppet::Resource::TypeCollection
     @definitions[munge_name(name)]
   end
 
-  def find_node(namespaces, name)
+  def find_node(name)
     @nodes[munge_name(name)]
   end
 
-  def find_hostclass(namespaces, name, options = {})
-    find_or_load(namespaces, name, :hostclass, options)
+  def find_hostclass(name)
+    find_or_load(name, :hostclass)
   end
 
-  def find_definition(namespaces, name)
-    find_or_load(namespaces, name, :definition)
+  def find_definition(name)
+    find_or_load(name, :definition)
   end
 
+  # TODO: This implementation is wasteful as it creates a copy on each request
+  #
   [:hostclasses, :nodes, :definitions].each do |m|
     define_method(m) do
       instance_variable_get("@#{m}").dup
     end
   end
 
-  def require_reparse?
-    @parse_failed || stale?
-  end
-
-  def stale?
-    @watched_files.changed?
+  def parse_failed?
+    @parse_failed
   end
 
   def version
@@ -142,80 +172,46 @@ class Puppet::Resource::TypeCollection
       if environment.config_version.nil? || environment.config_version == ""
         @version = Time.now.to_i
       else
-        @version = Puppet::Util::Execution.execute([environment.config_version]).strip
+        @version = Puppet::Util::Execution.execute([environment.config_version]).to_s.strip
       end
     end
 
     @version
   rescue Puppet::ExecutionFailure => e
-    raise Puppet::ParseError, "Execution of config_version command `#{environment.config_version}` failed: #{e.message}", e.backtrace
-  end
-
-  def watch_file(filename)
-    @watched_files.watch(filename)
-  end
-
-  def watching_file?(filename)
-    @watched_files.watching?(filename)
+    raise Puppet::ParseError, _("Execution of config_version command `%{cmd}` failed: %{message}") % { cmd: environment.config_version, message: e.message }, e.backtrace
   end
 
   private
 
-  # Return a list of all possible fully-qualified names that might be
-  # meant by the given name, in the context of namespaces.
-  def resolve_namespaces(namespaces, name)
-    name      = name.downcase
-    if name =~ /^::/
-      # name is explicitly fully qualified, so just return it, sans
-      # initial "::".
-      return [name.sub(/^::/, '')]
-    end
-    if name == ""
-      # The name "" has special meaning--it always refers to a "main"
-      # hostclass which contains all toplevel resources.
-      return [""]
-    end
-
-    namespaces = [namespaces] unless namespaces.is_a?(Array)
-    namespaces = namespaces.collect { |ns| ns.downcase }
-
-    result = []
-    namespaces.each do |namespace|
-      ary = namespace.split("::")
-
-      # Search each namespace nesting in innermost-to-outermost order.
-      while ary.length > 0
-        result << "#{ary.join("::")}::#{name}"
-        ary.pop
-      end
-
-      # Finally, search the toplevel namespace.
-      result << name
-    end
-
-    return result.uniq
-  end
+  COLON_COLON = "::"
 
   # Resolve namespaces and find the given object.  Autoload it if
   # necessary.
-  def find_or_load(namespaces, name, type, options = {})
-    searchspace = options[:assume_fqname] ? [name].flatten : resolve_namespaces(namespaces, name)
-    searchspace.each do |fqname|
-      result = send(type, fqname)
-      unless result
-        if @notfound[fqname] and Puppet[:ignoremissingtypes]
-          # do not try to autoload if we already tried and it wasn't conclusive
-          # as this is a time consuming operation. Warn the user.
-          debug_once "Not attempting to load #{type} #{fqname} as this object was missing during a prior compilation"
-        else
-          result = loader.try_load_fqname(type, fqname)
-          @notfound[fqname] = result.nil?
-        end
-      end
-      return result if result
-    end
+  def find_or_load(name, type)
+    # always lock the environment before locking the type collection
+    @environment.lock.synchronize do
+      @lock.synchronize do
+        # Name is always absolute, but may start with :: which must be removed
+        fqname = (name[0, 2] == COLON_COLON ? name[2..-1] : name)
 
-    return nil
+        result = send(type, fqname)
+        unless result
+          if @notfound[fqname] && Puppet[:ignoremissingtypes]
+            # do not try to autoload if we already tried and it wasn't conclusive
+            # as this is a time consuming operation. Warn the user.
+            # Check first if debugging is on since the call to debug_once is expensive
+            if Puppet[:debug]
+              debug_once _("Not attempting to load %{type} %{fqname} as this object was missing during a prior compilation") % { type: type, fqname: fqname }
+            end
+          else
+            fqname = munge_name(fqname)
+            result = loader.try_load_fqname(type, fqname)
+            @notfound[fqname] = result.nil?
+          end
+        end
+        result
+      end
+    end
   end
 
   def munge_name(name)
@@ -223,8 +219,17 @@ class Puppet::Resource::TypeCollection
   end
 
   def dupe_check(instance, hash)
-    return unless dupe = hash[instance.name]
+    dupe = hash[instance.name]
+    return unless dupe
+
     message = yield dupe
+    instance.fail Puppet::ParseError, message
+  end
+
+  def dupe_check_singleton(instance, set)
+    return if set.empty?
+
+    message = yield set[0]
     instance.fail Puppet::ParseError, message
   end
 end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # This class is not actually public API, but the method
 # {Puppet::Interface::ActionManager#action action} is public when used
 # as part of the Faces DSL (i.e. from within a
@@ -17,28 +19,17 @@ module Puppet::Interface::ActionManager
   # @dsl Faces
   def action(name, &block)
     @actions ||= {}
-    Puppet.warning "Redefining action #{name} for #{self}" if action?(name)
+    Puppet.warning _("Redefining action %{name} for %{self}") % { name: name, self: self } if action?(name)
 
     action = Puppet::Interface::ActionBuilder.build(self, name, &block)
 
     # REVISIT: (#18042) doesn't this mean we can't redefine the default action? -- josh
-    if action.default and current = get_default_action
+    current = get_default_action if action.default
+    if current
       raise "Actions #{current.name} and #{name} cannot both be default"
     end
 
     @actions[action.name] = action
-  end
-
-  # Defines an action without using ActionBuilder. The block given is
-  # the code that will be executed when the action is invoked.
-  # @api public
-  # @deprecated
-  def script(name, &block)
-    @actions ||= {}
-    Puppet.warning "Redefining action #{name} for #{self}" if action?(name)
-
-    # REVISIT: (#18048) it's possible to create multiple default actions
-    @actions[name] = Puppet::Interface::Action.new(self, name, :when_invoked => block)
   end
 
   # Returns the list of available actions for this face.
@@ -56,7 +47,7 @@ module Puppet::Interface::ActionManager
     # We need to uniq the result, because we duplicate actions when they are
     # fetched to ensure that they have the correct bindings; they shadow the
     # parent, and uniq implements that. --daniel 2011-06-01
-    result.uniq.sort
+    (result - @deactivated_actions.to_a).uniq.sort
   end
 
   # Retrieves a named action
@@ -87,11 +78,20 @@ module Puppet::Interface::ActionManager
   # @return [Puppet::Interface::Action]
   # @api private
   def get_default_action
-    default = actions.map {|x| get_action(x) }.select {|x| x.default }
+    default = actions.map { |x| get_action(x) }.select { |x| x.default }
     if default.length > 1
       raise "The actions #{default.map(&:name).join(", ")} cannot all be default"
     end
+
     default.first
+  end
+
+  # Deactivate a named action
+  # @return [Puppet::Interface::Action]
+  # @api public
+  def deactivate_action(name)
+    @deactivated_actions ||= Set.new
+    @deactivated_actions.add name.to_sym
   end
 
   # @api private

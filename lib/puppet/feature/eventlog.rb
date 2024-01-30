@@ -1,5 +1,7 @@
-require 'puppet/util/feature'
+# frozen_string_literal: true
 
-if Puppet.features.microsoft_windows?
-  Puppet.features.add(:eventlog, :libs => %{win32/eventlog})
+require_relative '../../puppet/util/feature'
+
+if Puppet::Util::Platform.windows?
+  Puppet.features.add(:eventlog)
 end

@@ -1,7 +1,8 @@
+# frozen_string_literal: true
+
 # Provides feature definitions.
-require 'puppet/util/methodhelper'
-require 'puppet/util/docs'
-require 'puppet/util'
+require_relative '../../puppet/util/docs'
+require_relative '../../puppet/util'
 # This module models provider features and handles checking whether the features
 # are present.
 # @todo Unclear what is api and what is private in this module.
@@ -13,7 +14,6 @@ module Puppet::Util::ProviderFeatures
   # @todo Unclear what is api and what is private in this class
   class ProviderFeature
     include Puppet::Util
-    include Puppet::Util::MethodHelper
     include Puppet::Util::Docs
     attr_accessor :name, :docs, :methods
 
@@ -32,11 +32,10 @@ module Puppet::Util::ProviderFeatures
       end
     end
 
-    def initialize(name, docs, hash)
+    def initialize(name, docs, methods: nil)
       self.name = name.intern
       self.docs = docs
-      hash = symbolize_options(hash)
-      set_options(hash)
+      @methods = methods
     end
 
     private
@@ -63,13 +62,14 @@ module Puppet::Util::ProviderFeatures
   # @todo How methods that determine if the feature is present are specified.
   def feature(name, docs, hash = {})
     @features ||= {}
-    raise(Puppet::DevError, "Feature #{name} is already defined") if @features.include?(name)
+    raise Puppet::DevError, _("Feature %{name} is already defined") % { name: name } if @features.include?(name)
+
     begin
-      obj = ProviderFeature.new(name, docs, hash)
+      obj = ProviderFeature.new(name, docs, **hash)
       @features[obj.name] = obj
     rescue ArgumentError => detail
       error = ArgumentError.new(
-        "Could not create feature #{name}: #{detail}"
+        _("Could not create feature %{name}: %{detail}") % { name: name, detail: detail }
       )
       error.set_backtrace(detail.backtrace)
       raise error
@@ -78,10 +78,11 @@ module Puppet::Util::ProviderFeatures
 
   # @return [String] Returns a string with documentation covering all features.
   def featuredocs
-    str = ""
+    str = ''.dup
     @features ||= {}
     return nil if @features.empty?
-    names = @features.keys.sort { |a,b| a.to_s <=> b.to_s }
+
+    names = @features.keys.sort_by(&:to_s)
     names.each do |name|
       doc = @features[name].docs.gsub(/\n\s+/, " ")
       str << "- *#{name}*: #{doc}\n"
@@ -130,9 +131,8 @@ module Puppet::Util::ProviderFeatures
       # Create a method that will list all functional features.
       @feature_module.send(:define_method, :features) do
         return false unless defined?(features)
-        features.keys.find_all { |n| feature?(n) }.sort { |a,b|
-          a.to_s <=> b.to_s
-        }
+
+        features.keys.find_all { |n| feature?(n) }.sort_by(&:to_s)
       end
 
       # Create a method that will determine if a provided list of
@@ -153,7 +153,7 @@ module Puppet::Util::ProviderFeatures
       @features.each do |name, feature|
         method = name.to_s + "?"
         @feature_module.send(:define_method, method) do
-          (is_a?(Class) ?  declared_feature?(name) : self.class.declared_feature?(name)) or feature.available?(self)
+          (is_a?(Class) ? declared_feature?(name) : self.class.declared_feature?(name)) or feature.available?(self)
         end
       end
 
@@ -181,4 +181,3 @@ module Puppet::Util::ProviderFeatures
     @features[name]
   end
 end
-

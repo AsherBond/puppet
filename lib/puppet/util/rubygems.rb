@@ -1,7 +1,8 @@
-require 'puppet/util'
+# frozen_string_literal: true
+
+require_relative '../../puppet/util'
 
 module Puppet::Util::RubyGems
-
   # Base/factory class for rubygems source. These classes introspec into
   # rubygems to in order to list where the rubygems system will look for files
   # to load.
@@ -21,7 +22,7 @@ module Puppet::Util::RubyGems
       # @api private
       def source
         if has_rubygems?
-          Gem::Specification.respond_to?(:latest_specs) ? Gems18Source : OldGemsSource
+          Gems18Source
         else
           NoGemsSource
         end
@@ -39,23 +40,15 @@ module Puppet::Util::RubyGems
   # @api private
   class Gems18Source < Source
     def directories
-      # `require 'mygem'` will consider and potentally load
+      # `require 'mygem'` will consider and potentially load
       # prerelease gems, so we need to match that behavior.
-      Gem::Specification.latest_specs(true).collect do |spec|
+      #
+      # Just load the stub which points to the gem path, and
+      # delay loading the full specification until if/when the
+      # gem is required.
+      Gem::Specification.stubs.collect do |spec|
         File.join(spec.full_gem_path, 'lib')
       end
-    end
-
-    def clear_paths
-      Gem.clear_paths
-    end
-  end
-
-  # RubyGems < 1.8.0
-  # @api private
-  class OldGemsSource < Source
-    def directories
-      @paths ||= Gem.latest_load_paths
     end
 
     def clear_paths
@@ -72,4 +65,3 @@ module Puppet::Util::RubyGems
     def clear_paths; end
   end
 end
-

@@ -1,5 +1,12 @@
 test_name "should modify a user when no longer managing home (#20726)"
 
+tag 'audit:high',
+    'audit:refactor',  # Use block style `test_run`
+    'audit:acceptance' # Could be done as integration tests, but would
+                       # require changing the system running the test
+                       # in ways that might require special permissions
+                       # or be harmful to the system running the test
+
 require 'puppet/acceptance/windows_utils'
 extend Puppet::Acceptance::WindowsUtils
 
@@ -27,6 +34,9 @@ agents.each do |agent|
     home_prop = "home='#{profile_base(agent)}\\#{name}'"
   when /solaris/
     pending_test("managehome needs work on solaris")
+  when /osx/
+    skip_test("OSX doesn't support managehome")
+    # we don't get here
   end
 
   teardown do

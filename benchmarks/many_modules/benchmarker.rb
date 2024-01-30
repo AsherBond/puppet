@@ -38,11 +38,14 @@ class Benchmarker
       module_name = "module#{i}"
       module_base = File.join(environment, 'modules', module_name)
       manifests = File.join(module_base, 'manifests')
+      locales = File.join(module_base, 'locales')
 
       mkdir_p(manifests)
+      mkdir_p(locales)
 
       File.open(File.join(module_base, 'metadata.json'), 'w') do |f|
         JSON.dump({
+          "name" => "module#{i}",
           "types" => [],
           "source" => "",
           "author" => "ManyModules Benchmark",
@@ -54,13 +57,37 @@ class Benchmarker
         }, f)
       end
 
+      File.open(File.join(locales, 'config.yaml'), 'w') do |f|
+        f.puts(
+          {"gettext"=>
+            {"project_name"=>"module#{i}",
+            "package_name"=>"module#{i}",
+            "default_locale"=>"en",
+            "bugs_address"=>"docs@puppet.com",
+            "copyright_holder"=>"Puppet, Inc.",
+            "comments_tag"=>"TRANSLATOR",
+            "source_files"=>["./lib/**/*.rb"]}}.to_yaml
+          )
+      end
+
+      roles = 0.upto(10).to_a
+
       render(File.join(templates, 'module', 'init.pp.erb'),
              File.join(manifests, 'init.pp'),
-             :name => module_name)
+             :name => module_name,
+             :roles => roles
+            )
 
       render(File.join(templates, 'module', 'internal.pp.erb'),
              File.join(manifests, 'internal.pp'),
              :name => module_name)
+
+      roles.each do |j|
+        render(File.join(templates, 'module', 'role.pp.erb'),
+               File.join(manifests, "role#{j}.pp"),
+               :name => module_name,
+               :index => j)
+      end
     end
 
     render(File.join(templates, 'puppet.conf.erb'),

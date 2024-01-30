@@ -1,6 +1,8 @@
-require 'puppet/util/package'
+# frozen_string_literal: true
 
-Puppet::Parser::Functions::newfunction( :versioncmp, :type => :rvalue, :arity => 2, :doc =>
+require_relative '../../../puppet/util/package'
+
+Puppet::Parser::Functions.newfunction(:versioncmp, :type => :rvalue, :arity => 2, :doc =>
 "Compares two version numbers.
 
 Prototype:
@@ -25,6 +27,5 @@ This function uses the same version comparison algorithm used by Puppet's
 `package` type.
 
 ") do |args|
-
   return Puppet::Util::Package.versioncmp(args[0], args[1])
 end

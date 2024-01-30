@@ -3,14 +3,18 @@ Environments
 
 The `environments` endpoint allows for enumeration of the environments known to the master. Each environment contains information
 about itself like its modulepath, manifest directory, environment timeout, and the config version.
-This endpoint is by default accessible to any client with a valid certificate, though this may be changed by `auth.conf`.
+This endpoint is by default accessible to any client with a valid certificate, though this may be changed in Puppet Server's `auth.conf`.
 
 Get
 ---
 
 Get the list of known environments.
 
-    GET /v2.0/environments
+    GET /puppet/v3/environments
+
+### Supported Response Formats
+
+`application/json`
 
 ### Parameters
 
@@ -18,18 +22,18 @@ None
 
 ### Example Request & Response
 
-    GET /v2.0/environments
+    GET /puppet/v3/environments
 
     HTTP 200 OK
     Content-Type: application/json
 
     {
-      "search_paths": ["/etc/puppet/environments"]
+      "search_paths": ["/etc/puppetlabs/code/environments"]
       "environments": {
         "production": {
           "settings": {
-            "modulepath": ["/etc/puppetlabs/puppet/environments/production/modules", "/etc/puppetlabs/puppet/environments/development/modules"],
-            "manifest": ["/etc/puppetlabs/puppet/environments/production/manifests"]
+            "modulepath": ["/etc/puppetlabs/code/environments/production/modules", "/etc/puppetlabs/code/environments/development/modules"],
+            "manifest": ["/etc/puppetlabs/code/environments/production/manifests"]
             "environment_timeout": 180,
             "config_version": "/version/of/config"
           }
@@ -42,5 +46,5 @@ The `environment_timeout` attribute could also be the string "unlimited".
 Schema
 ------
 
-A environments response body adheres to the {file:api/schemas/environments.json
-api/schemas/environments.json} schema.
+An environments response body conforms to
+[the environments schema.](../schemas/environments.json)

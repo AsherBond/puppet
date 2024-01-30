@@ -1,21 +1,30 @@
-Puppet::Parser::Functions::newfunction(
+# frozen_string_literal: true
+
+Puppet::Parser::Functions.newfunction(
   :with,
   :type => :rvalue,
   :arity => -1,
-  :doc => <<-DOC
-Call a lambda code block with the given arguments. Since the parameters of the lambda
-are local to the lambda's scope, this can be used to create private sections
-of logic in a class so that the variables are not visible outside of the
-class.
+  :doc => <<~DOC
+    Call a [lambda](https://puppet.com/docs/puppet/latest/lang_lambdas.html)
+    with the given arguments and return the result. Since a lambda's scope is
+    local to the lambda, you can use the `with` function to create private blocks
+    of code within a class using variables whose values cannot be accessed outside
+    of the lambda.
 
-Example:
+    **Example**: Using `with`
 
-     # notices the array [1, 2, 'foo']
-     with(1, 2, 'foo') |$x, $y, $z| { notice [$x, $y, $z] }
+    ~~~ puppet
+    # Concatenate three strings into a single string formatted as a list.
+    $fruit = with("apples", "oranges", "bananas") |$x, $y, $z| {
+      "${x}, ${y}, and ${z}"
+    }
+    $check_var = $x
+    # $fruit contains "apples, oranges, and bananas"
+    # $check_var is undefined, as the value of $x is local to the lambda.
+    ~~~
 
-- since 3.7.0
-- note requires future parser
-DOC
-) do |args|
-  function_fail(["with() is only available when parser/evaluator future is in effect"])
+    - Since 4.0.0
+  DOC
+) do |_args|
+  Puppet::Parser::Functions::Error.is4x('with')
 end

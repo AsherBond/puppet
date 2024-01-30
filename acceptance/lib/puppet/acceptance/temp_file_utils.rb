@@ -1,6 +1,32 @@
 module Puppet
   module Acceptance
     module TempFileUtils
+      RWXR_XR_X = '0755'
+      PUPPET_CODEDIR_PERMISSIONS = RWXR_XR_X
+
+      # Return the name of the root user, as appropriate for the platform.
+      def root_user(host)
+        case host['platform']
+        when /windows/
+          'Administrator'
+        else
+          'root'
+        end
+      end
+
+      # Return the name of the root group, as appropriate for the platform.
+      def root_group(host)
+        case host['platform']
+        when /windows/
+          'Administrators'
+        when /aix/
+          'system'
+        when /osx|bsd/
+          'wheel'
+        else
+          'root'
+        end
+      end
 
       # Create a file on the host.
       # Parameters:
@@ -17,9 +43,21 @@ module Puppet
 
         # set default options
         options[:mkdirs] ||= false
-        options[:owner] ||= host['user']
-        options[:group] ||= host['group']
         options[:mode] ||= "755"
+        unless options[:owner]
+          if host['roles'].include?('master') then
+            options[:owner] = host.puppet['user']
+          else
+            options[:owner] = root_user(host)
+          end
+        end
+        unless options[:group]
+          if host['roles'].include?('master') then
+            options[:group] = host.puppet['group']
+          else
+            options[:group] = root_group(host)
+          end
+        end
 
         file_path = get_test_file_path(host, file_rel_path)
 
@@ -41,6 +79,8 @@ module Puppet
       # Given a relative path, returns an absolute path for a test file.  Basically, this just prepends the
       # a unique temp dir path (specific to the current test execution) to your relative path.
       def get_test_file_path(host, file_rel_path)
+        initialize_temp_dirs unless @host_test_tmp_dirs
+
         File.join(@host_test_tmp_dirs[host.name], file_rel_path)
       end
 
@@ -55,6 +95,20 @@ module Puppet
 
       def file_exists?(host, file_path)
         host.execute("test -f \"#{file_path}\"",
+                     :acceptable_exit_codes => [0, 1])  do |result|
+          return result.exit_code == 0
+        end
+      end
+
+      def dir_exists?(host, dir_path)
+        host.execute("test -d \"#{dir_path}\"",
+                     :acceptable_exit_codes => [0, 1])  do |result|
+          return result.exit_code == 0
+        end
+      end
+
+      def link_exists?(host, link_path)
+        host.execute("test -L \"#{link_path}\"",
                      :acceptable_exit_codes => [0, 1])  do |result|
           return result.exit_code == 0
         end
@@ -85,6 +139,19 @@ module Puppet
         on(host, "chmod #{mode} #{path}")
       end
 
+      # Returns an array containing the owner, group and mode of
+      # the file specified by path. The returned mode is an integer
+      # value containing only the file mode, excluding the type, e.g
+      # S_IFDIR 0040000
+      def stat(host, path)
+        require File.join(File.dirname(__FILE__),'common_utils.rb')
+        ruby = Puppet::Acceptance::CommandUtils.ruby_command(host)
+        owner = on(host, "#{ruby} -e 'require \"etc\"; puts (Etc.getpwuid(File.stat(\"#{path}\").uid).name)'").stdout.chomp
+        group = on(host, "#{ruby} -e 'require \"etc\"; puts (Etc.getgrgid(File.stat(\"#{path}\").gid).name)'").stdout.chomp
+        mode  = on(host, "#{ruby} -e 'puts (File.stat(\"#{path}\").mode & 07777)'").stdout.chomp.to_i
+
+        [owner, group, mode]
+      end
 
       def initialize_temp_dirs()
         # pluck this out of the test case environment; not sure if there is a better way

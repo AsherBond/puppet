@@ -1,4 +1,12 @@
-Puppet::Network::HTTP::Request = Struct.new(:headers, :params, :method, :path, :routing_path, :client_cert, :body) do
+# frozen_string_literal: true
+
+# This class is effectively public API, because a Request object is passed as a
+# parameter to the current Handler subclass. Puppetserver implements its own
+# Handler
+# https://github.com/puppetlabs/puppetserver/blob/8.3.0/src/ruby/puppetserver-lib/puppet/server/network/http/handler.rb#L9
+# and the Request object is passed to its Handler#body method
+# https://github.com/puppetlabs/puppetserver/blob/8.3.0/src/ruby/puppetserver-lib/puppet/server/network/http/handler.rb#L36
+Puppet::Network::HTTP::Request = Struct.new(:headers, :params, :method, :path, :routing_path, :client_cert, :body) do # rubocop:disable Lint/StructNewOverride
   def self.from_hash(hash)
     symbol_members = members.collect(&:intern)
     unknown = hash.keys - symbol_members
@@ -11,7 +19,7 @@ Puppet::Network::HTTP::Request = Struct.new(:headers, :params, :method, :path, :
           hash[:client_cert],
           hash[:body])
     else
-      raise ArgumentError, "Unknown arguments: #{unknown.collect(&:inspect).join(', ')}"
+      raise ArgumentError, _("Unknown arguments: %{args}") % { args: unknown.collect(&:inspect).join(', ') }
     end
   end
 
@@ -19,38 +27,57 @@ Puppet::Network::HTTP::Request = Struct.new(:headers, :params, :method, :path, :
     self.class.new(headers, params, method, path, routing_path.sub(prefix, ''), client_cert, body)
   end
 
-  def format
-    if header = headers['content-type']
-      header.gsub!(/\s*;.*$/,'') # strip any charset
+  def formatter
+    header = headers['content-type']
+    if header
+      header.gsub!(/\s*;.*$/, '') # strip any charset
       format = Puppet::Network::FormatHandler.mime(header)
-      if format.nil?
-        raise "Client sent a mime-type (#{header}) that doesn't correspond to a format we support"
-      else
-        report_if_deprecated(format)
-        return format.name.to_s if format.suitable?
-      end
+
+      return format if valid_network_format?(format)
+
+      # TRANSLATORS "mime-type" is a keyword and should not be translated
+      raise Puppet::Network::HTTP::Error::HTTPUnsupportedMediaTypeError.new(
+        _("Client sent a mime-type (%{header}) that doesn't correspond to a format we support") % { header: headers['content-type'] },
+        Puppet::Network::HTTP::Issues::UNSUPPORTED_MEDIA_TYPE
+      )
     end
 
-    raise "No Content-Type header was received, it isn't possible to unserialize the request"
+    raise Puppet::Network::HTTP::Error::HTTPBadRequestError.new(
+      _("No Content-Type header was received, it isn't possible to unserialize the request"),
+      Puppet::Network::HTTP::Issues::MISSING_HEADER_FIELD
+    )
   end
 
-  def response_formatter_for(supported_formats, accepted_formats = headers['accept'])
-    formatter = Puppet::Network::FormatHandler.most_suitable_format_for(
+  def response_formatters_for(supported_formats, default_accepted_formats = nil)
+    accepted_formats = headers['accept'] || default_accepted_formats
+
+    if accepted_formats.nil?
+      raise Puppet::Network::HTTP::Error::HTTPBadRequestError.new(_("Missing required Accept header"), Puppet::Network::HTTP::Issues::MISSING_HEADER_FIELD)
+    end
+
+    formats = Puppet::Network::FormatHandler.most_suitable_formats_for(
       accepted_formats.split(/\s*,\s*/),
-      supported_formats)
+      supported_formats
+    )
 
-      if formatter.nil?
-        raise Puppet::Network::HTTP::Error::HTTPNotAcceptableError.new("No supported formats are acceptable (Accept: #{accepted_formats})", Puppet::Network::HTTP::Issues::UNSUPPORTED_FORMAT)
-      end
+    formats.find_all do |format|
+      # we are only passed supported_formats that are suitable
+      # and whose klass implements the required_methods
+      valid_network_format?(format)
+    end
 
-      report_if_deprecated(formatter)
+    return formats unless formats.empty?
 
-      formatter
+    raise Puppet::Network::HTTP::Error::HTTPNotAcceptableError.new(
+      _("No supported formats are acceptable (Accept: %{accepted_formats})") % { accepted_formats: accepted_formats },
+      Puppet::Network::HTTP::Issues::UNSUPPORTED_FORMAT
+    )
   end
 
-  def report_if_deprecated(format)
-    if format.name == :yaml || format.name == :b64_zlib_yaml
-      Puppet.deprecation_warning("YAML in network requests is deprecated and will be removed in a future version. See http://links.puppetlabs.com/deprecate_yaml_on_network")
-    end
+  private
+
+  def valid_network_format?(format)
+    # YAML in network requests is not supported. See http://links.puppet.com/deprecate_yaml_on_network
+    format != nil && format.name != :yaml && format.name != :b64_zlib_yaml
   end
 end

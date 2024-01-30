@@ -1,12 +1,14 @@
+# frozen_string_literal: true
+
 Puppet::Type.type(:package).provide :up2date, :parent => :rpm, :source => :rpm do
   desc "Support for Red Hat's proprietary `up2date` package update
     mechanism."
 
   commands :up2date => "/usr/sbin/up2date-nox"
 
-  defaultfor :osfamily => :redhat, :lsbdistrelease => ["2.1", "3", "4"]
+  defaultfor 'os.family' => :redhat, 'os.distro.release.full' => ["2.1", "3", "4"]
 
-  confine    :osfamily => :redhat
+  confine    'os.family' => :redhat
 
   # Install a package using 'up2date'.
   def install
@@ -14,14 +16,14 @@ Puppet::Type.type(:package).provide :up2date, :parent => :rpm, :source => :rpm d
 
     unless self.query
       raise Puppet::ExecutionFailure.new(
-        "Could not find package #{self.name}"
+        _("Could not find package %{name}") % { name: self.name }
       )
     end
   end
 
   # What's the latest package version available?
   def latest
-    #up2date can only get a list of *all* available packages?
+    # up2date can only get a list of *all* available packages?
     output = up2date "--showall"
 
     if output =~ /^#{Regexp.escape @resource[:name]}-(\d+.*)\.\w+/

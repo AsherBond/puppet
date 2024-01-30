@@ -1,14 +1,13 @@
 require 'spec_helper'
 require 'puppet/util/profiler'
 
-describe Puppet::Util::Profiler::ObjectCounts do
+describe Puppet::Util::Profiler::ObjectCounts, unless: Puppet::Util::Platform.jruby? do
+  # ObjectSpace is not enabled by default on JRuby
   it "reports the changes in the system object counts" do
-    pending("Can only count objects on ruby 1.9 or greater", :if => RUBY_VERSION < '1.9') do
-      profiler = Puppet::Util::Profiler::ObjectCounts.new(nil, nil)
+    profiler = Puppet::Util::Profiler::ObjectCounts.new(nil, nil)
 
-      message = profiler.finish(profiler.start)
+    message = profiler.finish(profiler.start)
 
-      message.should =~ / T_STRING: \d+, /
-    end
+    expect(message).to match(/ T_STRING: \d+, /)
   end
 end

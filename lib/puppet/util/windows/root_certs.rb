@@ -1,5 +1,7 @@
-require 'puppet/util/windows'
-require 'openssl'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/windows'
+require_relative '../../../puppet/ssl/openssl_loader'
 require 'ffi'
 
 # Represents a collection of trusted root certificates.
@@ -17,7 +19,7 @@ class Puppet::Util::Windows::RootCerts
   # @yieldparam cert [OpenSSL::X509::Certificate] each root certificate
   # @api public
   def each
-    @roots.each {|cert| yield cert}
+    @roots.each { |cert| yield cert }
   end
 
   # Returns a new instance.
@@ -34,7 +36,7 @@ class Puppet::Util::Windows::RootCerts
     certs = []
 
     # This is based on a patch submitted to openssl:
-    # http://www.mail-archive.com/openssl-dev@openssl.org/msg26958.html
+    # https://www.mail-archive.com/openssl-dev@openssl.org/msg26958.html
     ptr = FFI::Pointer::NULL
     store = CertOpenSystemStoreA(nil, "ROOT")
     begin
@@ -44,7 +46,7 @@ class Puppet::Util::Windows::RootCerts
         begin
           certs << OpenSSL::X509::Certificate.new(cert_buf)
         rescue => detail
-          Puppet.warning("Failed to import root certificate: #{detail.inspect}")
+          Puppet.warning(_("Failed to import root certificate: %{detail}") % { detail: detail.inspect })
         end
       end
     ensure
@@ -57,7 +59,7 @@ class Puppet::Util::Windows::RootCerts
   ffi_convention :stdcall
   # typedef void *HCERTSTORE;
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa377189(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa377189(v=vs.85).aspx
   # typedef struct _CERT_CONTEXT {
   #   DWORD      dwCertEncodingType;
   #   BYTE       *pbCertEncoded;
@@ -75,7 +77,7 @@ class Puppet::Util::Windows::RootCerts
     )
   end
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa376560(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa376560(v=vs.85).aspx
   # HCERTSTORE
   # WINAPI
   # CertOpenSystemStoreA(
@@ -86,7 +88,7 @@ class Puppet::Util::Windows::RootCerts
   ffi_lib :crypt32
   attach_function_private :CertOpenSystemStoreA, [:ulong_ptr, :lpcstr], :handle
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa376050(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa376050(v=vs.85).aspx
   # PCCERT_CONTEXT
   # WINAPI
   # CertEnumCertificatesInStore(
@@ -96,7 +98,7 @@ class Puppet::Util::Windows::RootCerts
   ffi_lib :crypt32
   attach_function_private :CertEnumCertificatesInStore, [:handle, :pointer], :pointer
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa376026(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa376026(v=vs.85).aspx
   # BOOL
   # WINAPI
   # CertCloseStore(

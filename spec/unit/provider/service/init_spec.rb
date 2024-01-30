@@ -1,16 +1,19 @@
-#! /usr/bin/env ruby
-#
-# Unit testing for the Init service Provider
-#
-
 require 'spec_helper'
 
-describe Puppet::Type.type(:service).provider(:init) do
+describe 'Puppet::Type::Service::Provider::Init',
+         unless: Puppet::Util::Platform.windows? || Puppet::Util::Platform.jruby? do
+  let(:provider_class) { Puppet::Type.type(:service).provider(:init) }
+
+  before do
+    Puppet::Type.type(:service).defaultprovider = provider_class
+  end
+
+  after do
+    Puppet::Type.type(:service).defaultprovider = nil
+  end
 
   let :provider do
-    provider = described_class.new(:name => 'myservice')
-    provider.resource = resource
-    provider
+    resource.provider
   end
 
   let :resource do
@@ -30,101 +33,163 @@ describe Puppet::Type.type(:service).provider(:init) do
     %w{functions.sh reboot.sh shutdown.sh functions halt killall single linuxconf reboot boot wait-for-state rcS module-init-tools}
   end
 
+  let :process_output do
+    Puppet::Util::Execution::ProcessOutput.new('', 0)
+  end
+
+  describe "when running on FreeBSD" do
+    before :each do
+      allow(Facter).to receive(:value).with('os.name').and_return('FreeBSD')
+      allow(Facter).to receive(:value).with('os.family').and_return('FreeBSD')
+    end
+
+    it "should set its default path to include /etc/rc.d and /usr/local/etc/rc.d" do
+      expect(provider_class.defpath).to eq(["/etc/rc.d", "/usr/local/etc/rc.d"])
+    end
+  end
+
+  describe "when running on HP-UX" do
+    before :each do
+      allow(Facter).to receive(:value).with('os.name').and_return('HP-UX')
+    end
+
+    it "should set its default path to include /sbin/init.d" do
+      expect(provider_class.defpath).to eq("/sbin/init.d")
+    end
+  end
+
+  describe "when running on Archlinux" do
+    before :each do
+      allow(Facter).to receive(:value).with('os.name').and_return('Archlinux')
+    end
+
+    it "should set its default path to include /etc/rc.d" do
+      expect(provider_class.defpath).to eq("/etc/rc.d")
+    end
+  end
+
+  describe "when not running on FreeBSD, HP-UX or Archlinux" do
+    before :each do
+      allow(Facter).to receive(:value).with('os.name').and_return('RedHat')
+    end
+
+    it "should set its default path to include /etc/init.d" do
+      expect(provider_class.defpath).to eq("/etc/init.d")
+    end
+  end
+
   describe "when getting all service instances" do
     before :each do
-      described_class.stubs(:defpath).returns('tmp')
+      allow(provider_class).to receive(:defpath).and_return('tmp')
 
-      @services = ['one', 'two', 'three', 'four']
-      Dir.stubs(:entries).with('tmp').returns @services
-      FileTest.expects(:directory?).with('tmp').returns(true)
-      FileTest.stubs(:executable?).returns(true)
+      @services = ['one', 'two', 'three', 'four', 'umountfs']
+      allow(Dir).to receive(:entries).and_call_original
+      allow(Dir).to receive(:entries).with('tmp').and_return(@services)
+      allow(Puppet::FileSystem).to receive(:directory?).and_call_original
+      allow(Puppet::FileSystem).to receive(:directory?).with('tmp').and_return(true)
+      allow(Puppet::FileSystem).to receive(:executable?).and_return(true)
     end
 
     it "should return instances for all services" do
-      described_class.instances.map(&:name).should == @services
+      expect(provider_class.instances.map(&:name)).to eq(@services)
+    end
+
+    it "should omit directories from the service list" do
+      expect(Puppet::FileSystem).to receive(:directory?).with('tmp/four').and_return(true)
+      expect(provider_class.instances.map(&:name)).to eq(@services - ['four'])
     end
 
     it "should omit an array of services from exclude list" do
       exclude = ['two', 'four']
-      described_class.get_services(described_class.defpath, exclude).map(&:name).should == (@services - exclude)
+      expect(provider_class.get_services(provider_class.defpath, exclude).map(&:name)).to eq(@services - exclude)
     end
 
     it "should omit a single service from the exclude list" do
       exclude = 'two'
-      described_class.get_services(described_class.defpath, exclude).map(&:name).should == @services - [exclude]
+      expect(provider_class.get_services(provider_class.defpath, exclude).map(&:name)).to eq(@services - [exclude])
+    end
+
+    it "should omit Yocto services on cisco-wrlinux" do
+      allow(Facter).to receive(:value).with('os.family').and_return('cisco-wrlinux')
+      exclude = 'umountfs'
+      expect(provider_class.get_services(provider_class.defpath).map(&:name)).to eq(@services - [exclude])
+    end
+
+    it "should not omit Yocto services on non cisco-wrlinux platforms" do
+      expect(provider_class.get_services(provider_class.defpath).map(&:name)).to eq(@services)
     end
 
     it "should use defpath" do
-      described_class.instances.should be_all { |provider| provider.get(:path) == described_class.defpath }
+      expect(provider_class.instances).to be_all { |provider| provider.get(:path) == provider_class.defpath }
     end
 
     it "should set hasstatus to true for providers" do
-      described_class.instances.should be_all { |provider| provider.get(:hasstatus) == true }
+      expect(provider_class.instances).to be_all { |provider| provider.get(:hasstatus) == true }
     end
 
     it "should discard upstart jobs", :if => Puppet.features.manages_symlinks? do
       not_init_service, *valid_services = @services
       path = "tmp/#{not_init_service}"
-      Puppet::FileSystem.expects(:symlink?).at_least_once.returns false
-      Puppet::FileSystem.expects(:symlink?).with(Puppet::FileSystem.pathname(path)).returns(true)
-      Puppet::FileSystem.expects(:readlink).with(Puppet::FileSystem.pathname(path)).returns("/lib/init/upstart-job")
-      described_class.instances.map(&:name).should == valid_services
+      allow(Puppet::FileSystem).to receive(:symlink?).at_least(:once).and_return(false)
+      allow(Puppet::FileSystem).to receive(:symlink?).with(Puppet::FileSystem.pathname(path)).and_return(true)
+      allow(Puppet::FileSystem).to receive(:readlink).with(Puppet::FileSystem.pathname(path)).and_return("/lib/init/upstart-job")
+      expect(provider_class.instances.map(&:name)).to eq(valid_services)
     end
 
     it "should discard non-initscript scripts" do
       valid_services = @services
       all_services = valid_services + excludes
-      Dir.expects(:entries).with('tmp').returns all_services
-      described_class.instances.map(&:name).should =~ valid_services
+      expect(Dir).to receive(:entries).with('tmp').and_return(all_services)
+      expect(provider_class.instances.map(&:name)).to match_array(valid_services)
     end
   end
 
   describe "when checking valid paths" do
     it "should discard paths that do not exist" do
-      File.expects(:directory?).with(paths[0]).returns false
-      Puppet::FileSystem.expects(:exist?).with(paths[0]).returns false
-      File.expects(:directory?).with(paths[1]).returns true
+      expect(Puppet::FileSystem).to receive(:directory?).with(paths[0]).and_return(false)
+      expect(Puppet::FileSystem).to receive(:exist?).with(paths[0]).and_return(false)
+      expect(Puppet::FileSystem).to receive(:directory?).with(paths[1]).and_return(true)
 
-      provider.paths.should == [paths[1]]
+      expect(provider.paths).to eq([paths[1]])
     end
 
     it "should discard paths that are not directories" do
       paths.each do |path|
-        Puppet::FileSystem.expects(:exist?).with(path).returns true
-        File.expects(:directory?).with(path).returns false
+        expect(Puppet::FileSystem).to receive(:exist?).with(path).and_return(true)
+        expect(Puppet::FileSystem).to receive(:directory?).with(path).and_return(false)
       end
-      provider.paths.should be_empty
+      expect(provider.paths).to be_empty
     end
   end
 
   describe "when searching for the init script" do
     before :each do
-      paths.each {|path| File.expects(:directory?).with(path).returns true }
+      paths.each {|path| expect(Puppet::FileSystem).to receive(:directory?).with(path).and_return(true) }
     end
 
     it "should be able to find the init script in the service path" do
-      Puppet::FileSystem.expects(:exist?).with("#{paths[0]}/myservice").returns true
-      Puppet::FileSystem.expects(:exist?).with("#{paths[1]}/myservice").never # first one wins
-      provider.initscript.should == "/service/path/myservice"
+      expect(Puppet::FileSystem).to receive(:exist?).with("#{paths[0]}/myservice").and_return(true)
+      expect(Puppet::FileSystem).not_to receive(:exist?).with("#{paths[1]}/myservice") # first one wins
+      expect(provider.initscript).to eq("/service/path/myservice")
     end
 
     it "should be able to find the init script in an alternate service path" do
-      Puppet::FileSystem.expects(:exist?).with("#{paths[0]}/myservice").returns false
-      Puppet::FileSystem.expects(:exist?).with("#{paths[1]}/myservice").returns true
-      provider.initscript.should == "/alt/service/path/myservice"
+      expect(Puppet::FileSystem).to receive(:exist?).with("#{paths[0]}/myservice").and_return(false)
+      expect(Puppet::FileSystem).to receive(:exist?).with("#{paths[1]}/myservice").and_return(true)
+      expect(provider.initscript).to eq("/alt/service/path/myservice")
     end
 
     it "should be able to find the init script if it ends with .sh" do
-      Puppet::FileSystem.expects(:exist?).with("#{paths[0]}/myservice").returns false
-      Puppet::FileSystem.expects(:exist?).with("#{paths[1]}/myservice").returns false
-      Puppet::FileSystem.expects(:exist?).with("#{paths[0]}/myservice.sh").returns true
-      provider.initscript.should == "/service/path/myservice.sh"
+      expect(Puppet::FileSystem).to receive(:exist?).with("#{paths[0]}/myservice").and_return(false)
+      expect(Puppet::FileSystem).to receive(:exist?).with("#{paths[1]}/myservice").and_return(false)
+      expect(Puppet::FileSystem).to receive(:exist?).with("#{paths[0]}/myservice.sh").and_return(true)
+      expect(provider.initscript).to eq("/service/path/myservice.sh")
     end
 
     it "should fail if the service isn't there" do
       paths.each do |path|
-        Puppet::FileSystem.expects(:exist?).with("#{path}/myservice").returns false
-        Puppet::FileSystem.expects(:exist?).with("#{path}/myservice.sh").returns false
+        expect(Puppet::FileSystem).to receive(:exist?).with("#{path}/myservice").and_return(false)
+        expect(Puppet::FileSystem).to receive(:exist?).with("#{path}/myservice.sh").and_return(false)
       end
       expect { provider.initscript }.to raise_error(Puppet::Error, "Could not find init script for 'myservice'")
     end
@@ -132,27 +197,34 @@ describe Puppet::Type.type(:service).provider(:init) do
 
   describe "if the init script is present" do
     before :each do
-      File.stubs(:directory?).with("/service/path").returns true
-      File.stubs(:directory?).with("/alt/service/path").returns true
-      Puppet::FileSystem.stubs(:exist?).with("/service/path/myservice").returns true
+      allow(Puppet::FileSystem).to receive(:directory?).and_call_original
+      allow(Puppet::FileSystem).to receive(:directory?).with("/service/path").and_return(true)
+      allow(Puppet::FileSystem).to receive(:directory?).with("/alt/service/path").and_return(true)
+      allow(Puppet::FileSystem).to receive(:exist?).with("/service/path/myservice").and_return(true)
     end
 
     [:start, :stop, :status, :restart].each do |method|
       it "should have a #{method} method" do
-        provider.should respond_to(method)
+        expect(provider).to respond_to(method)
       end
+
       describe "when running #{method}" do
+        before :each do
+          allow(provider).to receive(:execute).and_return(process_output)
+        end
 
         it "should use any provided explicit command" do
           resource[method] = "/user/specified/command"
-          provider.expects(:execute).with { |command, *args| command == ["/user/specified/command"] }
+          expect(provider).to receive(:execute).with(["/user/specified/command"], any_args).and_return(process_output)
+
           provider.send(method)
         end
 
         it "should pass #{method} to the init script when no explicit command is provided" do
           resource[:hasrestart] = :true
           resource[:hasstatus] = :true
-          provider.expects(:execute).with { |command, *args| command ==  ["/service/path/myservice",method]}
+          expect(provider).to receive(:execute).with(["/service/path/myservice", method], any_args).and_return(process_output)
+
           provider.send(method)
         end
       end
@@ -163,35 +235,44 @@ describe Puppet::Type.type(:service).provider(:init) do
         before :each do
           resource[:hasstatus] = :true
         end
+
         it "should execute the command" do
-          provider.expects(:texecute).with(:status, ['/service/path/myservice', :status], false).returns("")
+          expect(provider).to receive(:execute)
+            .with(['/service/path/myservice', :status], hash_including(failonfail: false))
+            .and_return(process_output)
           provider.status
         end
+
         it "should consider the process running if the command returns 0" do
-          provider.expects(:texecute).with(:status, ['/service/path/myservice', :status], false).returns("")
-          $CHILD_STATUS.stubs(:exitstatus).returns(0)
-          provider.status.should == :running
+          expect(provider).to receive(:execute)
+            .with(['/service/path/myservice', :status], hash_including(failonfail: false))
+            .and_return(process_output)
+          expect(provider.status).to eq(:running)
         end
+
         [-10,-1,1,10].each { |ec|
           it "should consider the process stopped if the command returns something non-0" do
-            provider.expects(:texecute).with(:status, ['/service/path/myservice', :status], false).returns("")
-            $CHILD_STATUS.stubs(:exitstatus).returns(ec)
-            provider.status.should == :stopped
+            expect(provider).to receive(:execute)
+              .with(['/service/path/myservice', :status], hash_including(failonfail: false))
+              .and_return(Puppet::Util::Execution::ProcessOutput.new('', ec))
+            expect(provider.status).to eq(:stopped)
           end
         }
       end
+
       describe "when hasstatus is not :true" do
         before :each do
           resource[:hasstatus] = :false
         end
 
         it "should consider the service :running if it has a pid" do
-          provider.expects(:getpid).returns "1234"
-          provider.status.should == :running
+          expect(provider).to receive(:getpid).and_return("1234")
+          expect(provider.status).to eq(:running)
         end
+
         it "should consider the service :stopped if it doesn't have a pid" do
-          provider.expects(:getpid).returns nil
-          provider.status.should == :stopped
+          expect(provider).to receive(:getpid).and_return(nil)
+          expect(provider.status).to eq(:stopped)
         end
       end
     end
@@ -202,10 +283,33 @@ describe Puppet::Type.type(:service).provider(:init) do
       end
 
       it "should stop and restart the process" do
-        provider.expects(:texecute).with(:stop, ['/service/path/myservice', :stop ], true).returns("")
-        provider.expects(:texecute).with(:start,['/service/path/myservice', :start], true).returns("")
-        $CHILD_STATUS.stubs(:exitstatus).returns(0)
+        expect(provider).to receive(:execute)
+          .with(['/service/path/myservice', :stop], hash_including(failonfail: true))
+          .and_return(process_output)
+        expect(provider).to receive(:execute)
+          .with(['/service/path/myservice', :start], hash_including(failonfail: true))
+          .and_return(process_output)
         provider.restart
+      end
+    end
+
+    describe "when starting a service on Solaris" do
+      it "should use ctrun" do
+        allow(Facter).to receive(:value).with('os.family').and_return('Solaris')
+        expect(provider).to receive(:execute)
+          .with('/usr/bin/ctrun -l child /service/path/myservice start', {:failonfail => true, :override_locale => false, :squelch => false, :combine => true})
+          .and_return(process_output)
+        provider.start
+      end
+    end
+
+    describe "when starting a service on RedHat" do
+      it "should not use ctrun" do
+        allow(Facter).to receive(:value).with('os.family').and_return('RedHat')
+        expect(provider).to receive(:execute)
+          .with(['/service/path/myservice', :start], {:failonfail => true, :override_locale => false, :squelch => false, :combine => true})
+          .and_return(process_output)
+        provider.start
       end
     end
   end

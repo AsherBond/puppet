@@ -1,10 +1,12 @@
+# frozen_string_literal: true
+
 # Packaging using Blastwave's pkg-get program.
 Puppet::Type.type(:package).provide :blastwave, :parent => :sun, :source => :sun do
   desc "Package management using Blastwave.org's `pkg-get` command on Solaris."
   pkgget = "pkg-get"
   pkgget = "/opt/csw/bin/pkg-get" if FileTest.executable?("/opt/csw/bin/pkg-get")
 
-  confine :osfamily => :solaris
+  confine 'os.family' => :solaris
 
   commands :pkgget => pkgget
 
@@ -15,12 +17,12 @@ Puppet::Type.type(:package).provide :blastwave, :parent => :sun, :source => :sun
   def self.extended(mod)
     unless command(:pkgget) != "pkg-get"
       raise Puppet::Error,
-        "The pkg-get command is missing; blastwave packaging unavailable"
+            _("The pkg-get command is missing; blastwave packaging unavailable")
     end
 
     unless Puppet::FileSystem.exist?("/var/pkg-get/admin")
-      Puppet.notice "It is highly recommended you create '/var/pkg-get/admin'."
-      Puppet.notice "See /var/pkg-get/admin-fullauto"
+      Puppet.notice _("It is highly recommended you create '/var/pkg-get/admin'.")
+      Puppet.notice _("See /var/pkg-get/admin-fullauto")
     end
   end
 
@@ -45,7 +47,7 @@ Puppet::Type.type(:package).provide :blastwave, :parent => :sun, :source => :sun
       next if line =~ /localrev\s+remoterev/
 
       blastsplit(line)
-    end.reject { |h| h.nil? }
+    end.compact
 
     if hash[:justme]
       return list[0]
@@ -55,7 +57,6 @@ Puppet::Type.type(:package).provide :blastwave, :parent => :sun, :source => :sun
       }
       return list
     end
-
   end
 
   # Split the different lines into hashes.
@@ -64,10 +65,10 @@ Puppet::Type.type(:package).provide :blastwave, :parent => :sun, :source => :sun
       hash = {}
       hash[:name] = $1
       hash[:ensure] = if $2 == "[Not installed]"
-        :absent
-      else
-        $2
-      end
+                        :absent
+                      else
+                        $2
+                      end
       hash[:avail] = $5
 
       hash[:avail] = hash[:ensure] if hash[:avail] == "SAME"
@@ -77,7 +78,7 @@ Puppet::Type.type(:package).provide :blastwave, :parent => :sun, :source => :sun
 
       return hash
     else
-      Puppet.warning "Cannot match #{line}"
+      Puppet.warning _("Cannot match %{line}") % { line: line }
       return nil
     end
   end
@@ -93,10 +94,11 @@ Puppet::Type.type(:package).provide :blastwave, :parent => :sun, :source => :sun
   end
 
   def query
-    if hash = self.class.blastlist(:justme => @resource[:name])
+    hash = self.class.blastlist(:justme => @resource[:name])
+    if hash
       hash
     else
-      {:ensure => :absent}
+      { :ensure => :absent }
     end
   end
 

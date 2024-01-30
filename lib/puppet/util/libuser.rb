@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Puppet::Util::Libuser
    def self.getconf
      File.expand_path("../libuser.conf", __FILE__)
@@ -8,5 +10,4 @@ module Puppet::Util::Libuser
      newenv['LIBUSER_CONF'] = getconf
      newenv
    end
-
 end

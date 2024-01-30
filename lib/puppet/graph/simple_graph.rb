@@ -1,9 +1,13 @@
-require 'puppet/external/dot'
-require 'puppet/relationship'
+# frozen_string_literal: true
+
+require_relative '../../puppet/external/dot'
+require_relative '../../puppet/relationship'
 require 'set'
 
 # A hopefully-faster graph class to replace the use of GRATR.
 class Puppet::Graph::SimpleGraph
+  include Puppet::Util::PsychSupport
+
   #
   # All public methods of this class must maintain (assume ^ ensure) the following invariants, where "=~=" means
   # equiv. up to order:
@@ -36,11 +40,12 @@ class Puppet::Graph::SimpleGraph
     @downstream_from.clear
   end
 
-  # Which resources depend upon the given resource.
+  # Which resources the given resource depends on.
   def dependencies(resource)
     vertex?(resource) ? upstream_from_vertex(resource).keys : []
   end
 
+  # Which resources depend upon the given resource.
   def dependents(resource)
     vertex?(resource) ? downstream_from_vertex(resource).keys : []
   end
@@ -61,7 +66,7 @@ class Puppet::Graph::SimpleGraph
     source = base || event.resource
 
     unless vertex?(source)
-      Puppet.warning "Got an event from invalid vertex #{source.ref}"
+      Puppet.warning _("Got an event from invalid vertex %{source}") % { source: source.ref }
       return []
     end
     # Get all of the edges that this vertex should forward events
@@ -120,7 +125,7 @@ class Puppet::Graph::SimpleGraph
       when :children then
         if frame[:children].length > 0 then
           child = frame[:children].shift
-          if ! s[:index][child] then
+          if !s[:index][child] then
             # Never seen, need to recurse.
             frame[:step] = :after_recursion
             frame[:child] = child
@@ -131,14 +136,15 @@ class Puppet::Graph::SimpleGraph
         else
           if s[:lowlink][vertex] == s[:index][vertex] then
             this_scc = []
-            begin
+            loop do
               top = s[:stack].pop
               s[:seen][top] = false
               this_scc << top
-            end until top == vertex
+              break if top == vertex
+            end
             s[:scc] << this_scc
           end
-          recur.pop               # done with this node, finally.
+          recur.pop # done with this node, finally.
         end
 
       when :after_recursion then
@@ -165,7 +171,7 @@ class Puppet::Graph::SimpleGraph
 
     # we usually have a disconnected graph, must walk all possible roots
     vertices.each do |vertex|
-      if ! state[:index][vertex] then
+      if !state[:index][vertex] then
         tarjan vertex, state
       end
     end
@@ -193,19 +199,20 @@ class Puppet::Graph::SimpleGraph
   # through the graph first, which are more likely to be interesting to the
   # user.  I think; it would be interesting to verify that. --daniel 2011-01-23
   def paths_in_cycle(cycle, max_paths = 1)
-    raise ArgumentError, "negative or zero max_paths" if max_paths < 1
+    # TRANSLATORS "negative or zero" refers to the count of paths
+    raise ArgumentError, _("negative or zero max_paths") if max_paths < 1
 
     # Calculate our filtered outbound vertex lists...
     adj = {}
     cycle.each do |vertex|
-      adj[vertex] = adjacent(vertex).select{|s| cycle.member? s}
+      adj[vertex] = adjacent(vertex).select { |s| cycle.member? s }
     end
 
     found = []
 
     # frame struct is vertex, [path]
     stack = [[cycle.first, []]]
-    while frame = stack.shift do
+    while frame = stack.shift do # rubocop:disable Lint/AssignmentInCondition
       if frame[1].member?(frame[0]) then
         found << frame[1] + [frame[0]]
         break if found.length >= max_paths
@@ -219,35 +226,34 @@ class Puppet::Graph::SimpleGraph
     return found.sort
   end
 
+  # @return [Array] array of dependency cycles (arrays)
   def report_cycles_in_graph
     cycles = find_cycles_in_graph
-    n = cycles.length           # where is "pluralize"? --daniel 2011-01-22
-    return if n == 0
-    s = n == 1 ? '' : 's'
+    number_of_cycles = cycles.length
+    return if number_of_cycles == 0
 
-    message = "Found #{n} dependency cycle#{s}:\n"
+    message = n_("Found %{num} dependency cycle:\n", "Found %{num} dependency cycles:\n", number_of_cycles) % { num: number_of_cycles }
+
     cycles.each do |cycle|
       paths = paths_in_cycle(cycle)
-      message += paths.map{ |path| '(' + path.join(" => ") + ')'}.join("\n") + "\n"
+      message += paths.map { |path| '(' + path.join(' => ') + ')' }.join('\n') + '\n'
     end
 
     if Puppet[:graph] then
       filename = write_cycles_to_graph(cycles)
-      message += "Cycle graph written to #{filename}."
+      message += _("Cycle graph written to %{filename}.") % { filename: filename }
     else
-      message += "Try the '--graph' option and opening the "
-      message += "resulting '.dot' file in OmniGraffle or GraphViz"
+      # TRANSLATORS '--graph' refers to a command line option and OmniGraffle and GraphViz are program names and should not be translated
+      message += _("Try the '--graph' option and opening the resulting '.dot' file in OmniGraffle or GraphViz")
     end
-
-    raise Puppet::Error, message
+    Puppet.err(message)
+    cycles
   end
 
   def write_cycles_to_graph(cycles)
     # This does not use the DOT graph library, just writes the content
     # directly.  Given the complexity of this, there didn't seem much point
     # using a heavy library to generate exactly the same content. --daniel 2011-01-27
-    Puppet.settings.use(:graphing)
-
     graph = ["digraph Resource_Cycles {"]
     graph << '  label = "Resource Cycles"'
 
@@ -260,7 +266,8 @@ class Puppet::Graph::SimpleGraph
     graph << '}'
 
     filename = File.join(Puppet[:graphdir], "cycles.dot")
-    File.open(filename, "w") { |f| f.puts graph }
+    # DOT files are assumed to be UTF-8 by default - http://www.graphviz.org/doc/info/lang.html
+    File.open(filename, "w:UTF-8") { |f| f.puts graph }
     return filename
   end
 
@@ -273,9 +280,10 @@ class Puppet::Graph::SimpleGraph
   # Remove a vertex from the graph.
   def remove_vertex!(v)
     return unless vertex?(v)
+
     @upstream_from.clear
     @downstream_from.clear
-    (@in_to[v].values+@out_from[v].values).flatten.each { |e| remove_edge!(e) }
+    (@in_to[v].values + @out_from[v].values).flatten.each { |e| remove_edge!(e) }
     @in_to.delete(v)
     @out_from.delete(v)
   end
@@ -292,14 +300,19 @@ class Puppet::Graph::SimpleGraph
 
   # Add a new edge.  The graph user has to create the edge instance,
   # since they have to specify what kind of edge it is.
-  def add_edge(e,*a)
-    return add_relationship(e,*a) unless a.empty?
+  def add_edge(e, *a)
+    return add_relationship(e, *a) unless a.empty?
+
+    e = Puppet::Relationship.from_data_hash(e) if e.is_a?(Hash)
     @upstream_from.clear
     @downstream_from.clear
     add_vertex(e.source)
     add_vertex(e.target)
-    @in_to[   e.target][e.source] ||= []; @in_to[   e.target][e.source] |= [e]
-    @out_from[e.source][e.target] ||= []; @out_from[e.source][e.target] |= [e]
+    # Avoid multiple lookups here. This code is performance critical
+    arr = (@in_to[e.target][e.source] ||= [])
+    arr << e unless arr.include?(e)
+    arr = (@out_from[e.source][e.target] ||= [])
+    arr << e unless arr.include?(e)
   end
 
   def add_relationship(source, target, label = nil)
@@ -321,22 +334,24 @@ class Puppet::Graph::SimpleGraph
   end
 
   def each_edge
-    @in_to.each { |t,ns| ns.each { |s,es| es.each { |e| yield e }}}
+    @in_to.each { |_t, ns| ns.each { |_s, es| es.each { |e| yield e } } }
   end
 
   # Remove an edge from our graph.
   def remove_edge!(e)
-    if edge?(e.source,e.target)
+    if edge?(e.source, e.target)
       @upstream_from.clear
       @downstream_from.clear
-      @in_to   [e.target].delete e.source if (@in_to   [e.target][e.source] -= [e]).empty?
+      @in_to[e.target].delete e.source if (@in_to[e.target][e.source] -= [e]).empty?
       @out_from[e.source].delete e.target if (@out_from[e.source][e.target] -= [e]).empty?
     end
   end
 
   # Find adjacent edges.
   def adjacent(v, options = {})
-    return [] unless ns = (options[:direction] == :in) ? @in_to[v] : @out_from[v]
+    ns = (options[:direction] == :in) ? @in_to[v] : @out_from[v]
+    return [] unless ns
+
     (options[:type] == :edges) ? ns.values.flatten : ns.keys
   end
 
@@ -350,6 +365,7 @@ class Puppet::Graph::SimpleGraph
     until stack.empty?
       node = stack.shift
       next if seen.member? node
+
       connected = adjacent(node, :direction => direction)
       connected.each do |target|
         yield node, target
@@ -362,7 +378,7 @@ class Puppet::Graph::SimpleGraph
   # A different way of walking a tree, and a much faster way than the
   # one that comes with GRATR.
   def tree_from_vertex(start, direction = :out)
-    predecessor={}
+    predecessor = {}
     walk(start, direction) do |parent, child|
       predecessor[child] = parent
     end
@@ -371,6 +387,7 @@ class Puppet::Graph::SimpleGraph
 
   def downstream_from_vertex(v)
     return @downstream_from[v] if @downstream_from[v]
+
     result = @downstream_from[v] = {}
     @out_from[v].keys.each do |node|
       result[node] = 1
@@ -385,6 +402,7 @@ class Puppet::Graph::SimpleGraph
 
   def upstream_from_vertex(v)
     return @upstream_from[v] if @upstream_from[v]
+
     result = @upstream_from[v] = {}
     @in_to[v].keys.each do |node|
       result[node] = 1
@@ -398,7 +416,7 @@ class Puppet::Graph::SimpleGraph
   end
 
   # Return an array of the edge-sets between a series of n+1 vertices (f=v0,v1,v2...t=vn)
-  #   connecting the two given verticies.  The ith edge set is an array containing all the
+  #   connecting the two given vertices.  The ith edge set is an array containing all the
   #   edges between v(i) and v(i+1); these are (by definition) never empty.
   #
   #     * if f == t, the list is empty
@@ -410,14 +428,14 @@ class Puppet::Graph::SimpleGraph
   # This implementation is not particularly efficient; it's used in testing where clarity
   #   is more important than last-mile efficiency.
   #
-  def path_between(f,t)
-    if f==t
+  def path_between(f, t)
+    if f == t
       []
     elsif direct_dependents_of(f).include?(t)
-      [edges_between(f,t)]
+      [edges_between(f, t)]
     elsif dependents(f).include?(t)
       m = (dependents(f) & direct_dependencies_of(t)).first
-      path_between(f,m) + path_between(m,t)
+      path_between(f, m) + path_between(m, t)
     else
       nil
     end
@@ -429,54 +447,50 @@ class Puppet::Graph::SimpleGraph
   # undirected Graph.  _params_ can contain any graph property specified in
   # rdot.rb. If an edge or vertex label is a kind of Hash then the keys
   # which match +dot+ properties will be used as well.
-  def to_dot_graph (params = {})
-    params['name'] ||= self.class.name.gsub(/:/,'_')
+  def to_dot_graph(params = {})
+    params['name'] ||= self.class.name.tr(':', '_')
     fontsize   = params['fontsize'] ? params['fontsize'] : '8'
     graph      = (directed? ? DOT::DOTDigraph : DOT::DOTSubgraph).new(params)
     edge_klass = directed? ? DOT::DOTDirectedEdge : DOT::DOTEdge
     vertices.each do |v|
-      name = v.to_s
-      params = {'name'     => '"'+name+'"',
-        'fontsize' => fontsize,
-        'label'    => name}
-      v_label = v.to_s
+      name = v.ref
+      params = { 'name' => stringify(name),
+                 'fontsize' => fontsize,
+                 'label' => name }
+      v_label = v.ref
       params.merge!(v_label) if v_label and v_label.kind_of? Hash
       graph << DOT::DOTNode.new(params)
     end
     edges.each do |e|
-      params = {'from'     => '"'+ e.source.to_s + '"',
-        'to'       => '"'+ e.target.to_s + '"',
-        'fontsize' => fontsize }
-      e_label = e.to_s
+      params = { 'from' => stringify(e.source.ref),
+                 'to' => stringify(e.target.ref),
+                 'fontsize' => fontsize }
+      e_label = e.ref
       params.merge!(e_label) if e_label and e_label.kind_of? Hash
       graph << edge_klass.new(params)
     end
     graph
   end
 
-  # Output the dot format as a string
-  def to_dot (params={}) to_dot_graph(params).to_s; end
-
-  # Call +dotty+ for the graph which is written to the file 'graph.dot'
-  # in the # current directory.
-  def dotty (params = {}, dotfile = 'graph.dot')
-    File.open(dotfile, 'w') {|f| f << to_dot(params) }
-    system('dotty', dotfile)
+  def stringify(s)
+    %("#{s.gsub('"', '\\"')}")
   end
+
+  # Output the dot format as a string
+  def to_dot(params = {}) to_dot_graph(params).to_s; end
 
   # Produce the graph files if requested.
   def write_graph(name)
     return unless Puppet[:graph]
 
-    Puppet.settings.use(:graphing)
-
     file = File.join(Puppet[:graphdir], "#{name}.dot")
-    File.open(file, "w") { |f|
+    # DOT files are assumed to be UTF-8 by default - http://www.graphviz.org/doc/info/lang.html
+    File.open(file, "w:UTF-8") { |f|
       f.puts to_dot("name" => name.to_s.capitalize)
     }
   end
 
-  # This flag may be set to true to use the new YAML serialzation
+  # This flag may be set to true to use the new YAML serialization
   # format (where @vertices is a simple list of vertices rather than a
   # list of VertexWrapper objects).  Deserialization supports both
   # formats regardless of the setting of this flag.
@@ -485,68 +499,42 @@ class Puppet::Graph::SimpleGraph
   end
   self.use_new_yaml_format = false
 
-  # Stub class to allow graphs to be represented in YAML using the old
-  # (version 2.6) format.
-  class VertexWrapper
-    attr_reader :vertex, :adjacencies
-    def initialize(vertex, adjacencies)
-      @vertex = vertex
-      @adjacencies = adjacencies
-    end
-
-    def inspect
-      { :@adjacencies => @adjacencies, :@vertex => @vertex.to_s }.inspect
-    end
-  end
-
-  # instance_variable_get is used by Object.to_zaml to get instance
-  # variables.  Override it so that we can simulate the presence of
-  # instance variables @edges and @vertices for serialization.
-  def instance_variable_get(v)
-    case v.to_s
-    when '@edges' then
-      edges
-    when '@vertices' then
-      if self.class.use_new_yaml_format
-        vertices
-      else
-        result = {}
-        vertices.each do |vertex|
-          adjacencies = {}
-          [:in, :out].each do |direction|
-            adjacencies[direction] = {}
-            adjacent(vertex, :direction => direction, :type => :edges).each do |edge|
-              other_vertex = direction == :in ? edge.source : edge.target
-              (adjacencies[direction][other_vertex] ||= Set.new).add(edge)
-            end
-          end
-          result[vertex] = Puppet::Graph::SimpleGraph::VertexWrapper.new(vertex, adjacencies)
-        end
-        result
-      end
-    else
-      super(v)
-    end
-  end
-
-  def to_yaml_properties
-    (super + [:@vertices, :@edges] -
-     [:@in_to, :@out_from, :@upstream_from, :@downstream_from]).uniq
-  end
-
-  def yaml_initialize(tag, var)
-    initialize()
-    vertices = var.delete('vertices')
-    edges = var.delete('edges')
+  def initialize_from_hash(hash)
+    initialize
+    vertices = hash['vertices']
+    edges = hash['edges']
     if vertices.is_a?(Hash)
       # Support old (2.6) format
       vertices = vertices.keys
     end
-    vertices.each { |v| add_vertex(v) }
-    edges.each { |e| add_edge(e) }
-    var.each do |varname, value|
-      instance_variable_set("@#{varname}", value)
-    end
+    vertices.each { |v| add_vertex(v) } unless vertices.nil?
+    edges.each { |e| add_edge(e) } unless edges.nil?
+  end
+
+  def to_data_hash
+    hash = { 'edges' => edges.map(&:to_data_hash) }
+    hash['vertices'] = if self.class.use_new_yaml_format
+                         vertices
+                       else
+                         # Represented in YAML using the old (version 2.6) format.
+                         result = {}
+                         vertices.each do |vertex|
+                           adjacencies = {}
+                           [:in, :out].each do |direction|
+                             direction_hash = {}
+                             adjacencies[direction.to_s] = direction_hash
+                             adjacent(vertex, :direction => direction, :type => :edges).each do |edge|
+                               other_vertex = direction == :in ? edge.source : edge.target
+                               (direction_hash[other_vertex.to_s] ||= []) << edge
+                             end
+                             direction_hash.each_pair { |key, edges| direction_hash[key] = edges.uniq.map(&:to_data_hash) }
+                           end
+                           vname = vertex.to_s
+                           result[vname] = { 'adjacencies' => adjacencies, 'vertex' => vname }
+                         end
+                         result
+                       end
+    hash
   end
 
   def multi_vertex_component?(component)

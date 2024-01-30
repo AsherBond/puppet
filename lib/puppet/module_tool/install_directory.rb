@@ -1,5 +1,7 @@
-require 'puppet/module_tool'
-require 'puppet/module_tool/errors'
+# frozen_string_literal: true
+
+require_relative '../../puppet/module_tool'
+require_relative '../../puppet/module_tool/errors'
 
 module Puppet
   module ModuleTool
@@ -8,6 +10,7 @@ module Puppet
       include Puppet::ModuleTool::Errors
 
       attr_reader :target
+
       def initialize(target)
         @target = target
       end
@@ -19,13 +22,13 @@ module Puppet
 
         begin
           @target.mkpath
-          Puppet.notice "Created target directory #{@target}"
+          Puppet.notice _("Created target directory %{dir}") % { dir: @target }
         rescue SystemCallError => orig_error
           raise converted_to_friendly_error(module_name, version, orig_error)
         end
       end
 
-    private
+      private
 
       ERROR_MAPPINGS = {
         Errno::EACCES => PermissionDeniedCreateInstallDirectoryError,
@@ -36,9 +39,9 @@ module Puppet
         return orig_error if not ERROR_MAPPINGS.include?(orig_error.class)
 
         ERROR_MAPPINGS[orig_error.class].new(orig_error,
-          :requested_module  => module_name,
-          :requested_version => version,
-          :directory         => @target.to_s)
+                                             :requested_module => module_name,
+                                             :requested_version => version,
+                                             :directory => @target.to_s)
       end
     end
   end

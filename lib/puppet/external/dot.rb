@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # rdot.rb
 #
 #
@@ -7,15 +9,14 @@
 # It also supports undirected edges.
 
 module DOT
-
-  # These glogal vars are used to make nice graph source.
+  # These global vars are used to make nice graph source.
 
   $tab  = '    '
   $tab2 = $tab * 2
 
   # if we don't like 4 spaces, we can change it any time
 
-  def change_tab (t)
+  def change_tab(t)
     $tab  = t
     $tab2 = t * 2
   end
@@ -45,7 +46,7 @@ module DOT
     'shape',       # default: ellipse; node shape; see Section 2.1 and Appendix E
     'shapefile',   # external EPSF or SVG custom shape file
     'sides',       # default: 4; number of sides for shape=polygon
-    'skew' ,       # default: 0.0; skewing of node for shape=polygon
+    'skew',        # default: 0.0; skewing of node for shape=polygon
     'style',       # graphics options, e.g. bold, dotted, filled; cf. Section 2.3
     'toplabel',    # auxiliary label for nodes of shape M*
     'URL',         # URL associated with node (format-dependent)
@@ -115,10 +116,9 @@ module DOT
   # a root class for any element in dot notation
 
   class DOTSimpleElement
-
     attr_accessor :name
 
-    def initialize (params = {})
+    def initialize(params = {})
       @label = params['name'] ? params['name'] : ''
     end
 
@@ -130,61 +130,49 @@ module DOT
   # an element that has options ( node, edge, or graph )
 
   class DOTElement < DOTSimpleElement
-
     # attr_reader :parent
     attr_accessor :name, :options
 
-    def initialize (params = {}, option_list = [])
+    def initialize(params = {}, option_list = [])
       super(params)
       @name   = params['name']   ? params['name']   : nil
       @parent = params['parent'] ? params['parent'] : nil
       @options = {}
-      option_list.each{ |i|
+      option_list.each { |i|
         @options[i] = params[i] if params[i]
       }
       @options['label'] ||= @name if @name != 'node'
     end
 
     def each_option
-      @options.each{ |i| yield i }
+      @options.each { |i| yield i }
     end
 
     def each_option_pair
-      @options.each_pair{ |key, val| yield key, val }
+      @options.each_pair { |key, val| yield key, val }
     end
-
-    #def parent=( thing )
-    #    @parent.delete( self ) if defined?( @parent ) and @parent
-    #    @parent = thing
-    #end
-
   end
-
 
   # This is used when we build nodes that have shape=record
   # ports don't have options :)
 
   class DOTPort < DOTSimpleElement
-
     attr_accessor :label
 
-    def initialize (params = {})
+    def initialize(params = {})
       super(params)
       @name = params['label'] ? params['label'] : ''
     end
 
     def to_s
-      ( @name && @name != "" ? "<#{@name}>" : "" ) + "#{@label}"
+      (@name && @name != "" ? "<#{@name}>" : "") + "#{@label}"
     end
   end
 
   # node element
 
   class DOTNode < DOTElement
-
-    @ports
-
-    def initialize (params = {}, option_list = NODE_OPTS)
+    def initialize(params = {}, option_list = NODE_OPTS)
       super(params, option_list)
       @ports = params['ports'] ? params['ports'] : []
     end
@@ -193,11 +181,11 @@ module DOT
       @ports.each { |i| yield i }
     end
 
-    def << (thing)
+    def <<(thing)
       @ports << thing
     end
 
-    def push (thing)
+    def push(thing)
       @ports.push(thing)
     end
 
@@ -205,97 +193,93 @@ module DOT
       @ports.pop
     end
 
-    def to_s (t = '')
-
+    def to_s(t = '')
       # This code is totally incomprehensible; it needs to be replaced!
 
       label = @options['shape'] != 'record' && @ports.length == 0 ?
           @options['label'] ?
-            t + $tab + "label = \"#{@options['label']}\"\n" :
+            t + $tab + "label = #{stringify(@options['label'])}\n" :
             '' :
           t + $tab + 'label = "' + " \\\n" +
-          t + $tab2 + "#{@options['label']}| \\\n" +
-          @ports.collect{ |i|
-            t + $tab2 + i.to_s
-          }.join( "| \\\n" ) + " \\\n" +
-          t + $tab + '"' + "\n"
+            t + $tab2 + "#{stringify(@options['label'])}| \\\n" +
+            @ports.collect { |i|
+              t + $tab2 + i.to_s
+            }.join("| \\\n") + " \\\n" +
+            t + $tab + '"' + "\n"
 
-        t + "#{@name} [\n" +
-        @options.to_a.collect{ |i|
+      t + "#{@name} [\n" +
+        @options.to_a.filter_map { |i|
           i[1] && i[0] != 'label' ?
             t + $tab + "#{i[0]} = #{i[1]}" : nil
-        }.compact.join( ",\n" ) + ( label != '' ? ",\n" : "\n" ) +
+        }.join(",\n") + (label != '' ? ",\n" : "\n") +
         label +
         t + "]\n"
     end
 
+    private
+
+    def stringify(s)
+      %("#{s.gsub('"', '\\"')}")
+    end
   end
 
   # A subgraph element is the same to graph, but has another header in dot
   # notation.
 
   class DOTSubgraph < DOTElement
-
-    @nodes
-    @dot_string
-
-    def initialize (params = {}, option_list = GRAPH_OPTS)
+    def initialize(params = {}, option_list = GRAPH_OPTS)
       super(params, option_list)
       @nodes      = params['nodes'] ? params['nodes'] : []
       @dot_string = 'graph'
     end
 
     def each_node
-      @nodes.each{ |i| yield i }
+      @nodes.each { |i| yield i }
     end
 
-    def << (thing)
+    def <<(thing)
       @nodes << thing
     end
 
-    def push (thing)
-      @nodes.push( thing )
+    def push(thing)
+      @nodes.push(thing)
     end
 
     def pop
       @nodes.pop
     end
 
-    def to_s (t = '')
+    def to_s(t = '')
       hdr = t + "#{@dot_string} #{@name} {\n"
 
-      options = @options.to_a.collect{ |name, val|
+      options = @options.to_a.filter_map { |name, val|
         val && name != 'label' ?
           t + $tab + "#{name} = #{val}" :
           name ? t + $tab + "#{name} = \"#{val}\"" : nil
-      }.compact.join( "\n" ) + "\n"
+      }.join("\n") + "\n"
 
-      nodes = @nodes.collect{ |i|
-        i.to_s( t + $tab )
-      }.join( "\n" ) + "\n"
+      nodes = @nodes.collect { |i|
+        i.to_s(t + $tab)
+      }.join("\n") + "\n"
       hdr + options + nodes + t + "}\n"
     end
-
   end
 
   # This is a graph.
 
   class DOTDigraph < DOTSubgraph
-
-  def initialize (params = {}, option_list = GRAPH_OPTS)
-    super(params, option_list)
-    @dot_string = 'digraph'
-  end
-
+    def initialize(params = {}, option_list = GRAPH_OPTS)
+      super(params, option_list)
+      @dot_string = 'digraph'
+    end
   end
 
   # This is an edge.
 
   class DOTEdge < DOTElement
-
     attr_accessor :from, :to
 
-    def initialize (params = {}, option_list = EDGE_OPTS)
+    def initialize(params = {}, option_list = EDGE_OPTS)
       super(params, option_list)
       @from = params['from'] ? params['from'] : nil
       @to   = params['to'] ? params['to'] : nil
@@ -305,22 +289,19 @@ module DOT
       '--'
     end
 
-    def to_s (t = '')
+    def to_s(t = '')
       t + "#{@from} #{edge_link} #{to} [\n" +
-        @options.to_a.collect{ |i|
+        @options.to_a.filter_map { |i|
           i[1] && i[0] != 'label' ?
             t + $tab + "#{i[0]} = #{i[1]}" :
             i[1] ? t + $tab + "#{i[0]} = \"#{i[1]}\"" : nil
-        }.compact.join( "\n" ) + "\n#{t}]\n"
+        }.join("\n") + "\n#{t}]\n"
     end
-
   end
 
   class DOTDirectedEdge < DOTEdge
-
     def edge_link
       '->'
     end
-
   end
 end

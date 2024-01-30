@@ -16,14 +16,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
   include PuppetSpec::Scope
   before(:each) do
     Puppet[:strict_variables] = true
-
-    # These must be set since the 3x logic switches some behaviors on these even if the tests explicitly
-    # use the 4x parser and evaluator.
-    #
-    Puppet[:parser] = 'future'
-
-    # Puppetx cannot be loaded until the correct parser has been set (injector is turned off otherwise)
-    require 'puppetx'
+    Puppet[:data_binding_terminus] = 'none'
 
     # Tests needs a known configuration of node/scope/compiler since it parses and evaluates
     # snippets as the compiler will evaluate them, butwithout the overhead of compiling a complete
@@ -31,14 +24,20 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     #
     @parser  = Puppet::Pops::Parser::EvaluatingParser.new
     @node = Puppet::Node.new('node.example.com')
-    @node.environment = Puppet::Node::Environment.create(:testing, [])
+    @node.environment = environment
     @compiler = Puppet::Parser::Compiler.new(@node)
     @scope = Puppet::Parser::Scope.new(@compiler)
     @scope.source = Puppet::Resource::Type.new(:node, 'node.example.com')
     @scope.parent = @compiler.topscope
+    Puppet.push_context(:loaders => @compiler.loaders)
   end
 
-  let(:parser) {  @parser }
+  after(:each) do
+    Puppet.pop_context
+  end
+
+  let(:environment) { Puppet::Node::Environment.create(:testing, []) }
+  let(:parser) { @parser }
   let(:scope) { @scope }
   types = Puppet::Pops::Types::TypeFactory
 
@@ -57,13 +56,21 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "banana::split" => 'banana::split',
       "false"         => false,
       "true"          => true,
-      "Array"         => types.array_of_data(),
+      "Array"         => types.array_of_any,
       "/.*/"          => /.*/
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
-      end
+    end
+
+    it 'should error when it encounters an unknown resource' do
+      expect {parser.evaluate_string(scope, '$a = SantaClause', __FILE__)}.to raise_error(/Resource type not found: SantaClause/)
+    end
+
+    it 'should error when it encounters an unknown resource with a parameter' do
+      expect {parser.evaluate_string(scope, '$b = ToothFairy[emea]', __FILE__)}.to raise_error(/Resource type not found: ToothFairy/)
+    end
   end
 
   context "When the evaluator evaluates Lists and Hashes" do
@@ -78,6 +85,9 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "[1,2,3] != [1,2,3]"                              => false,
       "[1,2,3][2]"                                      => 3,
       "[1,2,3] + [4,5]"                                 => [1,2,3,4,5],
+      "[1,2,3, *[4,5]]"                                 => [1,2,3,4,5],
+      "[1,2,3, (*[4,5])]"                               => [1,2,3,4,5],
+      "[1,2,3, ((*[4,5]))]"                             => [1,2,3,4,5],
       "[1,2,3] + [[4,5]]"                               => [1,2,3,[4,5]],
       "[1,2,3] + 4"                                     => [1,2,3,4],
       "[1,2,3] << [4,5]"                                => [1,2,3,[4,5]],
@@ -91,19 +101,10 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "[1,2,3,3,2,4,2,3] - [2,3]"                       => [1,4],
       "[1,2,3,['a',1],['b',2]] - {'a' => 1, 'b'=>2}"    => [1,2,3],
       "[1,2,3,{'a'=>1,'b'=>2}] - [{'a' => 1, 'b'=>2}]"  => [1,2,3],
-    }.each do |source, result|
-        it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
-        end
-      end
-
-    {
       "[1,2,3] + {'a' => 1, 'b'=>2}"                    => [1,2,3,['a',1],['b',2]],
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          # This test must be done with match_array since the order of the hash
-          # is undefined and Ruby 1.8.7 and 1.9.3 produce different results.
-          expect(parser.evaluate_string(scope, source, __FILE__)).to match_array(result)
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -135,7 +136,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "{'a'=>1, 'b'=>2, 'c'=>3} - 'c'"           => {'a'=>1, 'b'=>2},
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -190,25 +191,73 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "2 >= 1"         => true,
       "1 == 1.0 "      => true,
       "1 < 1.1  "      => true,
-      "'1' < 1.1"      => true,
       "1.0 == 1 "      => true,
       "1.0 < 2  "      => true,
-      "1.0 < 'a'"      => true,
-      "'1.0' < 1.1"    => true,
       "'1.0' < 'a'"    => true,
-      "'1.0' < '' "    => true,
-      "'1.0' < ' '"    => true,
+      "'1.0' < '' "    => false,
+      "'1.0' < ' '"    => false,
       "'a' > '1.0'"    => true,
       "/.*/ == /.*/ "  => true,
       "/.*/ != /a.*/"  => true,
       "true  == true " => true,
       "false == false" => true,
       "true == false"  => false,
+
+      "Timestamp(1) < Timestamp(2)"  => true,
+      "Timespan(1) < Timespan(2)"    => true,
+      "Timestamp(1) > Timestamp(2)"  => false,
+      "Timespan(1) > Timespan(2)"    => false,
+      "Timestamp(1) == Timestamp(1)" => true,
+      "Timespan(1) == Timespan(1)"   => true,
+
+      "1 < Timestamp(2)"  => true,
+      "1 < Timespan(2)"   => true,
+      "1 > Timestamp(2)"  => false,
+      "1 > Timespan(2)"   => false,
+      "1 == Timestamp(1)" => true,
+      "1 == Timespan(1)"  => true,
+
+      "1.0 < Timestamp(2)"  => true,
+      "1.0 < Timespan(2)"   => true,
+      "1.0 > Timestamp(2)"  => false,
+      "1.0 > Timespan(2)"   => false,
+      "1.0 == Timestamp(1)" => true,
+      "1.0 == Timespan(1)"  => true,
+
+      "Timestamp(1) < 2"  => true,
+      "Timespan(1) < 2"   => true,
+      "Timestamp(1) > 2"  => false,
+      "Timespan(1) > 2"   => false,
+      "Timestamp(1) == 1" => true,
+      "Timespan(1) == 1"  => true,
+
+      "Timestamp(1) < 2.0"  => true,
+      "Timespan(1) < 2.0"   => true,
+      "Timestamp(1) > 2.0"  => false,
+      "Timespan(1) > 2.0"   => false,
+      "Timestamp(1) == 1.0" => true,
+      "Timespan(1) == 1.0"  => true,
+
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
+
+   {
+     "a > 1" => /String > Integer/,
+     "a >= 1" => /String >= Integer/,
+     "a < 1" => /String < Integer/,
+     "a <= 1" => /String <= Integer/,
+     "1 > a" => /Integer > String/,
+     "1 >= a" => /Integer >= String/,
+     "1 < a" => /Integer < String/,
+     "1 <= a" => /Integer <= String/,
+   }.each do | source, error|
+     it "should not allow comparison of String and Number '#{source}'" do
+       expect { parser.evaluate_string(scope, source, __FILE__)}.to raise_error(error)
+     end
+   end
 
    {
       "'a' =~ /.*/"                     => true,
@@ -223,10 +272,12 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "$x = Pattern['a.*'] a =~ $x"     => true,
       "1 =~ Integer"                    => true,
       "1 !~ Integer"                    => false,
+      "undef =~ NotUndef"               => false,
+      "undef !~ NotUndef"               => true,
       "[1,2,3] =~ Array[Integer[1,10]]" => true,
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -251,9 +302,9 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "xxx in bananas"                => false,
       "/ana/ in bananas"              => true,
       "/xxx/ in bananas"              => false,
-      "ANA in bananas"                => false, # ANA is a type, not a String
+      "FILE in profiler"              => false, # FILE is a type, not a String
+      "'FILE' in profiler"            => true,
       "String[1] in bananas"          => false, # Philosophically true though :-)
-      "'ANA' in bananas"              => true,
       "ana in 'BANANAS'"              => true,
       "/ana/ in 'BANANAS'"            => false,
       "/ANA/ in 'BANANAS'"            => true,
@@ -271,8 +322,8 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "/xxx/ in {'aaaxxxbbb'=>1}"     => true,
       "/yyy/ in {'aaaxxxbbb'=>1}"     => false,
       "15 in [1, 0xf]"                => true,
-      "15 in [1, '0xf']"              => true,
-      "'15' in [1, 0xf]"              => true,
+      "15 in [1, '0xf']"              => false,
+      "'15' in [1, 0xf]"              => false,
       "15 in [1, 115]"                => false,
       "1 in [11, '111']"              => false,
       "'1' in [11, '111']"            => false,
@@ -286,7 +337,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "Integer in {'a'=>1}"           => false,
     }.each do |source, result|
       it "should parse and evaluate the expression '#{source}' to #{result}" do
-        parser.evaluate_string(scope, source, __FILE__).should == result
+        expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
       end
     end
 
@@ -299,30 +350,30 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "if /b/ in [pineapple, bananas] {$0}" => 'b',
     }.each do |source, result|
       it "sets match variables for a regexp search using in such that '#{source}' produces '#{result}'" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
       end
     end
 
     {
-      'Any'  => ['Data', 'Scalar', 'Numeric', 'Integer', 'Float', 'Boolean', 'String', 'Pattern', 'Collection',
-                    'Array', 'Hash', 'CatalogEntry', 'Resource', 'Class', 'Undef', 'File', 'NotYetKnownResourceType'],
+      'Any'  => ['NotUndef', 'Data', 'Scalar', 'Numeric', 'Integer', 'Float', 'Boolean', 'String', 'Pattern', 'Collection',
+                    'Array', 'Hash', 'CatalogEntry', 'Resource', 'Class', 'Undef', 'File' ],
 
       # Note, Data > Collection is false (so not included)
-      'Data'    => ['Scalar', 'Numeric', 'Integer', 'Float', 'Boolean', 'String', 'Pattern', 'Array', 'Hash',],
+      'Data'    => ['ScalarData', 'Numeric', 'Integer', 'Float', 'Boolean', 'String', 'Pattern', 'Array[Data]', 'Hash[String,Data]',],
       'Scalar' => ['Numeric', 'Integer', 'Float', 'Boolean', 'String', 'Pattern'],
       'Numeric' => ['Integer', 'Float'],
-      'CatalogEntry' => ['Class', 'Resource', 'File', 'NotYetKnownResourceType'],
+      'CatalogEntry' => ['Class', 'Resource', 'File'],
       'Integer[1,10]' => ['Integer[2,3]'],
     }.each do |general, specials|
       specials.each do |special |
         it "should compute that #{general} > #{special}" do
-          parser.evaluate_string(scope, "#{general} > #{special}", __FILE__).should == true
+          expect(parser.evaluate_string(scope, "#{general} > #{special}", __FILE__)).to eq(true)
         end
         it "should compute that  #{special} < #{general}" do
-          parser.evaluate_string(scope, "#{special} < #{general}", __FILE__).should == true
+          expect(parser.evaluate_string(scope, "#{special} < #{general}", __FILE__)).to eq(true)
         end
         it "should compute that #{general} != #{special}" do
-          parser.evaluate_string(scope, "#{special} != #{general}", __FILE__).should == true
+          expect(parser.evaluate_string(scope, "#{special} != #{general}", __FILE__)).to eq(true)
         end
       end
     end
@@ -336,7 +387,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       'Integer[1,10] == Integer[1,10]' => true,
     }.each do |source, result|
         it "should parse and evaluate the integer range comparison expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -357,7 +408,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
          "8 << 1" => 16,
       }.each do |source, result|
           it "should parse and evaluate the expression '#{source}' to #{result}" do
-            parser.evaluate_string(scope, source, __FILE__).should == result
+            expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
           end
         end
 
@@ -371,7 +422,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
         "-6.0/3.0 "  => -2.0,
       }.each do |source, result|
           it "should parse and evaluate the expression '#{source}' to #{result}" do
-            parser.evaluate_string(scope, source, __FILE__).should == result
+            expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
           end
         end
 
@@ -388,6 +439,15 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     end
 
     context "on strings requiring boxing to Numeric" do
+      # turn strict mode off so behavior is not stubbed out
+      before :each do
+        Puppet[:strict] = :off
+      end
+      let(:logs) { [] }
+      let(:notices) { logs.select { |log| log.level == :notice }.map { |log| log.message } }
+      let(:warnings) { logs.select { |log| log.level == :warning }.map { |log| log.message } }
+      let(:debugs) { logs.select { |log| log.level == :debug }.map { |log| log.message } }
+
       {
         "'2' + '2'"       => 4,
         "'-2' + '2'"      => 0,
@@ -407,14 +467,47 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
         "'+02' + '04'"    => 6,
       }.each do |source, result|
           it "should parse and evaluate the expression '#{source}' to #{result}" do
-            parser.evaluate_string(scope, source, __FILE__).should == result
+            expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
           end
         end
 
       {
+        "'2' + 2"       => 2,
+        "'4' - 2"       => 4,
+        "'2' * 2"       => 2,
+        "'2' / 1"       => 2,
+        "'8' >> 1"      => 8,
+        "'4' << 1"      => 4,
+        "'10' % 3"      => 10,
+      }.each do |source, coerced_val|
+          it "should warn about numeric coercion in '#{source}' when strict = warning" do
+            Puppet[:strict] = :warning
+            expect(Puppet::Pops::Evaluator::Runtime3Support::EvaluationError).not_to receive(:new)
+            collect_notices(source)
+            expect(warnings).to include(/The string '#{coerced_val}' was automatically coerced to the numerical value #{coerced_val}/)
+          end
+
+          it "should not warn about numeric coercion in '#{source}' if strict = off" do
+            Puppet[:strict] = :off
+            expect(Puppet::Pops::Evaluator::Runtime3Support::EvaluationError).not_to receive(:new)
+            collect_notices(source)
+            expect(warnings).to_not include(/The string '#{coerced_val}' was automatically coerced to the numerical value #{coerced_val}/)
+          end
+
+        it "should error when finding numeric coercion in '#{source}' if strict = error" do
+          Puppet[:strict] = :error
+          expect {
+            parser.evaluate_string(scope, source, __FILE__)
+          }.to raise_error {|error|
+            expect(error.message).to match(/The string '#{coerced_val}' was automatically coerced to the numerical value #{coerced_val}/)
+            expect(error.backtrace.first).to match(/runtime3_support\.rb.+optionally_fail/)
+          }
+        end
+      end
+
+      {
         "'0888' + '010'"   => :error,
         "'0xWTF' + '010'"  => :error,
-        "'0x12.3' + '010'" => :error,
         "'0x12.3' + '010'" => :error,
         '"-\n 2" + "2"'    => :error,
         '"-\v 2" + "2"'    => :error,
@@ -435,18 +528,31 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "$a = 5; $a"                 => 5,
       "$a = 5; $b = 6; $a"         => 5,
       "$a = $b = 5; $a == $b"      => true,
+      "[$a] = 1 $a"                              => 1,
+      "[$a] = [1] $a"                            => 1,
+      "[$a, $b] = [1,2] $a+$b"                   => 3,
+      "[$a, [$b, $c]] = [1,[2, 3]] $a+$b+$c"     => 6,
+      "[$a] = {a => 1} $a"                       => 1,
+      "[$a, $b] = {a=>1,b=>2} $a+$b"             => 3,
+      "[$a, [$b, $c]] = {a=>1,[b,c] =>{b=>2, c=>3}} $a+$b+$c"     => 6,
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
-    {
-      "[a,b,c] = [1,2,3]"               => /attempt to assign to 'an Array Expression'/,
-      "[a,b,c] = {b=>2,c=>3,a=>1}"      => /attempt to assign to 'an Array Expression'/,
-    }.each do |source, result|
-        it "should parse and evaluate the expression '#{source}' to error with #{result}" do
-          expect { parser.evaluate_string(scope, source, __FILE__)}.to raise_error(Puppet::ParseError, result)
+    [
+      "[a,b,c] = [1,2,3]",
+      "[a,b,c] = {b=>2,c=>3,a=>1}",
+      "[$a, $b] = 1",
+      "[$a, $b] = [1,2,3]",
+      "[$a, [$b,$c]] = [1,[2]]",
+      "[$a, [$b,$c]] = [1,[2,3,4]]",
+      "[$a, $b] = {a=>1}",
+      "[$a, [$b, $c]] = {a=>1, b =>{b=>2, c=>3}}",
+    ].each do |source|
+        it "should parse and evaluate the expression '#{source}' to error" do
+          expect { parser.evaluate_string(scope, source, __FILE__)}.to raise_error(Puppet::ParseError)
         end
       end
   end
@@ -461,6 +567,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "unless false {5}"                => 5,
       "unless true {5}"                 => nil,
       "unless true {2} else {5}"        => 5,
+      "unless true {} else {5}"         => 5,
       "$a = if true {5} $a"                     => 5,
       "$a = if false {5} $a"                    => nil,
       "$a = if false {2} else {5} $a"           => 5,
@@ -471,7 +578,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "$a = unless true {2} else {5} $a"        => 5,
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -496,11 +603,36 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
          Type[Integer] : { yes } }"                          => 'yes',
       # supports unfold
       "case ringo {
-         *[paul, john, ringo, george] : { 'beatle' } }"       => 'beatle',
+         *[paul, john, ringo, george] : { 'beatle' } }"      => 'beatle',
+
+      "case ringo {
+         (*[paul, john, ringo, george]) : { 'beatle' } }"    => 'beatle',
+
+      "case undef {
+         undef : { 'yes' } }"                                => 'yes',
+
+      "case undef {
+         *undef : { 'no' }
+         default :{ 'yes' }}"                                => 'yes',
+
+      "case [green, 2, whatever] {
+         [/ee/, Integer[0,10], default] : { 'yes' }
+         default :{ 'no' }}"                                => 'yes',
+
+      "case [green, 2, whatever] {
+         default :{ 'no' }
+         [/ee/, Integer[0,10], default] : { 'yes' }}"        => 'yes',
+
+      "case {a=>1, b=>2, whatever=>3, extra => ignored} {
+         { a => Integer[0,5],
+           b => Integer[0,5],
+           whatever => default
+         }       : { 'yes' }
+         default : { 'no' }}"                               => 'yes',
 
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -514,9 +646,25 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "'banana' ? { /.*(ana).*/  => $1 }"                 => 'ana',
       "[2] ? { Array[String] => yes, Array => yes}"       => 'yes',
       "ringo ? *[paul, john, ringo, george] => 'beatle'"  => 'beatle',
+      "ringo ? (*[paul, john, ringo, george]) => 'beatle'"=> 'beatle',
+      "undef ? undef => 'yes'"                            => 'yes',
+      "undef ? {*undef => 'no', default => 'yes'}"        => 'yes',
+
+      "[green, 2, whatever] ? {
+         [/ee/, Integer[0,10], default
+         ]       => 'yes',
+         default => 'no'}"                                => 'yes',
+
+      "{a=>1, b=>2, whatever=>3, extra => ignored} ?
+         {{ a => Integer[0,5],
+           b => Integer[0,5],
+           whatever => default
+         }       => 'yes',
+         default => 'no' }"                               => 'yes',
+
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -532,7 +680,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "*'a'"                 => ['a']
     }.each do |source, result|
       it "should parse and evaluate the expression '#{source}' to #{result}" do
-        parser.evaluate_string(scope, source, __FILE__).should == result
+        expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
       end
     end
 
@@ -542,6 +690,11 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       expect(result).to include(['b', 20])
     end
 
+    it "should create an array from an Iterator" do
+      expect(parser.evaluate_string(scope, '[1,2,3].reverse_each', __FILE__).is_a?(Array)).to be(false)
+      result = parser.evaluate_string(scope, '*[1,2,3].reverse_each', __FILE__)
+      expect(result).to eql([3,2,1])
+    end
   end
 
   context "When evaluator performs [] operations" do
@@ -570,7 +723,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "[1,*[2,3],4][1]"  => 2,
     }.each do |source, result|
       it "should parse and evaluate the expression '#{source}' to #{result}" do
-        parser.evaluate_string(scope, source, __FILE__).should == result
+        expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
       end
     end
 
@@ -587,7 +740,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "$a = {} $a[free_lunch] == undef"       => true,
     }.each do |source, result|
       it "should parse and evaluate the expression '#{source}' to #{result}" do
-        parser.evaluate_string(scope, source, __FILE__).should == result
+        expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
       end
     end
 
@@ -622,33 +775,33 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "'abcd'[2,-3]"  => '',
    }.each do |source, result|
       it "should parse and evaluate the expression '#{source}' to #{result}" do
-        parser.evaluate_string(scope, source, __FILE__).should == result
+        expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
       end
     end
 
     # Type operations (full set tested by tests covering type calculator)
     {
       "Array[Integer]"                  => types.array_of(types.integer),
-      "Array[Integer,1]"                => types.constrain_size(types.array_of(types.integer),1, :default),
-      "Array[Integer,1,2]"              => types.constrain_size(types.array_of(types.integer),1, 2),
-      "Array[Integer,Integer[1,2]]"     => types.constrain_size(types.array_of(types.integer),1, 2),
-      "Array[Integer,Integer[1]]"       => types.constrain_size(types.array_of(types.integer),1, :default),
+      "Array[Integer,1]"                => types.array_of(types.integer, types.range(1, :default)),
+      "Array[Integer,1,2]"              => types.array_of(types.integer, types.range(1, 2)),
+      "Array[Integer,Integer[1,2]]"     => types.array_of(types.integer, types.range(1, 2)),
+      "Array[Integer,Integer[1]]"       => types.array_of(types.integer, types.range(1, :default)),
       "Hash[Integer,Integer]"           => types.hash_of(types.integer, types.integer),
-      "Hash[Integer,Integer,1]"         => types.constrain_size(types.hash_of(types.integer, types.integer),1, :default),
-      "Hash[Integer,Integer,1,2]"       => types.constrain_size(types.hash_of(types.integer, types.integer),1, 2),
-      "Hash[Integer,Integer,Integer[1,2]]" => types.constrain_size(types.hash_of(types.integer, types.integer),1, 2),
-      "Hash[Integer,Integer,Integer[1]]"   => types.constrain_size(types.hash_of(types.integer, types.integer),1, :default),
+      "Hash[Integer,Integer,1]"         => types.hash_of(types.integer, types.integer, types.range(1, :default)),
+      "Hash[Integer,Integer,1,2]"       => types.hash_of(types.integer, types.integer, types.range(1, 2)),
+      "Hash[Integer,Integer,Integer[1,2]]" => types.hash_of(types.integer, types.integer, types.range(1, 2)),
+      "Hash[Integer,Integer,Integer[1]]"   => types.hash_of(types.integer, types.integer, types.range(1, :default)),
       "Resource[File]"                  => types.resource('File'),
       "Resource['File']"                => types.resource(types.resource('File')),
       "File[foo]"                       => types.resource('file', 'foo'),
       "File[foo, bar]"                  => [types.resource('file', 'foo'), types.resource('file', 'bar')],
       "Pattern[a, /b/, Pattern[c], Regexp[d]]"  => types.pattern('a', 'b', 'c', 'd'),
-      "String[1,2]"                     => types.constrain_size(types.string,1, 2),
-      "String[Integer[1,2]]"            => types.constrain_size(types.string,1, 2),
-      "String[Integer[1]]"              => types.constrain_size(types.string,1, :default),
+      "String[1,2]"                     => types.string(types.range(1, 2)),
+      "String[Integer[1,2]]"            => types.string(types.range(1, 2)),
+      "String[Integer[1]]"              => types.string(types.range(1, :default)),
     }.each do |source, result|
       it "should parse and evaluate the expression '#{source}' to #{result}" do
-        parser.evaluate_string(scope, source, __FILE__).should == result
+        expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
       end
     end
 
@@ -671,21 +824,24 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
 
     # Errors when wrong number/type of keys are used
     {
-      "Array[0]"                    => 'Array-Type[] arguments must be types. Got Fixnum',
-      "Hash[0]"                     => 'Hash-Type[] arguments must be types. Got Fixnum',
-      "Hash[Integer, 0]"            => 'Hash-Type[] arguments must be types. Got Fixnum',
+      "Array[0]"                    => "Array-Type[] arguments must be types. Got Integer",
+      "Hash[0]"                     => "Hash-Type[] arguments must be types. Got Integer",
+      "Hash[Integer, 0]"            => "Hash-Type[] arguments must be types. Got Integer",
       "Array[Integer,1,2,3]"        => 'Array-Type[] accepts 1 to 3 arguments. Got 4',
       "Array[Integer,String]"       => "A Type's size constraint arguments must be a single Integer type, or 1-2 integers (or default). Got a String-Type",
-      "Hash[Integer,String, 1,2,3]" => 'Hash-Type[] accepts 1 to 4 arguments. Got 5',
-      "'abc'[x]"                    => "The value 'x' cannot be converted to Numeric",
-      "'abc'[1.0]"                  => "A String[] cannot use Float where Integer is expected",
+      "Hash[Integer,String, 1,2,3]" => 'Hash-Type[] accepts 2 to 4 arguments. Got 5',
+      "'abc'[x]"                    => "A substring operation does not accept a String as a character index. Expected an Integer",
+      "'abc'[1.0]"                  => "A substring operation does not accept a Float as a character index. Expected an Integer",
+      "'abc'[1, x]"                 => "A substring operation does not accept a String as a character index. Expected an Integer",
       "'abc'[1,2,3]"                => "String supports [] with one or two arguments. Got 3",
-      "Resource[0]"                 => 'First argument to Resource[] must be a resource type or a String. Got Fixnum',
-      "Resource[a, 0]"              => 'Error creating type specialization of a Resource-Type, Cannot use Fixnum where String is expected',
-      "File[0]"                     => 'Error creating type specialization of a File-Type, Cannot use Fixnum where String is expected',
+      "NotUndef[0]"                 => "NotUndef-Type[] argument must be a Type or a String. Got Integer",
+      "NotUndef[a,b]"               => 'NotUndef-Type[] accepts 0 to 1 arguments. Got 2',
+      "Resource[0]"                 => 'First argument to Resource[] must be a resource type or a String. Got Integer',
+      "Resource[a, 0]"              => 'Error creating type specialization of a Resource-Type, Cannot use Integer where a resource title String is expected',
+      "File[0]"                     => 'Error creating type specialization of a File-Type, Cannot use Integer where a resource title String is expected',
       "String[a]"                   => "A Type's size constraint arguments must be a single Integer type, or 1-2 integers (or default). Got a String",
-      "Pattern[0]"                  => 'Error creating type specialization of a Pattern-Type, Cannot use Fixnum where String or Regexp or Pattern-Type or Regexp-Type is expected',
-      "Regexp[0]"                   => 'Error creating type specialization of a Regexp-Type, Cannot use Fixnum where String or Regexp is expected',
+      "Pattern[0]"                  => 'Error creating type specialization of a Pattern-Type, Cannot use Integer where String or Regexp or Pattern-Type or Regexp-Type is expected',
+      "Regexp[0]"                   => 'Error creating type specialization of a Regexp-Type, Cannot use Integer where String or Regexp is expected',
       "Regexp[a,b]"                 => 'A Regexp-Type[] accepts 1 argument. Got 2',
       "true[0]"                     => "Operator '[]' is not applicable to a Boolean",
       "1[0]"                        => "Operator '[]' is not applicable to an Integer",
@@ -699,6 +855,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "[1,2][1, -1.0]"              => "An Array[] cannot use Float where Integer is expected",
     }.each do |source, result|
       it "should parse and evaluate the expression '#{source}' to #{result}" do
+        Puppet[:strict] = :off
         expect { parser.evaluate_string(scope, source, __FILE__)}.to raise_error(Regexp.new(Regexp.quote(result)))
       end
     end
@@ -706,21 +863,23 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     context "on catalog types" do
       it "[n] gets resource parameter [n]" do
         source = "notify { 'hello': message=>'yo'} Notify[hello][message]"
-        parser.evaluate_string(scope, source, __FILE__).should == 'yo'
+        expect(parser.evaluate_string(scope, source, __FILE__)).to eq('yo')
       end
 
       it "[n] gets class parameter [n]" do
         source = "class wonka($produces='chocolate'){ }
            include wonka
-           Class[wonka][produces]"
+           Class[wonka]['produces']"
 
         # This is more complicated since it needs to run like 3.x and do an import_ast
         adapted_parser = Puppet::Parser::E4ParserAdapter.new
         adapted_parser.file = __FILE__
         ast = adapted_parser.parse(source)
-        Puppet.override({:global_scope => scope}, "test") do
-          scope.known_resource_types.import_ast(ast, '')
-          ast.code.safeevaluate(scope).should == 'chocolate'
+        Puppet.override({:global_scope => scope,
+                         :environments => Puppet::Environments::Static.new(@node.environment)
+        }, "gets class parameter test") do
+          scope.environment.known_resource_types.import_ast(ast, '')
+          expect(ast.code.safeevaluate(scope)).to eq('chocolate')
         end
       end
 
@@ -748,7 +907,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
          Notify[foo][tag]"                                                      => "by_override",
       }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -801,7 +960,8 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
         # NOTE: these meta-esque parameters are not recognized as such
         "notify { id: message=>explicit} Notify[id][title]"   => /does not have a parameter called 'title'/,
         "notify { id: message=>explicit} Notify[id]['type']"   => /does not have a parameter called 'type'/,
-        "notify { id: message=>explicit } Notify[id]{message=>override}" => /'message' is already set on Notify\[id\]/
+        "notify { id: message=>explicit } Notify[id]{message=>override}" => /'message' is already set on Notify\[id\]/,
+        "notify { id: message => 'once', message => 'twice' }" => /'message' has already been set/
       }.each do |source, result|
         it "should parse '#{source}' and raise error matching #{result}" do
           expect { parser.evaluate_string(scope, source, __FILE__)}.to raise_error(result)
@@ -849,7 +1009,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "false or true  or '0xwtf' + 1"  => true,
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -864,8 +1024,8 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
 
   context "When evaluator performs operations on literal undef" do
     it "computes non existing hash lookup as undef" do
-      parser.evaluate_string(scope, "{a => 1}[b] == undef", __FILE__).should == true
-      parser.evaluate_string(scope, "undef == {a => 1}[b]", __FILE__).should == true
+      expect(parser.evaluate_string(scope, "{a => 1}[b] == undef", __FILE__)).to eq(true)
+      expect(parser.evaluate_string(scope, "undef == {a => 1}[b]", __FILE__)).to eq(true)
     end
   end
 
@@ -879,13 +1039,15 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       'sprintf( "x%iy", $a )'                 => "x10y",
       # unfolds
       'sprintf( *["x%iy", $a] )'              => "x10y",
+      '( *["x%iy", $a] ).sprintf'             => "x10y",
+      '((*["x%iy", $a])).sprintf'             => "x10y",
       '"x%iy".sprintf( $a )'                  => "x10y",
       '$b.reduce |$memo,$x| { $memo + $x }'   => 6,
       'reduce($b) |$memo,$x| { $memo + $x }'  => 6,
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
           populate
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -898,18 +1060,18 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       end
 
     it "provides location information on error in unparenthesized call logic" do
-    expect{parser.evaluate_string(scope, "include non_existing_class", __FILE__)}.to raise_error(Puppet::ParseError, /line 1\:1/)
+    expect{parser.evaluate_string(scope, "include non_existing_class", __FILE__)}.to raise_error(Puppet::ParseError, /line: 1, column: 1/)
     end
 
     it 'defaults can be given in a lambda and used only when arg is missing' do
       env_loader = @compiler.loaders.public_environment_loader
       fc = Puppet::Functions.create_function(:test) do
         dispatch :test do
-          param 'Integer', 'count'
+          param 'Integer', :count
           required_block_param
         end
-        def test(count, block)
-          block.call({}, *[].fill(10, 0, count))
+        def test(count)
+          yield(*[].fill(10, 0, count))
         end
       end
       the_func = fc.new({}, env_loader)
@@ -922,11 +1084,11 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       env_loader = @compiler.loaders.public_environment_loader
       fc = Puppet::Functions.create_function(:test) do
         dispatch :test do
-          param 'Any', 'lambda_arg'
+          param 'Any', :lambda_arg
           required_block_param
         end
-        def test(lambda_arg, block)
-          block.call({}, lambda_arg)
+        def test(lambda_arg)
+          yield(lambda_arg)
         end
       end
       the_func = fc.new({}, env_loader)
@@ -939,7 +1101,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       env_loader = @compiler.loaders.public_environment_loader
       fc = Puppet::Functions.create_function(:assert_no_undef) do
         dispatch :assert_no_undef do
-          param 'Any', 'x'
+          param 'Any', :x
         end
 
         def assert_no_undef(x)
@@ -962,6 +1124,37 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       expect{parser.evaluate_string(scope, "assert_no_undef([undef])")}.to_not raise_error()
       expect{parser.evaluate_string(scope, "assert_no_undef({undef => 1})")}.to_not raise_error()
       expect{parser.evaluate_string(scope, "assert_no_undef({1 => undef})")}.to_not raise_error()
+    end
+
+    it 'a lambda return value is checked using the return type' do
+      expect(parser.evaluate_string(scope, "[1,2].map |Integer $x| >> Integer { $x }")).to eql([1,2])
+      expect { parser.evaluate_string(scope, "[1,2].map |Integer $x| >> String { $x }") }.to raise_error(
+        /value returned from lambda has wrong type, expects a String value, got Integer/)
+    end
+
+    context 'using the 3x function api' do
+      it 'can call a 3x function' do
+        Puppet::Parser::Functions.newfunction("bazinga", :type => :rvalue) { |args| args[0] }
+        expect(parser.evaluate_string(scope, "bazinga(42)", __FILE__)).to eq(42)
+      end
+
+      it 'maps :undef to empty string' do
+        Puppet::Parser::Functions.newfunction("bazinga", :type => :rvalue) { |args| args[0] }
+        expect(parser.evaluate_string(scope, "$a = {} bazinga($a[nope])", __FILE__)).to eq('')
+        expect(parser.evaluate_string(scope, "bazinga(undef)", __FILE__)).to eq('')
+      end
+
+      it 'does not map :undef to empty string in arrays' do
+        Puppet::Parser::Functions.newfunction("bazinga", :type => :rvalue) { |args| args[0][0] }
+        expect(parser.evaluate_string(scope, "$a = {} $b = [$a[nope]] bazinga($b)", __FILE__)).to eq(nil)
+        expect(parser.evaluate_string(scope, "bazinga([undef])", __FILE__)).to eq(nil)
+      end
+
+      it 'does not map :undef to empty string in hashes' do
+        Puppet::Parser::Functions.newfunction("bazinga", :type => :rvalue) { |args| args[0]['a'] }
+        expect(parser.evaluate_string(scope, "$a = {} $b = {a => $a[nope]} bazinga($b)", __FILE__)).to eq(nil)
+        expect(parser.evaluate_string(scope, "bazinga({a => undef})", __FILE__)).to eq(nil)
+      end
     end
   end
 
@@ -988,7 +1181,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
           populate
-          parser.evaluate_string(scope, source, __FILE__).should == result
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
         end
       end
 
@@ -996,11 +1189,10 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       source = '"value is ${{a=>1,b=>2}} yo"'
       # This test requires testing against two options because a hash to string
       # produces a result that is unordered
-      hashstr = {'a' => 1, 'b' => 2}.to_s
       alt_results = ["value is {a => 1, b => 2} yo", "value is {b => 2, a => 1} yo" ]
       populate
       parse_result = parser.evaluate_string(scope, source, __FILE__)
-      alt_results.include?(parse_result).should == true
+      expect(alt_results.include?(parse_result)).to eq(true)
     end
 
     it 'should accept a variable with leading underscore when used directly' do
@@ -1011,6 +1203,26 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     it 'should accept a variable with leading underscore when used as an expression' do
       source = '$_x = 10; "${_x}"'
       expect(parser.evaluate_string(scope, source, __FILE__)).to eql('10')
+    end
+
+    it 'should accept a numeric variable expressed as $n' do
+      source = '$x = "abc123def" =~ /(abc)(123)(def)/; "${$2}"'
+      expect(parser.evaluate_string(scope, source, __FILE__)).to eql('123')
+    end
+
+    it 'should accept a numeric variable expressed as just an integer' do
+      source = '$x = "abc123def" =~ /(abc)(123)(def)/; "${2}"'
+      expect(parser.evaluate_string(scope, source, __FILE__)).to eql('123')
+    end
+
+    it 'should accept a numeric variable expressed as $n in an access operation' do
+      source = '$x = "abc123def" =~ /(abc)(123)(def)/; "${$0[4,3]}"'
+      expect(parser.evaluate_string(scope, source, __FILE__)).to eql('23d')
+    end
+
+    it 'should accept a numeric variable expressed as just an integer in an access operation' do
+      source = '$x = "abc123def" =~ /(abc)(123)(def)/; "${0[4,3]}"'
+      expect(parser.evaluate_string(scope, source, __FILE__)).to eql('23d')
     end
 
     {
@@ -1034,14 +1246,14 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     end
 
     it "a lex error should be raised for '$foo::::bar'" do
-      expect { parser.evaluate_string(scope, "$foo::::bar") }.to raise_error(Puppet::LexError, /Illegal fully qualified name at line 1:7/)
+      expect { parser.evaluate_string(scope, "$foo::::bar") }.to raise_error(Puppet::ParseErrorWithIssue, /Illegal fully qualified name \(line: 1, column: 7\)/)
     end
 
     { '$a = $0'   => nil,
       '$a = $1'   => nil,
     }.each do |source, value|
       it "it is ok to reference numeric unassigned variables '#{source}'" do
-        parser.evaluate_string(scope, source, __FILE__).should == value
+        expect(parser.evaluate_string(scope, source, __FILE__)).to eq(value)
       end
     end
 
@@ -1060,7 +1272,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
         '$__a = 1'   => 1,
       }.each do |source, value|
         it "as in this example '#{source}'" do
-          parser.evaluate_string(scope, source, __FILE__).should == value
+          expect(parser.evaluate_string(scope, source, __FILE__)).to eq(value)
         end
       end
     end
@@ -1070,48 +1282,65 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     it 'should form a relation with File[a] -> File[b]' do
       source = "File[a] -> File[b]"
       parser.evaluate_string(scope, source, __FILE__)
-      scope.compiler.should have_relationship(['File', 'a', '->', 'File', 'b'])
+      expect(scope.compiler).to have_relationship(['File', 'a', '->', 'File', 'b'])
     end
 
     it 'should form a relation with resource -> resource' do
       source = "notify{a:} -> notify{b:}"
       parser.evaluate_string(scope, source, __FILE__)
-      scope.compiler.should have_relationship(['Notify', 'a', '->', 'Notify', 'b'])
+      expect(scope.compiler).to have_relationship(['Notify', 'a', '->', 'Notify', 'b'])
     end
 
     it 'should form a relation with [File[a], File[b]] -> [File[x], File[y]]' do
       source = "[File[a], File[b]] -> [File[x], File[y]]"
       parser.evaluate_string(scope, source, __FILE__)
-      scope.compiler.should have_relationship(['File', 'a', '->', 'File', 'x'])
-      scope.compiler.should have_relationship(['File', 'b', '->', 'File', 'x'])
-      scope.compiler.should have_relationship(['File', 'a', '->', 'File', 'y'])
-      scope.compiler.should have_relationship(['File', 'b', '->', 'File', 'y'])
+      expect(scope.compiler).to have_relationship(['File', 'a', '->', 'File', 'x'])
+      expect(scope.compiler).to have_relationship(['File', 'b', '->', 'File', 'x'])
+      expect(scope.compiler).to have_relationship(['File', 'a', '->', 'File', 'y'])
+      expect(scope.compiler).to have_relationship(['File', 'b', '->', 'File', 'y'])
+    end
+
+    it 'should form a relation with 3.x resource -> resource' do
+      # Create a 3.x resource since this is the value given as arguments to defined type
+      scope['a_3x_resource']= Puppet::Parser::Resource.new('notify', 'a', {:scope => scope, :file => __FILE__, :line => 1})
+      source = "$a_3x_resource -> notify{b:}"
+      parser.evaluate_string(scope, source, __FILE__)
+      expect(scope.compiler).to have_relationship(['Notify', 'a', '->', 'Notify', 'b'])
     end
 
     it 'should tolerate (eliminate) duplicates in operands' do
       source = "[File[a], File[a]] -> File[x]"
       parser.evaluate_string(scope, source, __FILE__)
-      scope.compiler.should have_relationship(['File', 'a', '->', 'File', 'x'])
-      scope.compiler.relationships.size.should == 1
+      expect(scope.compiler).to have_relationship(['File', 'a', '->', 'File', 'x'])
+      expect(scope.compiler.relationships.size).to eq(1)
     end
 
     it 'should form a relation with <-' do
       source = "File[a] <- File[b]"
       parser.evaluate_string(scope, source, __FILE__)
-      scope.compiler.should have_relationship(['File', 'b', '->', 'File', 'a'])
+      expect(scope.compiler).to have_relationship(['File', 'b', '->', 'File', 'a'])
     end
 
     it 'should form a relation with <-' do
       source = "File[a] <~ File[b]"
       parser.evaluate_string(scope, source, __FILE__)
-      scope.compiler.should have_relationship(['File', 'b', '~>', 'File', 'a'])
+      expect(scope.compiler).to have_relationship(['File', 'b', '~>', 'File', 'a'])
+    end
+
+    it 'should close the gap created by an intermediate empty set' do
+      source = "[File[a], File[aa]] -> [] ~> [File[b], File[bb]]"
+      parser.evaluate_string(scope, source, __FILE__)
+      expect(scope.compiler).to have_relationship(['File', 'a',  '~>', 'File', 'b'])
+      expect(scope.compiler).to have_relationship(['File', 'aa', '~>', 'File', 'b'])
+      expect(scope.compiler).to have_relationship(['File', 'a',  '~>', 'File', 'bb'])
+      expect(scope.compiler).to have_relationship(['File', 'aa', '~>', 'File', 'bb'])
     end
   end
 
   context "When evaluating heredoc" do
     it "evaluates plain heredoc" do
       src = "@(END)\nThis is\nheredoc text\nEND\n"
-      parser.evaluate_string(scope, src).should == "This is\nheredoc text\n"
+      expect(parser.evaluate_string(scope, src)).to eq("This is\nheredoc text\n")
     end
 
     it "parses heredoc with margin" do
@@ -1122,7 +1351,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "   | END",
       ""
       ].join("\n")
-      parser.evaluate_string(scope, src).should == "This is\nheredoc text\n"
+      expect(parser.evaluate_string(scope, src)).to eq("This is\nheredoc text\n")
     end
 
     it "parses heredoc with margin and right newline trim" do
@@ -1133,7 +1362,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "   |- END",
       ""
       ].join("\n")
-      parser.evaluate_string(scope, src).should == "This is\nheredoc text"
+      expect(parser.evaluate_string(scope, src)).to eq("This is\nheredoc text")
     end
 
     it "parses escape specification" do
@@ -1142,19 +1371,46 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       Tex\\tt\\n
       |- END
       CODE
-      parser.evaluate_string(scope, src).should == "Tex\tt\\n"
+      expect(parser.evaluate_string(scope, src)).to eq("Tex\tt\\n")
     end
 
-    it "parses syntax checked specification" do
+    it "parses json syntax checked specification" do
       src = <<-CODE
       @(END:json)
       ["foo", "bar"]
       |- END
       CODE
-      parser.evaluate_string(scope, src).should == '["foo", "bar"]'
+      expect(parser.evaluate_string(scope, src)).to eq('["foo", "bar"]')
     end
 
-    it "parses syntax checked specification with error and reports it" do
+    it "parses base64 syntax checked specification" do
+      src = <<-CODE
+      @(END:base64)
+        dGhlIHF1aWNrIHJlZCBmb3g=
+        |- END
+      CODE
+      expect(parser.evaluate_string(scope, src)).to eq('dGhlIHF1aWNrIHJlZCBmb3g=')
+    end
+
+    it "parses pp syntax checked specification" do
+      src = <<-CODE
+      @(END:pp)
+        $x = 42
+        |- END
+      CODE
+      expect(parser.evaluate_string(scope, src)).to eq('$x = 42')
+    end
+
+    it "parses epp syntax checked specification" do
+      src = <<-CODE
+      @(END:epp)
+        <% $x = 42 %><%= $x %>
+        |- END
+      CODE
+      expect(parser.evaluate_string(scope, src)).to eq('<% $x = 42 %><%= $x %>')
+    end
+
+    it "parses json syntax checked specification with error and reports it" do
       src = <<-CODE
       @(END:json)
       ['foo', "bar"]
@@ -1163,14 +1419,51 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       expect { parser.evaluate_string(scope, src)}.to raise_error(/Cannot parse invalid JSON string/)
     end
 
+    it "parses base syntax checked specification with error and reports it" do
+      src = <<-CODE
+      @(END:base64)
+        dGhlIHF1aWNrIHJlZCBmb3g
+        |- END
+      CODE
+      expect { parser.evaluate_string(scope, src)}.to raise_error(/Cannot parse invalid Base64 string/)
+    end
+
+    it "parses pp syntax checked specification with error and reports it" do
+      src = <<-CODE
+      @(END:pp)
+        $x ==== 42
+        |- END
+      CODE
+      expect{parser.evaluate_string(scope, src)}.to raise_error(/Invalid produced text having syntax: 'pp'/)
+    end
+
+    it "parses epp syntax checked specification with error and reports it" do
+      src = <<-CODE
+      @(END:epp)
+        <% $x ==== 42 %>
+        |- END
+      CODE
+      expect{parser.evaluate_string(scope, src)}.to raise_error(/Invalid produced text having syntax: 'epp'/)
+    end
+
     it "parses interpolated heredoc expression" do
+      src = <<-CODE
+      $pname = 'Fjodor'
+      @("END")
+      Hello $pname
+      |- END
+      CODE
+      expect(parser.evaluate_string(scope, src)).to eq("Hello Fjodor")
+    end
+
+    it "parses interpolated heredoc expression with escapes" do
       src = <<-CODE
       $name = 'Fjodor'
       @("END")
-      Hello $name
+      Hello\\ \\$name
       |- END
       CODE
-      parser.evaluate_string(scope, src).should == "Hello Fjodor"
+      expect(parser.evaluate_string(scope, src)).to eq("Hello\\ \\Fjodor")
     end
 
   end
@@ -1179,7 +1472,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       source = "\nimport foo"
       # Error references position 5 at the opening '{'
       # Set file to nil to make it easier to match with line number (no file name in output)
-      expect { parser.evaluate_string(scope, source) }.to raise_error(/'import' has been discontinued.*line 2:1/)
+      expect { parser.evaluate_string(scope, source) }.to raise_error(/'import' has been discontinued.* \(line: 2, column: 1\)/)
     end
   end
 
@@ -1189,26 +1482,26 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       # Error references position 5 at the opening '{'
       # Set file to nil to make it easier to match with line number (no file name in output)
       expect { parser.evaluate_string(scope, source) }.to raise_error(
-        /Illegal Resource Type expression, expected result to be a type name, or untitled Resource.*line 1:2/)
+        /Illegal Resource Type expression, expected result to be a type name, or untitled Resource.* \(line: 1, column: 2\)/)
     end
 
     it 'for non r-value producing <| |>' do
-      expect { parser.parse_string("$a = File <| |>", nil) }.to raise_error(/A Virtual Query does not produce a value at line 1:6/)
+      expect { parser.parse_string("$a = File <| |>", nil) }.to raise_error(/A Virtual Query does not produce a value \(line: 1, column: 6\)/)
     end
 
     it 'for non r-value producing <<| |>>' do
-      expect { parser.parse_string("$a = File <<| |>>", nil) }.to raise_error(/An Exported Query does not produce a value at line 1:6/)
+      expect { parser.parse_string("$a = File <<| |>>", nil) }.to raise_error(/An Exported Query does not produce a value \(line: 1, column: 6\)/)
     end
 
     it 'for non r-value producing define' do
-      Puppet.expects(:err).with("Invalid use of expression. A 'define' expression does not produce a value at line 1:6")
-      Puppet.expects(:err).with("Classes, definitions, and nodes may only appear at toplevel or inside other classes at line 1:6")
+      expect(Puppet::Util::Log).to receive(:create).with(hash_including(:level => :err, :message => "Invalid use of expression. A 'define' expression does not produce a value", :line => 1, :pos => 6))
+      expect(Puppet::Util::Log).to receive(:create).with(hash_including(:level => :err, :message => 'Classes, definitions, and nodes may only appear at toplevel or inside other classes', :line => 1, :pos => 6))
       expect { parser.parse_string("$a = define foo { }", nil) }.to raise_error(/2 errors/)
     end
 
     it 'for non r-value producing class' do
-      Puppet.expects(:err).with("Invalid use of expression. A Host Class Definition does not produce a value at line 1:6")
-      Puppet.expects(:err).with("Classes, definitions, and nodes may only appear at toplevel or inside other classes at line 1:6")
+      expect(Puppet::Util::Log).to receive(:create).with(hash_including(:level => :err, :message => 'Invalid use of expression. A Host Class Definition does not produce a value', :line => 1, :pos => 6))
+      expect(Puppet::Util::Log).to receive(:create).with(hash_including(:level => :err, :message => 'Classes, definitions, and nodes may only appear at toplevel or inside other classes', :line => 1, :pos => 6))
       expect { parser.parse_string("$a = class foo { }", nil) }.to raise_error(/2 errors/)
     end
 
@@ -1218,29 +1511,29 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       yyy
       SOURCE
       # first char after opening " reported as being in error.
-      expect { parser.parse_string(source) }.to raise_error(/Unclosed quote after '"' followed by 'xx\\nyy\.\.\.' at line 1:7/)
+      expect { parser.parse_string(source) }.to raise_error(/Unclosed quote after '"' followed by 'xx\\nyy\.\.\.' \(line: 1, column: 7\)/)
     end
 
     it 'for multiple errors with a summary exception' do
-      Puppet.expects(:err).with("Invalid use of expression. A Node Definition does not produce a value at line 1:6")
-      Puppet.expects(:err).with("Classes, definitions, and nodes may only appear at toplevel or inside other classes at line 1:6")
+      expect(Puppet::Util::Log).to receive(:create).with(hash_including(:level => :err, :message => 'Invalid use of expression. A Node Definition does not produce a value', :line => 1, :pos => 6))
+      expect(Puppet::Util::Log).to receive(:create).with(hash_including(:level => :err, :message => 'Classes, definitions, and nodes may only appear at toplevel or inside other classes', :line => 1, :pos => 6))
       expect { parser.parse_string("$a = node x { }",nil) }.to raise_error(/2 errors/)
     end
 
     it 'for a bad hostname' do
       expect {
         parser.parse_string("node 'macbook+owned+by+name' { }", nil)
-      }.to raise_error(/The hostname 'macbook\+owned\+by\+name' contains illegal characters.*at line 1:6/)
+      }.to raise_error(/The hostname 'macbook\+owned\+by\+name' contains illegal characters.* \(line: 1, column: 6\)/)
     end
 
     it 'for a hostname with interpolation' do
       source = <<-SOURCE.gsub(/^ {6}/,'')
-      $name = 'fred'
-      node "macbook-owned-by$name" { }
+      $pname = 'fred'
+      node "macbook-owned-by$pname" { }
       SOURCE
       expect {
         parser.parse_string(source, nil)
-      }.to raise_error(/An interpolated expression is not allowed in a hostname of a node at line 2:23/)
+      }.to raise_error(/An interpolated expression is not allowed in a hostname of a node \(line: 2, column: 23\)/)
     end
 
   end
@@ -1278,9 +1571,50 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     end
   end
 
-  matcher :have_relationship do |expected|
-    calc = Puppet::Pops::Types::TypeCalculator.new
+  context 'with --tasks' do
+    before(:each) do
+      Puppet[:tasks] = true
+    end
 
+    context 'when evaluating apply' do
+      let(:applicator) { double('apply_executor') }
+
+      it 'invokes an apply_executor' do
+        expect(applicator).to receive(:apply).with(
+          ['arg1', 'arg2'],
+          instance_of(Puppet::Pops::Model::BlockExpression),
+          scope).and_return(:result)
+        src = "apply('arg1', 'arg2') { }"
+        Puppet.override(apply_executor: applicator) do
+          expect(parser.evaluate_string(scope, src)).to eq(:result)
+        end
+      end
+
+      it 'passes the declared ast' do
+        expect(applicator).to receive(:apply).with(
+          [['arg1']],
+          instance_of(Puppet::Pops::Model::ResourceExpression),
+          scope).and_return(:result)
+        src = "apply(['arg1']) { notify { 'hello': } }"
+        Puppet.override(apply_executor: applicator) do
+          expect(parser.evaluate_string(scope, src)).to eq(:result)
+        end
+      end
+
+      it 'returns a BlockExpression with an empty apply block' do
+        expect(applicator).to receive(:apply).with(
+          [['arg1']],
+          instance_of(Puppet::Pops::Model::BlockExpression),
+          scope).and_return(:result)
+        src = "apply(['arg1']) { }"
+        Puppet.override(apply_executor: applicator) do
+          expect(parser.evaluate_string(scope, src)).to eq(:result)
+        end
+      end
+    end
+  end
+
+  matcher :have_relationship do |expected|
     match do |compiler|
       op_name = {'->' => :relationship, '~>' => :subscription}
       compiler.relationships.any? do | relation |
@@ -1292,9 +1626,14 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       end
     end
 
-    failure_message_for_should do |actual|
+    failure_message do |actual|
       "Relationship #{expected[0]}[#{expected[1]}] #{expected[2]} #{expected[3]}[#{expected[4]}] but was unknown to compiler"
     end
   end
 
+  def collect_notices(code)
+    Puppet::Util::Log.with_destination(Puppet::Test::LogCollector.new(logs)) do
+      parser.evaluate_string(scope, code, __FILE__)
+    end
+  end
 end

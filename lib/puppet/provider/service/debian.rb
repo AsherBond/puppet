@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Manage debian services.  Start/stop is the same as InitSvc, but enable/disable
 # is special.
 Puppet::Type.type(:service).provide :debian, :parent => :init do
@@ -12,11 +14,16 @@ Puppet::Type.type(:service).provide :debian, :parent => :init do
 
   commands :update_rc => "/usr/sbin/update-rc.d"
   # note this isn't being used as a command until
-  # http://projects.reductivelabs.com/issues/2538
+  # https://projects.puppetlabs.com/issues/2538
   # is resolved.
   commands :invoke_rc => "/usr/sbin/invoke-rc.d"
+  commands :service => "/usr/sbin/service"
 
-  defaultfor :operatingsystem => :debian
+  confine :false => Puppet::FileSystem.exist?('/proc/1/comm') && Puppet::FileSystem.read('/proc/1/comm').include?('systemd')
+
+  defaultfor 'os.name' => :cumuluslinux, 'os.release.major' => ['1', '2']
+  defaultfor 'os.name' => :debian, 'os.release.major' => ['5', '6', '7']
+  defaultfor 'os.name' => :devuan
 
   # Remove the symlinks
   def disable
@@ -29,19 +36,18 @@ Puppet::Type.type(:service).provide :debian, :parent => :init do
   end
 
   def enabled?
-    # TODO: Replace system call when Puppet::Util::Execution.execute gives us a way
-    # to determine exit status.  http://projects.reductivelabs.com/issues/2538
-    system("/usr/sbin/invoke-rc.d", "--quiet", "--query", @resource[:name], "start")
+    status = execute(["/usr/sbin/invoke-rc.d", "--quiet", "--query", @resource[:name], "start"], :failonfail => false)
 
     # 104 is the exit status when you query start an enabled service.
     # 106 is the exit status when the policy layer supplies a fallback action
     # See x-man-page://invoke-rc.d
-    if [104, 106].include?($CHILD_STATUS.exitstatus)
+    if [104, 106].include?(status.exitstatus)
       return :true
-    elsif [105].include?($CHILD_STATUS.exitstatus)
-      # 105 is unknown, which generally means the iniscript does not support query
+    elsif [101, 105].include?(status.exitstatus)
+      # 101 is action not allowed, which means we have to do the check manually.
+      # 105 is unknown, which generally means the initscript does not support query
       # The debian policy states that the initscript should support methods of query
-      # For those that do not, peform the checks manually
+      # For those that do not, perform the checks manually
       # http://www.debian.org/doc/debian-policy/ch-opersys.html
       if get_start_link_count >= 4
         return :true
@@ -60,5 +66,12 @@ Puppet::Type.type(:service).provide :debian, :parent => :init do
   def enable
     update_rc "-f", @resource[:name], "remove"
     update_rc @resource[:name], "defaults"
+  end
+
+  def statuscmd
+    # /usr/sbin/service provides an abstraction layer which is able to query services
+    # independent of the init system used.
+    # See https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=775795
+    (@resource[:hasstatus] == :true) && [command(:service), @resource[:name], "status"]
   end
 end

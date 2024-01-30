@@ -1,0 +1,234 @@
+inherit_from: .rubocop_todo.yml
+
+require:
+  - rubocop-i18n
+  - rubocop-performance
+  - rubocop-rake
+  - rubocop-rspec
+
+AllCops:
+  TargetRubyVersion: 2.5
+  Include:
+    - 'lib/**/*.rb'
+    - 'ext/**/*.rb'
+  Exclude:
+    - '**/*.erb'
+    - 'acceptance/**/*'
+    - 'spec/**/*'
+    - 'tasks/**/*'
+    - 'ext/suse/puppet.spec'
+    - 'lib/puppet/vendor/**/*'
+    - 'lib/puppet/pops/model/ast.rb'
+    - 'lib/puppet/pops/parser/eparser.rb'
+
+# The formatting of defaults is unusual, so let's skip layout cops.
+Layout:
+  Exclude:
+    - 'lib/puppet/defaults.rb'
+
+# We don't mind when module and class keywords are aligned.
+Layout/IndentationWidth:
+  AllowedPatterns: ['^\s*module']
+
+Layout/LineEndStringConcatenationIndentation:
+  Enabled: true
+
+# Explicitly enables this cop new in 1.7
+Layout/SpaceBeforeBrackets:
+  Enabled: true
+
+# puppet uses symbol booleans in types and providers to work around long standing
+# bugs when trying to manage falsey pararameters and properties
+Lint/BooleanSymbol:
+  Enabled: true
+  Exclude:
+    - 'lib/puppet/type.rb'
+    - 'lib/puppet/type/**/*.rb'
+    - 'lib/puppet/provider/**/*.rb'
+    - 'lib/puppet/reference/providers.rb'
+    - 'lib/puppet/parameter/value.rb'
+
+Metrics/AbcSize:
+  Enabled: false
+
+Metrics/BlockLength:
+  Enabled: false
+
+Metrics/BlockNesting:
+  Enabled: false
+
+Metrics/ClassLength:
+  Enabled: false
+
+Metrics/CyclomaticComplexity:
+  Enabled: false
+
+Metrics/MethodLength:
+  Enabled: false
+
+Metrics/ModuleLength:
+  Enabled: false
+
+Metrics/ParameterLists:
+  Enabled: false
+
+Metrics/PerceivedComplexity:
+  Enabled: false
+
+Naming/AccessorMethodName:
+  Enabled: false
+
+Naming/BinaryOperatorParameterName:
+  Enabled: false
+
+Naming/BlockParameterName:
+  Exclude:
+    - 'lib/puppet/util/windows/daemon.rb'
+    - 'lib/puppet/util/windows/user.rb'
+
+Naming/ClassAndModuleCamelCase:
+  Exclude:
+    - 'lib/puppet/ffi/windows/structs.rb'
+    - 'lib/puppet/pops/validation/checker4_0.rb'
+    - 'lib/puppet/pops/validation/validator_factory_4_0.rb'
+    - 'lib/puppet/util/windows/root_certs.rb'
+    - 'lib/puppet/util/windows/security.rb'
+    - 'lib/puppet/util/windows/user.rb'
+
+Naming/ConstantName:
+  Exclude:
+    - 'lib/puppet/graph/relationship_graph.rb'
+    - 'lib/puppet/indirector/hiera.rb'
+    - 'lib/puppet/provider/package/sun.rb'
+    - 'lib/puppet/resource/type.rb'
+    - 'lib/puppet/type/schedule.rb'
+    - 'lib/puppet/type/tidy.rb'
+    - 'lib/puppet/util.rb'
+    - 'lib/puppet/util/colors.rb'
+    - 'lib/puppet/util/execution.rb'
+    - 'lib/puppet/util/symbolic_file_mode.rb'
+    - 'lib/puppet/util/tagging.rb'
+    - 'lib/puppet/util/windows/adsi.rb'
+    - 'lib/puppet/util/windows/sid.rb'
+    - 'lib/puppet/util/yaml.rb'
+
+Naming/HeredocDelimiterNaming:
+  Enabled: false
+
+# Exclude existing violations to avoid breaking changes
+Naming/MemoizedInstanceVariableName:
+  Exclude:
+    - 'lib/puppet/module_tool/applications/installer.rb'
+    - 'lib/puppet/pops/types/type_factory.rb'
+    - 'lib/puppet/provider/package/portage.rb'
+    - 'lib/puppet/resource.rb'
+
+Naming/MethodName:
+  Exclude:
+    - 'lib/puppet/functions/**/*'
+    - 'lib/puppet/parser/ast/pops_bridge.rb'
+    - 'lib/puppet/pops/**/*'
+    - 'lib/puppet/util/windows/**/*'
+
+Naming/MethodParameterName:
+  Enabled: false
+
+Naming/PredicateName:
+  ForbiddenPrefixes: []
+
+Naming/RescuedExceptionsVariableName:
+  Enabled: false
+
+Naming/VariableName:
+  Exclude:
+    - 'ext/windows/service/daemon.rb'
+    - 'lib/puppet/agent.rb'
+    - 'lib/puppet/application/describe.rb'
+    - 'lib/puppet/pops/lookup/hiera_config.rb'
+    - 'lib/puppet/pops/validation/checker4_0.rb'
+    - 'lib/puppet/provider/package/pip.rb'
+    - 'lib/puppet/provider/package/windows/exe_package.rb'
+    - 'lib/puppet/provider/package/windows/msi_package.rb'
+    - 'lib/puppet/ssl/ssl_provider.rb'
+    - 'lib/puppet/util/windows/adsi.rb'
+    - 'lib/puppet/util/windows/daemon.rb'
+    - 'lib/puppet/util/windows/error.rb'
+    - 'lib/puppet/util/windows/user.rb'
+
+Naming/VariableNumber:
+  Enabled: false
+
+Performance/AncestorsInclude: # new in 1.7
+  Enabled: true
+
+Performance/BigDecimalWithNumericArgument: # new in 1.7
+  Enabled: true
+
+Performance/ConcurrentMonotonicTime: # new in 1.12
+  Enabled: true
+
+Performance/MapCompact: # new in 1.11
+  Enabled: true
+
+Performance/RedundantSortBlock: # new in 1.7
+  Enabled: true
+
+Performance/ReverseFirst: # new in 1.7
+  Enabled: true
+
+RSpec/BeEq: # new in 2.9.0
+  Enabled: true
+
+RSpec/BeNil: # new in 2.9.0
+  Enabled: true
+
+RSpec/ExcessiveDocstringSpacing: # new in 2.5
+  Enabled: true
+
+RSpec/IdenticalEqualityAssertion: # new in 2.4
+  Enabled: true
+
+RSpec/SubjectDeclaration: # new in 2.5
+  Enabled: true
+
+RSpec/VerifiedDoubleReference: # new in 2.10.0
+  Enabled: true
+
+RSpec/FactoryBot/SyntaxMethods: # new in 2.7
+  Enabled: true
+
+RSpec/Rails/AvoidSetupHook: # new in 2.4
+  Enabled: true
+
+Style/AutoResourceCleanup:
+  Enabled: true
+
+Style/CaseEquality:
+  Enabled: true
+
+Style/CaseLikeIf:
+  Enabled: true
+
+Style/ClassCheck:
+  Enabled: true
+
+Style/ClassEqualityComparison:
+  Enabled: true
+
+Style/ClassMethods:
+  Enabled: true
+
+Style/CollectionCompact:
+  Enabled: true
+
+Style/ColonMethodCall:
+  Enabled: true
+
+Style/CombinableLoops:
+  Enabled: true
+
+Style/ColonMethodDefinition:
+  Enabled: true
+
+Style/DefWithParentheses:
+  Enabled: true

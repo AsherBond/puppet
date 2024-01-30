@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/configurer/downloader'
@@ -11,18 +10,18 @@ describe Puppet::Configurer::Downloader do
   let(:source) { 'puppet://puppet/plugins' }
 
   it "should require a name" do
-    lambda { Puppet::Configurer::Downloader.new }.should raise_error(ArgumentError)
+    expect { Puppet::Configurer::Downloader.new }.to raise_error(ArgumentError)
   end
 
   it "should require a path and a source at initialization" do
-    lambda { Puppet::Configurer::Downloader.new("name") }.should raise_error(ArgumentError)
+    expect { Puppet::Configurer::Downloader.new("name") }.to raise_error(ArgumentError)
   end
 
   it "should set the name, path and source appropriately" do
     dler = Puppet::Configurer::Downloader.new("facts", "path", "source")
-    dler.name.should == "facts"
-    dler.path.should == "path"
-    dler.source.should == "source"
+    expect(dler.name).to eq("facts")
+    expect(dler.path).to eq("path")
+    expect(dler.source).to eq("source")
   end
 
   def downloader(options = {})
@@ -55,19 +54,25 @@ describe Puppet::Configurer::Downloader do
     it "should always recurse" do
       file = generate_file_resource
 
-      expect(file[:recurse]).to be_true
+      expect(file[:recurse]).to be_truthy
+    end
+
+    it "should follow links by default" do
+      file = generate_file_resource
+
+      expect(file[:links]).to eq(:follow)
     end
 
     it "should always purge" do
       file = generate_file_resource
 
-      expect(file[:purge]).to be_true
+      expect(file[:purge]).to be_truthy
     end
 
     it "should never be in noop" do
       file = generate_file_resource
 
-      expect(file[:noop]).to be_false
+      expect(file[:noop]).to be_falsey
     end
 
     it "should set source_permissions to ignore by default" do
@@ -76,29 +81,35 @@ describe Puppet::Configurer::Downloader do
       expect(file[:source_permissions]).to eq(:ignore)
     end
 
-    it "should allow source_permissions to be overridden" do
-      file = generate_file_resource(:source_permissions => :use)
+    it "should ignore the max file limit" do
+      file = generate_file_resource
 
-      expect(file[:source_permissions]).to eq(:use)
+      expect(file[:max_files]).to eq(-1)
     end
 
-    describe "on POSIX", :as_platform => :posix do
+    describe "on POSIX", :if => Puppet.features.posix? do
+      it "should allow source_permissions to be overridden" do
+        file = generate_file_resource(:source_permissions => :use)
+
+        expect(file[:source_permissions]).to eq(:use)
+      end
+
       it "should always set the owner to the current UID" do
-        Process.expects(:uid).returns 51
+        expect(Process).to receive(:uid).and_return(51)
 
         file = generate_file_resource(:path => '/path')
         expect(file[:owner]).to eq(51)
       end
 
       it "should always set the group to the current GID" do
-        Process.expects(:gid).returns 61
+        expect(Process).to receive(:gid).and_return(61)
 
         file = generate_file_resource(:path => '/path')
         expect(file[:group]).to eq(61)
       end
     end
 
-    describe "on Windows", :as_platform => :windows do
+    describe "on Windows", :if => Puppet::Util::Platform.windows? do
       it "should omit the owner" do
         file = generate_file_resource(:path => 'C:/path')
 
@@ -115,13 +126,13 @@ describe Puppet::Configurer::Downloader do
     it "should always force the download" do
       file = generate_file_resource
 
-      expect(file[:force]).to be_true
+      expect(file[:force]).to be_truthy
     end
 
     it "should never back up when downloading" do
       file = generate_file_resource
 
-      expect(file[:backup]).to be_false
+      expect(file[:backup]).to be_falsey
     end
 
     it "should support providing an 'ignore' parameter" do
@@ -145,15 +156,20 @@ describe Puppet::Configurer::Downloader do
 
     it "should create a catalog and add the file to it" do
       catalog = @dler.catalog
-      catalog.resources.size.should == 1
-      catalog.resources.first.class.should == Puppet::Type::File
-      catalog.resources.first.name.should == @path
+      expect(catalog.resources.size).to eq(1)
+      expect(catalog.resources.first.class).to eq(Puppet::Type::File)
+      expect(catalog.resources.first.name).to eq(@path)
     end
 
     it "should specify that it is not managing a host catalog" do
-      @dler.catalog.host_config.should == false
+      expect(@dler.catalog.host_config).to eq(false)
     end
 
+    it "should not issue a deprecation warning for source_permissions" do
+      expect(Puppet).not_to receive(:puppet_deprecation_warning)
+      catalog = @dler.catalog
+      expect(catalog.resources.size).to eq(1) # Must consume catalog to fix warnings
+    end
   end
 
   describe "when downloading" do
@@ -169,54 +185,68 @@ describe Puppet::Configurer::Downloader do
       Puppet[:tags] = 'maytag'
       @dler.evaluate
 
-      Puppet::FileSystem.exist?(@dl_name).should be_true
+      expect(Puppet::FileSystem.exist?(@dl_name)).to be_truthy
     end
 
     it "should log that it is downloading" do
-      Puppet.expects(:info)
+      expect(Puppet).to receive(:info)
 
       @dler.evaluate
     end
 
     it "should return all changed file paths" do
-      trans = mock 'transaction'
+      Puppet[:ignore_plugin_errors] = true
 
-      catalog = mock 'catalog'
-      @dler.expects(:catalog).returns(catalog)
-      catalog.expects(:apply).yields(trans)
+      trans = double('transaction')
 
-      resource = mock 'resource'
-      resource.expects(:[]).with(:path).returns "/changed/file"
+      catalog = double('catalog')
+      expect(@dler).to receive(:catalog).and_return(catalog)
+      expect(catalog).to receive(:apply).and_yield(trans)
 
-      trans.expects(:changed?).returns([resource])
+      resource = double('resource')
+      expect(resource).to receive(:[]).with(:path).and_return("/changed/file")
 
-      @dler.evaluate.should == %w{/changed/file}
+      expect(trans).to receive(:changed?).and_return([resource])
+
+      expect(@dler.evaluate).to eq(%w{/changed/file})
     end
 
     it "should yield the resources if a block is given" do
-      trans = mock 'transaction'
+      Puppet[:ignore_plugin_errors] = true
 
-      catalog = mock 'catalog'
-      @dler.expects(:catalog).returns(catalog)
-      catalog.expects(:apply).yields(trans)
+      trans = double('transaction')
 
-      resource = mock 'resource'
-      resource.expects(:[]).with(:path).returns "/changed/file"
+      catalog = double('catalog')
+      expect(@dler).to receive(:catalog).and_return(catalog)
+      expect(catalog).to receive(:apply).and_yield(trans)
 
-      trans.expects(:changed?).returns([resource])
+      resource = double('resource')
+      expect(resource).to receive(:[]).with(:path).and_return("/changed/file")
+
+      expect(trans).to receive(:changed?).and_return([resource])
 
       yielded = nil
       @dler.evaluate { |r| yielded = r }
-      yielded.should == resource
+      expect(yielded).to eq(resource)
     end
 
     it "should catch and log exceptions" do
-      Puppet.expects(:err)
+      Puppet[:ignore_plugin_errors] = true
+
+      expect(Puppet).to receive(:log_exception)
       # The downloader creates a new catalog for each apply, and really the only object
       # that it is possible to stub for the purpose of generating a puppet error
-      Puppet::Resource::Catalog.any_instance.stubs(:apply).raises(Puppet::Error, "testing")
+      allow_any_instance_of(Puppet::Resource::Catalog).to receive(:apply).and_raise(Puppet::Error, "testing")
 
-      lambda { @dler.evaluate }.should_not raise_error
+      expect { @dler.evaluate }.not_to raise_error
+    end
+
+    it "raises an exception if catalog application fails" do
+      expect(@dler.file).to receive(:retrieve).and_raise(Puppet::Error, "testing")
+
+      expect {
+        @dler.evaluate
+      }.to raise_error(Puppet::Error, /testing/)
     end
   end
 end

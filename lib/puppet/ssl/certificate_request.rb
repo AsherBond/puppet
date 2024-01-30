@@ -1,5 +1,7 @@
-require 'puppet/ssl/base'
-require 'puppet/ssl/certificate_signer'
+# frozen_string_literal: true
+
+require_relative '../../puppet/ssl/base'
+require_relative '../../puppet/ssl/certificate_signer'
 
 # This class creates and manages X509 certificate signing requests.
 #
@@ -23,29 +25,10 @@ require 'puppet/ssl/certificate_signer'
 #
 # This behavior is dictated by PKCS#9/RFC 2985 section 5.4.2.
 #
-# @see http://tools.ietf.org/html/rfc2985 "RFC 2985 Section 5.4.2 Extension request"
+# @see https://tools.ietf.org/html/rfc2985 "RFC 2985 Section 5.4.2 Extension request"
 #
 class Puppet::SSL::CertificateRequest < Puppet::SSL::Base
   wraps OpenSSL::X509::Request
-
-  extend Puppet::Indirector
-
-  # If auto-signing is on, sign any certificate requests as they are saved.
-  module AutoSigner
-    def save(instance, key = nil)
-      super
-
-      # Try to autosign the CSR.
-      if ca = Puppet::SSL::CertificateAuthority.instance
-        ca.autosign(instance)
-      end
-    end
-  end
-
-  indirects :certificate_request, :terminus_class => :file, :extend => AutoSigner, :doc => <<DOC
-    This indirection wraps an `OpenSSL::X509::Request` object, representing a certificate signing request (CSR).
-    The indirection key is the certificate CN (generally a hostname).
-DOC
 
   # Because of how the format handler class is included, this
   # can't be in the base class.
@@ -54,13 +37,14 @@ DOC
   end
 
   def extension_factory
+    # rubocop:disable Naming/MemoizedInstanceVariableName
     @ef ||= OpenSSL::X509::ExtensionFactory.new
+    # rubocop:enable Naming/MemoizedInstanceVariableName
   end
 
   # Create a certificate request with our system settings.
   #
-  # @param key [OpenSSL::X509::Key, Puppet::SSL::Key] The key pair associated
-  #   with this CSR.
+  # @param key [OpenSSL::X509::Key] The private key associated with this CSR.
   # @param options [Hash]
   # @option options [String] :dns_alt_names A comma separated list of
   #   Subject Alternative Names to include in the CSR extension request.
@@ -74,10 +58,7 @@ DOC
   #
   # @return [OpenSSL::X509::Request] The generated CSR
   def generate(key, options = {})
-    Puppet.info "Creating a new SSL certificate request for #{name}"
-
-    # Support either an actual SSL key, or a Puppet key.
-    key = key.content if key.is_a?(Puppet::SSL::Key)
+    Puppet.info _("Creating a new SSL certificate request for %{name}") % { name: name }
 
     # If we're a CSR for the CA, then use the real ca_name, rather than the
     # fake 'ca' name.  This is mostly for backward compatibility with 0.24.x,
@@ -87,7 +68,14 @@ DOC
     csr = OpenSSL::X509::Request.new
     csr.version = 0
     csr.subject = OpenSSL::X509::Name.new([["CN", common_name]])
-    csr.public_key = key.public_key
+
+    csr.public_key = if key.is_a?(OpenSSL::PKey::EC)
+                       # EC#public_key doesn't follow the PKey API,
+                       # see https://github.com/ruby/openssl/issues/29
+                       key
+                     else
+                       key.public_key
+                     end
 
     if options[:csr_attributes]
       add_csr_attributes(csr, options[:csr_attributes])
@@ -100,11 +88,46 @@ DOC
     signer = Puppet::SSL::CertificateSigner.new
     signer.sign(csr, key)
 
-    raise Puppet::Error, "CSR sign verification failed; you need to clean the certificate request for #{name} on the server" unless csr.verify(key.public_key)
+    raise Puppet::Error, _("CSR sign verification failed; you need to clean the certificate request for %{name} on the server") % { name: name } unless csr.verify(csr.public_key)
 
     @content = csr
-    Puppet.info "Certificate Request fingerprint (#{digest.name}): #{digest.to_hex}"
+
+    # we won't be able to get the digest on jruby
+    if @content.signature_algorithm
+      Puppet.info _("Certificate Request fingerprint (%{digest}): %{hex_digest}") % { digest: digest.name, hex_digest: digest.to_hex }
+    end
     @content
+  end
+
+  def ext_value_to_ruby_value(asn1_arr)
+    # A list of ASN1 types than can't be directly converted to a Ruby type
+    @non_convertible ||= [OpenSSL::ASN1::EndOfContent,
+                          OpenSSL::ASN1::BitString,
+                          OpenSSL::ASN1::Null,
+                          OpenSSL::ASN1::Enumerated,
+                          OpenSSL::ASN1::UTCTime,
+                          OpenSSL::ASN1::GeneralizedTime,
+                          OpenSSL::ASN1::Sequence,
+                          OpenSSL::ASN1::Set]
+
+    begin
+      # Attempt to decode the extension's DER data located in the original OctetString
+      asn1_val = OpenSSL::ASN1.decode(asn1_arr.last.value)
+    rescue OpenSSL::ASN1::ASN1Error
+      # This is to allow supporting the old-style of not DER encoding trusted facts
+      return asn1_arr.last.value
+    end
+
+    # If the extension value can not be directly converted to an atomic Ruby
+    # type, use the original ASN1 value. This is needed to work around a bug
+    # in Ruby's OpenSSL library which doesn't convert the value of unknown
+    # extension OIDs properly. See PUP-3560
+    if @non_convertible.include?(asn1_val.class) then
+      # Allows OpenSSL to take the ASN1 value and turn it into something Ruby understands
+      OpenSSL::X509::Extension.new(asn1_arr.first.value, asn1_val.to_der).value
+    else
+      asn1_val.value
+    end
   end
 
   # Return the set of extensions requested on this CSR, in a form designed to
@@ -115,12 +138,12 @@ DOC
   # hashes, with key/value pairs for the extension's oid, its value, and
   # optionally its critical state.
   def request_extensions
-    raise Puppet::Error, "CSR needs content to extract fields" unless @content
+    raise Puppet::Error, _("CSR needs content to extract fields") unless @content
 
     # Prefer the standard extReq, but accept the Microsoft specific version as
     # a fallback, if the standard version isn't found.
-    attribute   = @content.attributes.find {|x| x.oid == "extReq" }
-    attribute ||= @content.attributes.find {|x| x.oid == "msExtReq" }
+    attribute   = @content.attributes.find { |x| x.oid == "extReq" }
+    attribute ||= @content.attributes.find { |x| x.oid == "msExtReq" }
     return [] unless attribute
 
     extensions = unpack_extension_request(attribute)
@@ -128,7 +151,8 @@ DOC
     index = -1
     extensions.map do |ext_values|
       index += 1
-      context = "#{attribute.oid} extension index #{index}"
+
+      value = ext_value_to_ruby_value(ext_values)
 
       # OK, turn that into an extension, to unpack the content.  Lovely that
       # we have to swap the order of arguments to the underlying method, or
@@ -137,26 +161,22 @@ DOC
       # fixed component in the sequence.
       case ext_values.length
       when 2
-        ev = OpenSSL::X509::Extension.new(ext_values[0].value, ext_values[1].value)
-        { "oid" => ev.oid, "value" => ev.value }
-
+        { "oid" => ext_values[0].value, "value" => value }
       when 3
-        ev = OpenSSL::X509::Extension.new(ext_values[0].value, ext_values[2].value, ext_values[1].value)
-        { "oid" => ev.oid, "value" => ev.value, "critical" => ev.critical? }
-
+        { "oid" => ext_values[0].value, "value" => value, "critical" => ext_values[1].value }
       else
-        raise Puppet::Error, "In #{attribute.oid}, expected extension record #{index} to have two or three items, but found #{ext_values.length}"
+        raise Puppet::Error, _("In %{attr}, expected extension record %{index} to have two or three items, but found %{count}") % { attr: attribute.oid, index: index, count: ext_values.length }
       end
     end
   end
 
   def subject_alt_names
-    @subject_alt_names ||= request_extensions.
-      select {|x| x["oid"] == "subjectAltName" }.
-      map {|x| x["value"].split(/\s*,\s*/) }.
-      flatten.
-      sort.
-      uniq
+    @subject_alt_names ||= request_extensions
+                           .select { |x| x["oid"] == "subjectAltName" }
+                           .map { |x| x["value"].split(/\s*,\s*/) }
+                           .flatten
+                           .sort
+                           .uniq
   end
 
   # Return all user specified attributes attached to this CSR as a hash. IF an
@@ -165,7 +185,7 @@ DOC
   #
   # The format of CSR attributes is specified in PKCS#10/RFC 2986
   #
-  # @see http://tools.ietf.org/html/rfc2986 "RFC 2986 Certification Request Syntax Specification"
+  # @see https://tools.ietf.org/html/rfc2986 "RFC 2986 Certification Request Syntax Specification"
   #
   # @api public
   #
@@ -176,7 +196,7 @@ DOC
     end
 
     x509_attributes.map do |attr|
-      {"oid" => attr.oid, "value" => attr.value.first.value}
+      { "oid" => attr.oid, "value" => attr.value.value.first.value }
     end
   end
 
@@ -196,7 +216,7 @@ DOC
     csr_attributes.each do |oid, value|
       begin
         if PRIVATE_CSR_ATTRIBUTES.include? oid
-          raise ArgumentError, "Cannot specify CSR attribute #{oid}: conflicts with internally used CSR attribute"
+          raise ArgumentError, _("Cannot specify CSR attribute %{oid}: conflicts with internally used CSR attribute") % { oid: oid }
         end
 
         encoded = OpenSSL::ASN1::PrintableString.new(value.to_s)
@@ -205,12 +225,10 @@ DOC
         csr.add_attribute(OpenSSL::X509::Attribute.new(oid, attr_set))
         Puppet.debug("Added csr attribute: #{oid} => #{attr_set.inspect}")
       rescue OpenSSL::X509::AttributeError => e
-        raise Puppet::Error, "Cannot create CSR with attribute #{oid}: #{e.message}", e.backtrace
+        raise Puppet::Error, _("Cannot create CSR with attribute %{oid}: %{message}") % { oid: oid, message: e.message }, e.backtrace
       end
     end
   end
-
-  private
 
   PRIVATE_EXTENSIONS = [
     'subjectAltName', '2.5.29.17',
@@ -224,21 +242,29 @@ DOC
       options[:extension_requests].each_pair do |oid, value|
         begin
           if PRIVATE_EXTENSIONS.include? oid
-            raise Puppet::Error, "Cannot specify CSR extension request #{oid}: conflicts with internally used extension request"
+            raise Puppet::Error, _("Cannot specify CSR extension request %{oid}: conflicts with internally used extension request") % { oid: oid }
           end
 
-          ext = OpenSSL::X509::Extension.new(oid, value.to_s, false)
+          ext = OpenSSL::X509::Extension.new(oid, OpenSSL::ASN1::UTF8String.new(value.to_s).to_der, false)
           extensions << ext
         rescue OpenSSL::X509::ExtensionError => e
-          raise Puppet::Error, "Cannot create CSR with extension request #{oid}: #{e.message}", e.backtrace
+          raise Puppet::Error, _("Cannot create CSR with extension request %{oid}: %{message}") % { oid: oid, message: e.message }, e.backtrace
         end
       end
     end
 
     if options[:dns_alt_names]
-      names = options[:dns_alt_names].split(/\s*,\s*/).map(&:strip) + [name]
-      names = names.sort.uniq.map {|name| "DNS:#{name}" }.join(", ")
-      alt_names_ext = extension_factory.create_extension("subjectAltName", names, false)
+      raw_names = options[:dns_alt_names].split(/\s*,\s*/).map(&:strip) + [name]
+
+      parsed_names = raw_names.map do |name|
+        if !name.start_with?("IP:") && !name.start_with?("DNS:")
+          "DNS:#{name}"
+        else
+          name
+        end
+      end.sort.uniq.join(", ")
+
+      alt_names_ext = extension_factory.create_extension("subjectAltName", parsed_names, false)
 
       extensions << alt_names_ext
     end
@@ -261,8 +287,8 @@ DOC
   # that in turn holds the elements. This is why we have to unpack an array
   # every time we unpack a Set/Seq.
   #
-  # @see http://tools.ietf.org/html/rfc2985#ref-10 5.4.2 CSR Extension Request structure
-  # @see http://tools.ietf.org/html/rfc5280 4.1 Certificate Extension structure
+  # @see https://tools.ietf.org/html/rfc2985#ref-10 5.4.2 CSR Extension Request structure
+  # @see https://tools.ietf.org/html/rfc5280 4.1 Certificate Extension structure
   #
   # @api private
   #
@@ -271,25 +297,24 @@ DOC
   # @return [Array<Array<Object>>] A array of arrays containing the extension
   #   OID the critical state if present, and the extension value.
   def unpack_extension_request(attribute)
-
     unless attribute.value.is_a? OpenSSL::ASN1::Set
-      raise Puppet::Error, "In #{attribute.oid}, expected Set but found #{attribute.value.class}"
+      raise Puppet::Error, _("In %{attr}, expected Set but found %{klass}") % { attr: attribute.oid, klass: attribute.value.class }
     end
 
     unless attribute.value.value.is_a? Array
-      raise Puppet::Error, "In #{attribute.oid}, expected Set[Array] but found #{attribute.value.value.class}"
+      raise Puppet::Error, _("In %{attr}, expected Set[Array] but found %{klass}") % { attr: attribute.oid, klass: attribute.value.value.class }
     end
 
     unless attribute.value.value.size == 1
-      raise Puppet::Error, "In #{attribute.oid}, expected Set[Array] with one value but found #{attribute.value.value.size} elements"
+      raise Puppet::Error, _("In %{attr}, expected Set[Array] with one value but found %{count} elements") % { attr: attribute.oid, count: attribute.value.value.size }
     end
 
     unless attribute.value.value.first.is_a? OpenSSL::ASN1::Sequence
-      raise Puppet::Error, "In #{attribute.oid}, expected Set[Array[Sequence[...]]], but found #{extension.class}"
+      raise Puppet::Error, _("In %{attr}, expected Set[Array[Sequence[...]]], but found %{klass}") % { attr: attribute.oid, klass: extension.class }
     end
 
     unless attribute.value.value.first.value.is_a? Array
-      raise Puppet::Error, "In #{attribute.oid}, expected Set[Array[Sequence[Array[...]]]], but found #{extension.value.class}"
+      raise Puppet::Error, _("In %{attr}, expected Set[Array[Sequence[Array[...]]]], but found %{klass}") % { attr: attribute.oid, klass: extension.value.class }
     end
 
     extensions = attribute.value.value.first.value

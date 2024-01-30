@@ -1,5 +1,6 @@
-require 'facter'
-require 'puppet/util/warnings'
+# frozen_string_literal: true
+
+require_relative '../../puppet/util/warnings'
 require 'forwardable'
 require 'etc'
 
@@ -9,7 +10,7 @@ module Puppet::Util::SUIDManager
 
   # Note groups= is handled specially due to a bug in OS X 10.6, 10.7,
   # and probably upcoming releases...
-  to_delegate_to_process = [ :euid=, :euid, :egid=, :egid, :uid=, :uid, :gid=, :gid, :groups ]
+  to_delegate_to_process = [:euid=, :euid, :egid=, :egid, :uid=, :uid, :gid=, :gid, :groups]
 
   to_delegate_to_process.each do |method|
     def_delegator Process, method
@@ -18,15 +19,16 @@ module Puppet::Util::SUIDManager
 
   def osx_maj_ver
     return @osx_maj_ver unless @osx_maj_ver.nil?
-    @osx_maj_ver = Facter.value('macosx_productversion_major') || false
+
+    @osx_maj_ver = Puppet.runtime[:facter].value('os.macosx.version.major') || false
   end
   module_function :osx_maj_ver
 
   def groups=(grouplist)
     begin
-      return Process.groups = grouplist
+      Process.groups = grouplist
     rescue Errno::EINVAL => e
-      #We catch Errno::EINVAL as some operating systems (OS X in particular) can
+      # We catch Errno::EINVAL as some operating systems (OS X in particular) can
       # cause troubles when using Process#groups= to change *this* user / process
       # list of supplementary groups membership.  This is done via Ruby's function
       # "static VALUE proc_setgroups(VALUE obj, VALUE ary)" which is effectively
@@ -37,9 +39,7 @@ module Puppet::Util::SUIDManager
       # operating system side.  Therefore we catch the exception and look whether
       # we run under OS X or not -- if so, then we acknowledge the problem and
       # re-throw the exception otherwise.
-      if osx_maj_ver and not osx_maj_ver.empty?
-        return true
-      else
+      if !osx_maj_ver || osx_maj_ver.empty?
         raise e
       end
     end
@@ -47,10 +47,12 @@ module Puppet::Util::SUIDManager
   module_function :groups=
 
   def self.root?
-    return Process.uid == 0 unless Puppet.features.microsoft_windows?
-
-    require 'puppet/util/windows/user'
-    Puppet::Util::Windows::User.admin?
+    if Puppet::Util::Platform.windows?
+      require_relative '../../puppet/util/windows/user'
+      Puppet::Util::Windows::User.admin?
+    else
+      Process.uid == 0
+    end
   end
 
   # Methods to handle changing uid/gid of the running process. In general,
@@ -60,8 +62,8 @@ module Puppet::Util::SUIDManager
   # Runs block setting euid and egid if provided then restoring original ids.
   # If running on Windows or without root, the block will be run with the
   # current euid/egid.
-  def asuser(new_uid=nil, new_gid=nil)
-    return yield if Puppet.features.microsoft_windows?
+  def asuser(new_uid = nil, new_gid = nil)
+    return yield if Puppet::Util::Platform.windows?
     return yield unless root?
     return yield unless new_uid or new_gid
 
@@ -81,7 +83,7 @@ module Puppet::Util::SUIDManager
   # the primary group of the supplied gid will be used. If only gid is
   # supplied, only gid will be changed. This method will fail if used on
   # Windows.
-  def change_privileges(uid=nil, gid=nil, permanently=false)
+  def change_privileges(uid = nil, gid = nil, permanently = false)
     return unless uid or gid
 
     unless gid
@@ -97,9 +99,11 @@ module Puppet::Util::SUIDManager
   # Changes the egid of the process if `permanently` is not set, otherwise
   # changes gid. This method will fail if used on Windows, or attempting to
   # change to a different gid without root.
-  def change_group(group, permanently=false)
+  def change_group(group, permanently = false)
     gid = convert_xid(:gid, group)
-    raise Puppet::Error, "No such group #{group}" unless gid
+    raise Puppet::Error, _("No such group %{group}") % { group: group } unless gid
+
+    return if Process.egid == gid
 
     if permanently
       Process::GID.change_privilege(gid)
@@ -111,9 +115,11 @@ module Puppet::Util::SUIDManager
 
   # As change_group, but operates on uids. If changing user permanently,
   # supplementary groups will be set the to default groups for the new uid.
-  def change_user(user, permanently=false)
+  def change_user(user, permanently = false)
     uid = convert_xid(:uid, user)
-    raise Puppet::Error, "No such user #{user}" unless uid
+    raise Puppet::Error, _("No such user %{user}") % { user: user } unless uid
+
+    return if Process.euid == uid
 
     if permanently
       # If changing uid, we must be root. So initgroups first here.
@@ -137,12 +143,16 @@ module Puppet::Util::SUIDManager
 
   # Make sure the passed argument is a number.
   def convert_xid(type, id)
-    map = {:gid => :group, :uid => :user}
-    raise ArgumentError, "Invalid id type #{type}" unless map.include?(type)
+    return id if id.kind_of? Integer
+
+    map = { :gid => :group, :uid => :user }
+    raise ArgumentError, _("Invalid id type %{type}") % { type: type } unless map.include?(type)
+
     ret = Puppet::Util.send(type, id)
     if ret == nil
-      raise Puppet::Error, "Invalid #{map[type]}: #{id}"
+      raise Puppet::Error, _("Invalid %{klass}: %{id}") % { klass: map[type], id: id }
     end
+
     ret
   end
   module_function :convert_xid
@@ -157,35 +167,4 @@ module Puppet::Util::SUIDManager
   end
 
   module_function :initgroups
-
-  # Run a command and capture the output
-  # Parameters:
-  # [command] the command to execute
-  # [new_uid] (optional) a userid to run the command as
-  # [new_gid] (optional) a groupid to run the command as
-  # [options] (optional, defaults to {}) a hash of option key/value pairs; currently supported:
-  #   :override_locale (defaults to true) a flag indicating whether or puppet should temporarily override the
-  #     system locale for the duration of the command.  If true, the locale will be set to 'C' to ensure consistent
-  #     output / formatting from the command, which makes it much easier to parse the output.  If false, the system
-  #     locale will be respected.
-  #   :custom_environment (default {}) -- a hash of key/value pairs to set as environment variables for the duration
-  #     of the command
-  def run_and_capture(command, new_uid=nil, new_gid=nil, options = {})
-    Puppet.deprecation_warning("Puppet::Util::SUIDManager.run_and_capture is deprecated; please use Puppet::Util::Execution.execute instead.")
-    # specifying these here rather than in the method signature to allow callers to pass in a partial
-    # set of overrides without affecting the default values for options that they don't pass in
-    default_options = {
-        :override_locale => true,
-        :custom_environment => {},
-    }
-
-    options = default_options.merge(options)
-
-    output = Puppet::Util::Execution.execute(command, :failonfail => false, :combine => true,
-                                  :uid => new_uid, :gid => new_gid,
-                                  :override_locale => options[:override_locale],
-                                  :custom_environment => options[:custom_environment])
-    [output, $CHILD_STATUS.dup]
-  end
-  module_function :run_and_capture
 end

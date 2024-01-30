@@ -1,12 +1,10 @@
-#!/usr/bin/env ruby
-
 require 'spec_helper'
 require 'puppet/util/windows'
 
-describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.microsoft_windows? do
-  let(:system_sid) { Win32::Security::SID::LocalSystem }
-  let(:admins_sid) { Win32::Security::SID::BuiltinAdministrators }
-  let(:group_sid) { Win32::Security::SID::Nobody }
+describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet::Util::Platform.windows? do
+  let(:system_sid) { Puppet::Util::Windows::SID::LocalSystem }
+  let(:admins_sid) { Puppet::Util::Windows::SID::BuiltinAdministrators }
+  let(:group_sid) { Puppet::Util::Windows::SID::Nobody }
   let(:new_sid)   { 'S-1-5-32-500-1-2-3' }
 
   def empty_dacl
@@ -24,7 +22,7 @@ describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.mic
       sd = Puppet::Util::Windows::SecurityDescriptor.new(system_sid, group_sid, system_ace_dacl)
       sd.owner = new_sid
 
-      sd.owner.should == new_sid
+      expect(sd.owner).to eq(new_sid)
     end
 
     it "performs a noop if the new owner is the same as the old one" do
@@ -32,7 +30,7 @@ describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.mic
       sd = Puppet::Util::Windows::SecurityDescriptor.new(system_sid, group_sid, dacl)
       sd.owner = sd.owner
 
-      sd.dacl.object_id.should == dacl.object_id
+      expect(sd.dacl.object_id).to eq(dacl.object_id)
     end
 
     it "prepends SYSTEM when security descriptor owner is no longer SYSTEM" do
@@ -40,9 +38,9 @@ describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.mic
       sd.owner = new_sid
 
       aces = sd.dacl.to_a
-      aces.size.should == 2
-      aces[0].sid.should == system_sid
-      aces[1].sid.should == new_sid
+      expect(aces.size).to eq(2)
+      expect(aces[0].sid).to eq(system_sid)
+      expect(aces[1].sid).to eq(new_sid)
     end
 
     it "does not prepend SYSTEM when DACL already contains inherited SYSTEM ace" do
@@ -52,8 +50,8 @@ describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.mic
       sd.owner = new_sid
 
       aces = sd.dacl.to_a
-      aces.size.should == 2
-      aces[0].sid.should == new_sid
+      expect(aces.size).to eq(2)
+      expect(aces[0].sid).to eq(new_sid)
     end
 
     it "does not prepend SYSTEM when security descriptor owner wasn't SYSTEM" do
@@ -62,8 +60,8 @@ describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.mic
       sd.owner = new_sid
 
       aces = sd.dacl.to_a
-      aces.size.should == 1
-      aces[0].sid.should == new_sid
+      expect(aces.size).to eq(1)
+      expect(aces[0].sid).to eq(new_sid)
     end
   end
 
@@ -72,7 +70,7 @@ describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.mic
       sd = Puppet::Util::Windows::SecurityDescriptor.new(system_sid, group_sid, system_ace_dacl)
       sd.group = new_sid
 
-      sd.group.should == new_sid
+      expect(sd.group).to eq(new_sid)
     end
 
     it "performs a noop if the new group is the same as the old one" do
@@ -80,7 +78,7 @@ describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.mic
       sd = Puppet::Util::Windows::SecurityDescriptor.new(system_sid, group_sid, dacl)
       sd.group = sd.group
 
-      sd.dacl.object_id.should == dacl.object_id
+      expect(sd.dacl.object_id).to eq(dacl.object_id)
     end
 
     it "prepends SYSTEM when security descriptor group is no longer SYSTEM" do
@@ -88,9 +86,9 @@ describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.mic
       sd.group = new_sid
 
       aces = sd.dacl.to_a
-      aces.size.should == 2
-      aces[0].sid.should == system_sid
-      aces[1].sid.should == new_sid
+      expect(aces.size).to eq(2)
+      expect(aces[0].sid).to eq(system_sid)
+      expect(aces[1].sid).to eq(new_sid)
     end
 
     it "does not prepend SYSTEM when DACL already contains inherited SYSTEM ace" do
@@ -100,8 +98,8 @@ describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.mic
       sd.group = new_sid
 
       aces = sd.dacl.to_a
-      aces.size.should == 2
-      aces[0].sid.should == new_sid
+      expect(aces.size).to eq(2)
+      expect(aces[0].sid).to eq(new_sid)
     end
 
     it "does not prepend SYSTEM when security descriptor group wasn't SYSTEM" do
@@ -110,8 +108,8 @@ describe "Puppet::Util::Windows::SecurityDescriptor", :if => Puppet.features.mic
       sd.group = new_sid
 
       aces = sd.dacl.to_a
-      aces.size.should == 1
-      aces[0].sid.should == new_sid
+      expect(aces.size).to eq(1)
+      expect(aces[0].sid).to eq(new_sid)
     end
   end
 end

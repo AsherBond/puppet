@@ -1,6 +1,8 @@
-require 'hiera'
+# frozen_string_literal: true
+
+Puppet.features.hiera?
 require 'hiera/scope'
-require 'puppet'
+require_relative 'puppet'
 
 module HieraPuppet
   module_function
@@ -11,7 +13,7 @@ module HieraPuppet
     answer = hiera.lookup(key, default, scope, override, resolution_type)
 
     if answer.nil?
-      raise(Puppet::ParseError, "Could not find data item #{key} in any Hiera data file and no default supplied")
+      raise Puppet::ParseError, _("Could not find data item %{key} in any Hiera data file and no default supplied") % { key: key }
     end
 
     answer
@@ -38,7 +40,7 @@ module HieraPuppet
     end
 
     if args.empty?
-      raise(Puppet::ParseError, "Please supply a parameter to perform a Hiera lookup")
+      raise Puppet::ParseError, _("Please supply a parameter to perform a Hiera lookup")
     end
 
     key      = args[0]
@@ -48,9 +50,6 @@ module HieraPuppet
     return [key, default, override]
   end
 
-  private
-  module_function
-
   def hiera
     @hiera ||= Hiera.new(:config => hiera_config)
   end
@@ -58,7 +57,8 @@ module HieraPuppet
   def hiera_config
     config = {}
 
-    if config_file = hiera_config_file
+    config_file = hiera_config_file
+    if config_file
       config = Hiera::Config.load(config_file)
     end
 
@@ -67,21 +67,12 @@ module HieraPuppet
   end
 
   def hiera_config_file
-    config_file = nil
-
-    if Puppet.settings[:hiera_config].is_a?(String)
-      expanded_config_file = File.expand_path(Puppet.settings[:hiera_config])
-      if Puppet::FileSystem.exist?(expanded_config_file)
-        config_file = expanded_config_file
-      end
-    elsif Puppet.settings[:confdir].is_a?(String)
-      expanded_config_file = File.expand_path(File.join(Puppet.settings[:confdir], '/hiera.yaml'))
-      if Puppet::FileSystem.exist?(expanded_config_file)
-        config_file = expanded_config_file
-      end
+    hiera_config = Puppet.settings[:hiera_config]
+    if Puppet::FileSystem.exist?(hiera_config)
+      hiera_config
+    else
+      Puppet.warning _("Config file %{hiera_config} not found, using Hiera defaults") % { hiera_config: hiera_config }
+      nil
     end
-
-    config_file
   end
 end
-

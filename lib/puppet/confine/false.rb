@@ -1,12 +1,20 @@
-require 'puppet/confine'
+# frozen_string_literal: true
+
+require_relative '../../puppet/confine/boolean'
 
 class Puppet::Confine::False < Puppet::Confine
+  include Puppet::Confine::Boolean
+
+  def passing_value
+    false
+  end
+
   def self.summarize(confines)
     confines.inject(0) { |count, confine| count + confine.summary }
   end
 
   def pass?(value)
-    ! value
+    !value
   end
 
   def message(value)

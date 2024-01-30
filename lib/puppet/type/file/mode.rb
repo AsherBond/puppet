@@ -1,31 +1,47 @@
+# frozen_string_literal: true
+
 # Manage file modes.  This state should support different formats
 # for specification (e.g., u+rwx, or -0011), but for now only supports
 # specifying the full mode.
 
-
 module Puppet
   Puppet::Type.type(:file).newproperty(:mode) do
-    require 'puppet/util/symbolic_file_mode'
+    require_relative '../../../puppet/util/symbolic_file_mode'
     include Puppet::Util::SymbolicFileMode
 
     desc <<-'EOT'
       The desired permissions mode for the file, in symbolic or numeric
-      notation. Puppet uses traditional Unix permission schemes and translates
-      them to equivalent permissions for systems which represent permissions
-      differently, including Windows.
+      notation. This value **must** be specified as a string; do not use
+      un-quoted numbers to represent file modes.
 
-      Numeric modes should use the standard four-digit octal notation of
-      `<setuid/setgid/sticky><owner><group><other>` (e.g. 0644). Each of the
-      "owner," "group," and "other" digits should be a sum of the
-      permissions for that class of users, where read = 4, write = 2, and
-      execute/search = 1. When setting numeric permissions for
-      directories, Puppet sets the search permission wherever the read
-      permission is set.
+      If the mode is omitted (or explicitly set to `undef`), Puppet does not
+      enforce permissions on existing files and creates new files with
+      permissions of `0644`.
+
+      The `file` type uses traditional Unix permission schemes and translates
+      them to equivalent permissions for systems which represent permissions
+      differently, including Windows. For detailed ACL controls on Windows,
+      you can leave `mode` unmanaged and use
+      [the puppetlabs/acl module.](https://forge.puppetlabs.com/puppetlabs/acl)
+
+      Numeric modes should use the standard octal notation of
+      `<SETUID/SETGID/STICKY><OWNER><GROUP><OTHER>` (for example, "0644").
+
+      * Each of the "owner," "group," and "other" digits should be a sum of the
+        permissions for that class of users, where read = 4, write = 2, and
+        execute/search = 1.
+      * The setuid/setgid/sticky digit is also a sum, where setuid = 4, setgid = 2,
+        and sticky = 1.
+      * The setuid/setgid/sticky digit is optional. If it is absent, Puppet will
+        clear any existing setuid/setgid/sticky permissions. (So to make your intent
+        clear, you should use at least four digits for numeric modes.)
+      * When specifying numeric permissions for directories, Puppet sets the search
+        permission wherever the read permission is set.
 
       Symbolic modes should be represented as a string of comma-separated
-      permission clauses, in the form `<who><op><perm>`:
+      permission clauses, in the form `<WHO><OP><PERM>`:
 
-      * "Who" should be u (user), g (group), o (other), and/or a (all)
+      * "Who" should be any combination of u (user), g (group), and o (other), or a (all)
       * "Op" should be = (set exact permissions), + (add select permissions),
         or - (remove select permissions)
       * "Perm" should be one or more of:
@@ -39,7 +55,7 @@ module Puppet
           * g (group's current permissions)
           * o (other's current permissions)
 
-      Thus, mode `0664` could be represented symbolically as either `a=r,ug+w`
+      Thus, mode `"0664"` could be represented symbolically as either `a=r,ug+w`
       or `ug=rw,o=r`.  However, symbolic modes are more expressive than numeric
       modes: a mode only affects the specified bits, so `mode => 'ug+w'` will
       set the user and group write bits, without affecting any other bits.
@@ -55,14 +71,13 @@ module Puppet
         `FILE_GENERIC_WRITE`, and `FILE_GENERIC_EXECUTE` access rights; a
         file's owner always has the `FULL_CONTROL` right
       * "Other" users can't have any permissions a file's group lacks,
-        and its group can't have any permissions its owner lacks; that is, 0644
-        is an acceptable mode, but 0464 is not.
+        and its group can't have any permissions its owner lacks; that is, "0644"
+        is an acceptable mode, but "0464" is not.
     EOT
 
     validate do |value|
       if !value.is_a?(String)
-        Puppet.deprecation_warning("Non-string values for the file mode property are deprecated. It must be a string, " \
-          "either a symbolic mode like 'o+w,a+r' or an octal representation like '0644' or '755'.")
+        raise Puppet::Error, "The file mode specification must be a string, not '#{value.class.name}'"
       end
       unless value.nil? or valid_symbolic_mode?(value)
         raise Puppet::Error, "The file mode specification is invalid: #{value.inspect}"
@@ -76,7 +91,13 @@ module Puppet
         raise Puppet::Error, "The file mode specification is invalid: #{value.inspect}"
       end
 
+      # normalizes to symbolic form, e.g. u+a, an octal string without leading 0
       normalize_symbolic_mode(value)
+    end
+
+    unmunge do |value|
+      # return symbolic form or octal string *with* leading 0's
+      display_mode(value) if value
     end
 
     def desired_mode_from_current(desired, current)
@@ -102,8 +123,15 @@ module Puppet
     # If we're not following links and we're a link, then we just turn
     # off mode management entirely.
     def insync?(currentvalue)
-      if stat = @resource.stat and stat.ftype == "link" and @resource[:links] != :follow
-        self.debug "Not managing symlink mode"
+      if provider.respond_to?(:munge_windows_system_group)
+        munged_mode = provider.munge_windows_system_group(currentvalue, @should)
+        return false if munged_mode.nil?
+
+        currentvalue = munged_mode
+      end
+      stat = @resource.stat
+      if stat && stat.ftype == "link" && @resource[:links] != :follow
+        self.debug _("Not managing symlink mode")
         return true
       else
         return super(currentvalue)
@@ -112,6 +140,7 @@ module Puppet
 
     def property_matches?(current, desired)
       return false unless current
+
       current_bits = normalize_symbolic_mode(current)
       desired_bits = desired_mode_from_current(desired, current).to_s(8)
       current_bits == desired_bits
@@ -147,16 +176,16 @@ module Puppet
     end
 
     def should_to_s(should_value)
-      should_value.rjust(4, "0")
+      "'#{should_value.rjust(4, '0')}'"
     end
 
-    def is_to_s(currentvalue)
+    def is_to_s(currentvalue) # rubocop:disable Naming/PredicateName
       if currentvalue == :absent
         # This can occur during audits---if a file is transitioning from
         # present to absent the mode will have a value of `:absent`.
         super
       else
-        currentvalue.rjust(4, "0")
+        "'#{currentvalue.rjust(4, '0')}'"
       end
     end
   end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Copyright (C) 2009 Thomas Bellman
 #
 # Permission is hereby granted, free of charge, to any person obtaining
@@ -24,11 +26,12 @@
 # other dealings in this Software without prior written authorization
 # from Thomas Bellman.
 
-Puppet::Parser::Functions::newfunction(
-  :regsubst, :type => :rvalue,
-  :arity => -4,
+module Puppet::Parser::Functions
+  newfunction(
+    :regsubst, :type => :rvalue,
+               :arity => -4,
 
-  :doc => "
+               :doc => "
 Perform regexp replacement on a string or array of strings.
 
 * *Parameters* (in order):
@@ -55,62 +58,8 @@ Get the third octet from the node's IP address:
 Put angle brackets around each octet in the node's IP address:
 
     $x = regsubst($ipaddress, '([0-9]+)', '<\\1>', 'G')
-") do |args|
-  unless args.length.between?(3, 5)
-
-    raise(
-      ArgumentError,
-
-        "regsubst(): got #{args.length} arguments, expected 3 to 5")
+"
+  ) do |_args|
+    Error.is4x('regsubst')
   end
-  target, regexp, replacement, flags, lang = args
-  reflags = 0
-  operation = :sub
-  if flags == nil
-    flags = []
-  elsif flags.respond_to?(:split)
-    flags = flags.split('')
-  else
-
-    raise(
-      Puppet::ParseError,
-
-        "regsubst(): bad flags parameter #{flags.class}:`#{flags}'")
-  end
-  flags.each do |f|
-    case f
-    when 'G' then operation = :gsub
-    when 'E' then reflags |= Regexp::EXTENDED
-    when 'I' then reflags |= Regexp::IGNORECASE
-    when 'M' then reflags |= Regexp::MULTILINE
-    else raise(Puppet::ParseError, "regsubst(): bad flag `#{f}'")
-    end
-  end
-  begin
-    re = Regexp.compile(regexp, reflags, lang)
-  rescue RegexpError, TypeError
-
-    raise(
-      Puppet::ParseError,
-
-        "regsubst(): Bad regular expression `#{regexp}'")
-  end
-  if target.respond_to?(operation)
-    # String parameter -> string result
-    result = target.send(operation, re, replacement)
-  elsif target.respond_to?(:collect) and
-    target.respond_to?(:all?) and
-    target.all? { |e| e.respond_to?(operation) }
-    # Array parameter -> array result
-    result = target.collect { |e|
-      e.send(operation, re, replacement)
-    }
-  else
-
-    raise(
-      Puppet::ParseError,
-
-        "regsubst(): bad target #{target.class}:`#{target}'")
-  end
-  return result
 end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 Puppet::Type.type(:package).provide :aptrpm, :parent => :rpm, :source => :rpm do
   # Provide sorting functionality
   include Puppet::Util::Package
@@ -10,6 +12,9 @@ Puppet::Type.type(:package).provide :aptrpm, :parent => :rpm, :source => :rpm do
   commands :aptcache => "apt-cache"
   commands :rpm => "rpm"
 
+  # Mixing confine statements, control expressions, and exception handling
+  # confuses Rubocop's Layout cops, so we disable them entirely.
+  # rubocop:disable Layout
   if command('rpm')
     confine :true => begin
       rpm('-ql', 'rpm')
@@ -19,6 +24,7 @@ Puppet::Type.type(:package).provide :aptrpm, :parent => :rpm, :source => :rpm do
         true
       end
   end
+  # rubocop:enable Layout
 
   # Install a package using 'apt-get'.  This function needs to support
   # installing a specific version.
@@ -42,20 +48,18 @@ Puppet::Type.type(:package).provide :aptrpm, :parent => :rpm, :source => :rpm do
 
   # What's the latest package version available?
   def latest
-    output = aptcache :showpkg,  @resource[:name]
+    output = aptcache :showpkg, @resource[:name]
 
     if output =~ /Versions:\s*\n((\n|.)+)^$/
       versions = $1
-      available_versions = versions.split(/\n/).collect { |version|
+      available_versions = versions.split(/\n/).filter_map { |version|
         if version =~ /^([^\(]+)\(/
           $1
         else
-          self.warning "Could not match version '#{version}'"
+          self.warning _("Could not match version '%{version}'") % { version: version }
           nil
         end
-      }.reject { |vers| vers.nil? }.sort { |a,b|
-        versioncmp(a,b)
-      }
+      }.sort { |a, b| versioncmp(a, b) }
 
       if available_versions.length == 0
         self.debug "No latest version"
@@ -65,7 +69,7 @@ Puppet::Type.type(:package).provide :aptrpm, :parent => :rpm, :source => :rpm do
       # Get the latest and greatest version number
       return available_versions.pop
     else
-      self.err "Could not match string"
+      self.err _("Could not match string")
     end
   end
 

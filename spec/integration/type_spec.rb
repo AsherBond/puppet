@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/type'
@@ -16,17 +15,16 @@ describe Puppet::Type do
       newparam(:name) {}
     end
 
-    type.provider(:myprovider).should equal(provider)
+    expect(type.provider(:myprovider)).to equal(provider)
   end
 
   it "should not lose its provider parameter when it is reloaded" do
     type = Puppet::Type.newtype(:reload_test_type)
-
-    provider = type.provide(:test_provider)
+    type.provide(:test_provider)
 
     # reload it
     type = Puppet::Type.newtype(:reload_test_type)
 
-    type.parameters.should include(:provider)
+    expect(type.parameters).to include(:provider)
   end
 end

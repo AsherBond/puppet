@@ -1,11 +1,13 @@
+# frozen_string_literal: true
+
 require 'yaml'
-require 'puppet/network'
-require 'puppet/network/format'
+require_relative '../../puppet/network'
+require_relative '../../puppet/network/format'
 
 module Puppet::Network::FormatHandler
   class FormatError < Puppet::Error; end
 
-  ALL_MEDIA_TYPES = '*/*'.freeze
+  ALL_MEDIA_TYPES = '*/*'
 
   @formats = {}
 
@@ -16,9 +18,9 @@ module Puppet::Network::FormatHandler
     instance
   end
 
-  def self.create_serialized_formats(name,options = {},&block)
+  def self.create_serialized_formats(name, options = {}, &block)
     ["application/x-#{name}", "application/#{name}", "text/x-#{name}", "text/#{name}"].each { |mime_type|
-      create name, {:mime => mime_type}.update(options), &block
+      create name, { :mime => mime_type }.update(options), &block
     }
   end
 
@@ -32,7 +34,7 @@ module Puppet::Network::FormatHandler
   end
 
   def self.format_by_extension(ext)
-    @formats.each do |name, format|
+    @formats.each do |_name, format|
       return format if format.extension == ext
     end
     nil
@@ -62,7 +64,11 @@ module Puppet::Network::FormatHandler
     else
       out = format(format)
     end
-    raise ArgumentError, "No format match the given format name or mime-type (#{format})" if out.nil?
+
+    if out.nil?
+      raise ArgumentError, _("No format matches the given format name or mime-type (%{format})") % { format: format }
+    end
+
     out.name
   end
 
@@ -74,23 +80,22 @@ module Puppet::Network::FormatHandler
   #   (most preferred is first)
   # @param supported [Array<Symbol>] the names of the supported formats (the
   #   most preferred format is first)
-  # @return [Puppet::Network::Format, nil] the most suitable format
+  # @return [Array<Puppet::Network::Format>] the most suitable formats that
+  #   are both accepted and supported
   # @api private
-  def self.most_suitable_format_for(accepted, supported)
-    format_name = accepted.collect do |accepted|
-      accepted.to_s.sub(/;q=.*$/, '')
-    end.collect do |accepted|
-      if accepted == ALL_MEDIA_TYPES
+  def self.most_suitable_formats_for(accepted, supported)
+    accepted.collect do |format|
+      format.to_s.sub(/;q=.*$/, '')
+    end.filter_map do |format|
+      if format == ALL_MEDIA_TYPES
         supported.first
       else
-        format_to_canonical_name_or_nil(accepted)
+        format_to_canonical_name_or_nil(format)
       end
-    end.find do |accepted|
-      supported.include?(accepted)
-    end
-
-    if format_name
-      format_for(format_name)
+    end.find_all do |format|
+      supported.include?(format)
+    end.collect do |format|
+      format_for(format)
     end
   end
 
@@ -102,4 +107,4 @@ module Puppet::Network::FormatHandler
   end
 end
 
-require 'puppet/network/formats'
+require_relative '../../puppet/network/formats'

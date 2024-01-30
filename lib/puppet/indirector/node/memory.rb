@@ -1,5 +1,7 @@
-require 'puppet/node'
-require 'puppet/indirector/memory'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/node'
+require_relative '../../../puppet/indirector/memory'
 
 class Puppet::Node::Memory < Puppet::Indirector::Memory
   desc "Keep track of nodes in memory but nowhere else.  This is used for

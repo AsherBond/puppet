@@ -1,10 +1,12 @@
 # encoding: UTF-8
+# frozen_string_literal: true
 
 Puppet::Face.define(:module, '1.0.0') do
   action(:upgrade) do
-    summary "Upgrade a puppet module."
+    summary _("Upgrade a puppet module.")
     description <<-EOT
       Upgrades a puppet module.
+      Note: Module upgrade uses MD5 checksums, which are prohibited on FIPS enabled systems.
     EOT
 
     returns "Hash"
@@ -13,26 +15,26 @@ Puppet::Face.define(:module, '1.0.0') do
       upgrade an installed module to the latest version
 
       $ puppet module upgrade puppetlabs-apache
-      /etc/puppet/modules
+      /etc/puppetlabs/puppet/modules
       └── puppetlabs-apache (v1.0.0 -> v2.4.0)
 
       upgrade an installed module to a specific version
 
       $ puppet module upgrade puppetlabs-apache --version 2.1.0
-      /etc/puppet/modules
+      /etc/puppetlabs/puppet/modules
       └── puppetlabs-apache (v1.0.0 -> v2.1.0)
 
       upgrade an installed module for a specific environment
 
       $ puppet module upgrade puppetlabs-apache --environment test
-      /usr/share/puppet/environments/test/modules
+      /etc/puppetlabs/code/environments/test/modules
       └── puppetlabs-apache (v1.0.0 -> v2.4.0)
     EOT
 
-    arguments "<name>"
+    arguments _("<name>")
 
     option "--force", "-f" do
-      summary "Force upgrade of an installed module. (Implies --ignore-dependencies.)"
+      summary _("Force upgrade of an installed module. (Implies --ignore-dependencies.)")
       description <<-EOT
         Force the upgrade of an installed module even if there are local
         changes or the possibility of causing broken dependencies.
@@ -41,45 +43,46 @@ Puppet::Face.define(:module, '1.0.0') do
     end
 
     option "--ignore-dependencies" do
-      summary "Do not attempt to install dependencies. (Implied by --force.)"
+      summary _("Do not attempt to install dependencies. (Implied by --force.)")
       description <<-EOT
         Do not attempt to install dependencies. Implied by --force.
       EOT
     end
 
     option "--ignore-changes", "-c" do
-      summary "Ignore and overwrite any local changes made. (Implied by --force.)"
+      summary _("Ignore and overwrite any local changes made. (Implied by --force.)")
       description <<-EOT
         Upgrade an installed module even if there are local changes to it.  (Implied by --force.)
       EOT
     end
 
     option "--version=" do
-      summary "The version of the module to upgrade to."
+      summary _("The version of the module to upgrade to.")
       description <<-EOT
         The version of the module to upgrade to.
       EOT
     end
 
     when_invoked do |name, options|
-      name = name.gsub('/', '-')
-      Puppet.notice "Preparing to upgrade '#{name}' ..."
+      name = name.tr('/', '-')
+      Puppet.notice _("Preparing to upgrade '%{name}' ...") % { name: name }
       Puppet::ModuleTool.set_option_defaults options
       Puppet::ModuleTool::Applications::Upgrader.new(name, options).run
     end
 
     when_rendering :console do |return_value|
-      if return_value[:result] == :noop
+      case return_value[:result]
+      when :noop
         Puppet.notice return_value[:error][:multiline]
         exit 0
-      elsif return_value[:result] == :failure
+      when :failure
         Puppet.err(return_value[:error][:multiline])
         exit 1
       else
         tree = Puppet::ModuleTool.build_tree(return_value[:graph], return_value[:base_dir])
 
         "#{return_value[:base_dir]}\n" +
-        Puppet::ModuleTool.format_tree(tree)
+          Puppet::ModuleTool.format_tree(tree)
       end
     end
   end

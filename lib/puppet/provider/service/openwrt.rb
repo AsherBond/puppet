@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 Puppet::Type.type(:service).provide :openwrt, :parent => :init, :source => :init do
   desc <<-EOT
     Support for OpenWrt flavored init scripts.
@@ -6,8 +8,8 @@ Puppet::Type.type(:service).provide :openwrt, :parent => :init, :source => :init
 
   EOT
 
-  defaultfor :operatingsystem => :openwrt
-  confine :operatingsystem => :openwrt
+  defaultfor 'os.name' => :openwrt
+  confine 'os.name' => :openwrt
 
   has_feature :enableable
 
@@ -32,5 +34,4 @@ Puppet::Type.type(:service).provide :openwrt, :parent => :init, :source => :init
   # As OpenWrt init script do not have status commands
   def statuscmd
   end
-
 end

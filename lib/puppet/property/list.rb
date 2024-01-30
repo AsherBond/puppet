@@ -1,4 +1,6 @@
-require 'puppet/property'
+# frozen_string_literal: true
+
+require_relative '../../puppet/property'
 
 module Puppet
   class Property
@@ -6,18 +8,8 @@ module Puppet
     # For an ordered list see {Puppet::Property::OrderedList}.
     #
     class List < Property
-
-      def should_to_s(should_value)
-        #just return the should value
-        should_value
-      end
-
-      def is_to_s(currentvalue)
-        if currentvalue == :absent
-          return "absent"
-        else
-          return currentvalue.join(delimiter)
-        end
+      def is_to_s(currentvalue) # rubocop:disable Naming/PredicateName
+        currentvalue == :absent ? super(currentvalue) : currentvalue.join(delimiter)
       end
 
       def membership
@@ -33,7 +25,7 @@ module Puppet
         @resource[membership] == :inclusive
       end
 
-      #dearrayify was motivated because to simplify the implementation of the OrderedList property
+      # dearrayify was motivated because to simplify the implementation of the OrderedList property
       def dearrayify(array)
         array.sort.join(delimiter)
       end
@@ -42,8 +34,8 @@ module Puppet
         return nil unless @should
 
         members = @should
-        #inclusive means we are managing everything so if it isn't in should, its gone
-        members = add_should_with_current(members, retrieve) if ! inclusive?
+        # inclusive means we are managing everything so if it isn't in should, its gone
+        members = add_should_with_current(members, retrieve) if !inclusive?
 
         dearrayify(members)
       end
@@ -53,9 +45,10 @@ module Puppet
       end
 
       def retrieve
-        #ok, some 'convention' if the list property is named groups, provider should implement a groups method
-        if provider and tmp = provider.send(name) and tmp != :absent
-          return tmp.split(delimiter)
+        # ok, some 'convention' if the list property is named groups, provider should implement a groups method
+        tmp = provider.send(name) if provider
+        if tmp && tmp != :absent
+          return tmp.instance_of?(Array) ? tmp : tmp.split(delimiter)
         else
           return :absent
         end

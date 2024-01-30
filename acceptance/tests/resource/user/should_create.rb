@@ -1,5 +1,12 @@
 test_name "should create a user"
 
+tag 'audit:high',
+    'audit:refactor',  # Use block style `test_run`
+    'audit:acceptance' # Could be done as integration tests, but would
+                       # require changing the system running the test
+                       # in ways that might require special permissions
+                       # or be harmful to the system running the test
+
 name = "pl#{rand(999999).to_i}"
 
 agents.each do |agent|
@@ -14,7 +21,7 @@ agents.each do |agent|
   agent.user_get(name)
 
   case agent['platform']
-  when /sles/, /solaris/, /windows/
+  when /sles/, /solaris/, /windows/, /osx/, /aix/
     # no private user groups by default
   else
     agent.group_get(name)

@@ -1,77 +1,99 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/confine'
 
+class Puppet::TestConfine < Puppet::Confine
+  def pass?(value)
+    false
+  end
+end
+
 describe Puppet::Confine do
   it "should require a value" do
-    lambda { Puppet::Confine.new }.should raise_error(ArgumentError)
+    expect { Puppet::Confine.new }.to raise_error(ArgumentError)
   end
 
   it "should always convert values to an array" do
-    Puppet::Confine.new("/some/file").values.should be_instance_of(Array)
+    expect(Puppet::Confine.new("/some/file").values).to be_instance_of(Array)
   end
 
   it "should have a 'true' test" do
-    Puppet::Confine.test(:true).should be_instance_of(Class)
+    expect(Puppet::Confine.test(:true)).to be_instance_of(Class)
   end
 
   it "should have a 'false' test" do
-    Puppet::Confine.test(:false).should be_instance_of(Class)
+    expect(Puppet::Confine.test(:false)).to be_instance_of(Class)
   end
 
   it "should have a 'feature' test" do
-    Puppet::Confine.test(:feature).should be_instance_of(Class)
+    expect(Puppet::Confine.test(:feature)).to be_instance_of(Class)
   end
 
   it "should have an 'exists' test" do
-    Puppet::Confine.test(:exists).should be_instance_of(Class)
+    expect(Puppet::Confine.test(:exists)).to be_instance_of(Class)
   end
 
   it "should have a 'variable' test" do
-    Puppet::Confine.test(:variable).should be_instance_of(Class)
+    expect(Puppet::Confine.test(:variable)).to be_instance_of(Class)
   end
 
   describe "when testing all values" do
     before do
-      @confine = Puppet::Confine.new(%w{a b c})
+      @confine = Puppet::TestConfine.new(%w{a b c})
       @confine.label = "foo"
     end
 
     it "should be invalid if any values fail" do
-      @confine.stubs(:pass?).returns true
-      @confine.expects(:pass?).with("b").returns false
-      @confine.should_not be_valid
+      allow(@confine).to receive(:pass?).and_return(true)
+      expect(@confine).to receive(:pass?).with("b").and_return(false)
+      expect(@confine).not_to be_valid
     end
 
     it "should be valid if all values pass" do
-      @confine.stubs(:pass?).returns true
-      @confine.should be_valid
+      allow(@confine).to receive(:pass?).and_return(true)
+      expect(@confine).to be_valid
     end
 
     it "should short-cut at the first failing value" do
-      @confine.expects(:pass?).once.returns false
+      expect(@confine).to receive(:pass?).once.and_return(false)
       @confine.valid?
     end
 
     it "should log failing confines with the label and message" do
-      @confine.stubs(:pass?).returns false
-      @confine.expects(:message).returns "My message"
-      @confine.expects(:label).returns "Mylabel"
-      Puppet.expects(:debug).with("Mylabel: My message")
+      Puppet[:log_level] = 'debug'
+      allow(@confine).to receive(:pass?).and_return(false)
+      expect(@confine).to receive(:message).and_return("My message")
+      expect(@confine).to receive(:label).and_return("Mylabel")
+      expect(Puppet).to receive(:debug) { |&b| expect(b.call).to eq("Mylabel: My message") }
       @confine.valid?
     end
   end
 
   describe "when testing the result of the values" do
-    before { @confine = Puppet::Confine.new(%w{a b c d}) }
+    before { @confine = Puppet::TestConfine.new(%w{a b c d}) }
 
     it "should return an array with the result of the test for each value" do
-      @confine.stubs(:pass?).returns true
-      @confine.expects(:pass?).with("b").returns false
-      @confine.expects(:pass?).with("d").returns false
+      allow(@confine).to receive(:pass?).and_return(true)
+      expect(@confine).to receive(:pass?).with("b").and_return(false)
+      expect(@confine).to receive(:pass?).with("d").and_return(false)
 
-      @confine.result.should == [true, false, true, false]
+      expect(@confine.result).to eq([true, false, true, false])
+    end
+  end
+
+  describe "when requiring" do
+    it "does not cache failed requires when always_retry_plugins is true" do
+      Puppet[:always_retry_plugins] = true
+      expect(Puppet::Confine).to receive(:require).with('puppet/confine/os.family').twice.and_raise(LoadError)
+      Puppet::Confine.test('os.family')
+      Puppet::Confine.test('os.family')
+    end
+
+    it "caches failed requires when always_retry_plugins is false" do
+      Puppet[:always_retry_plugins] = false
+      expect(Puppet::Confine).to receive(:require).with('puppet/confine/os.family').once.and_raise(LoadError)
+      Puppet::Confine.test('os.family')
+      Puppet::Confine.test('os.family')
     end
   end
 end

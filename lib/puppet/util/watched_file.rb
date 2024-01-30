@@ -1,4 +1,6 @@
-require 'puppet/util/watcher'
+# frozen_string_literal: true
+
+require_relative '../../puppet/util/watcher'
 
 # Monitor a given file for changes on a periodic interval. Changes are detected
 # by looking for a change in the file ctime.
@@ -17,7 +19,8 @@ class Puppet::Util::WatchedFile
 
     @info = Puppet::Util::Watcher::PeriodicWatcher.new(
       Puppet::Util::Watcher::Common.file_ctime_change_watcher(@filename),
-      timer)
+      timer
+    )
   end
 
   # @return [true, false] If the file has changed since it was last checked.

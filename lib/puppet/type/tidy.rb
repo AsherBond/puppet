@@ -1,12 +1,14 @@
-require 'puppet/parameter/boolean'
+# frozen_string_literal: true
+
+require_relative '../../puppet/parameter/boolean'
 
 Puppet::Type.newtype(:tidy) do
-  require 'puppet/file_serving/fileset'
-  require 'puppet/file_bucket/dipper'
+  require_relative '../../puppet/file_serving/fileset'
+  require_relative '../../puppet/file_bucket/dipper'
 
   @doc = "Remove unwanted files based on specific criteria.  Multiple
     criteria are OR'd together, so a file that is too large but is not
-    old enough will still get tidied.
+    old enough will still get tidied. Ignores managed resources.
 
     If you don't specify either `age` or `size`, then all files will
     be removed.
@@ -16,10 +18,16 @@ Puppet::Type.newtype(:tidy) do
     actual deletion.
     "
 
+  # Tidy names are not isomorphic with the objects.
+  @isomorphic = false
+
   newparam(:path) do
     desc "The path to the file or directory to manage.  Must be fully
       qualified."
     isnamevar
+    munge do |value|
+      File.expand_path(value)
+    end
   end
 
   newparam(:recurse) do
@@ -36,12 +44,28 @@ Puppet::Type.newtype(:tidy) do
       case newval
       when :true, :inf; true
       when :false; false
-      when Integer, Fixnum, Bignum; value
+      when Integer; value
       when /^\d+$/; Integer(value)
       else
-        raise ArgumentError, "Invalid recurse value #{value.inspect}"
+        raise ArgumentError, _("Invalid recurse value %{value}") % { value: value.inspect }
       end
     end
+  end
+
+  newparam(:max_files) do
+    desc "In case the resource is a directory and the recursion is enabled, puppet will
+      generate a new resource for each file file found, possible leading to
+      an excessive number of resources generated without any control.
+
+      Setting `max_files` will check the number of file resources that
+      will eventually be created and will raise a resource argument error if the
+      limit will be exceeded.
+
+      Use value `0` to disable the check. In this case, a warning is logged if
+      the number of files exceeds 1000."
+
+    defaultto 0
+    newvalues(/^[0-9]+$/)
   end
 
   newparam(:matches) do
@@ -53,10 +77,10 @@ Puppet::Type.newtype(:tidy) do
 
       Example:
 
-          tidy { "/tmp":
-            age     => "1w",
+          tidy { '/tmp':
+            age     => '1w',
             recurse => 1,
-            matches => [ "[0-9]pub*.tmp", "*.temp", "tmpfile?" ]
+            matches => [ '[0-9]pub*.tmp', '*.temp', 'tmpfile?' ],
           }
 
       This removes files from `/tmp` if they are one week old or older,
@@ -70,13 +94,14 @@ Puppet::Type.newtype(:tidy) do
       Finally, note that you must now specify a non-zero/non-false value
       for recurse if matches is used, as matches only apply to files found
       by recursion (there's no reason to use static patterns match against
-      a statically determined path).  Requiering explicit recursion clears
+      a statically determined path).  Requiring explicit recursion clears
       up a common source of confusion.
     EOT
 
     # Make sure we convert to an array.
     munge do |value|
-      fail "Tidy can't use matches with recurse 0, false, or undef" if "#{@resource[:recurse]}" =~ /^(0|false|)$/
+      fail _("Tidy can't use matches with recurse 0, false, or undef") if "#{@resource[:recurse]}" =~ /^(0|false|)$/
+
       [value].flatten
     end
 
@@ -85,7 +110,7 @@ Puppet::Type.newtype(:tidy) do
     def tidy?(path, stat)
       basename = File.basename(path)
       flags = File::FNM_DOTMATCH | File::FNM_PATHNAME
-      return(value.find {|pattern| File.fnmatch(pattern, basename, flags) } ? true : false)
+      return(value.find { |pattern| File.fnmatch(pattern, basename, flags) } ? true : false)
     end
   end
 
@@ -99,7 +124,7 @@ Puppet::Type.newtype(:tidy) do
     desc "Tidy files whose age is equal to or greater than
       the specified time.  You can choose seconds, minutes,
       hours, days, or weeks by specifying the first letter of any
-      of those words (e.g., '1w').
+      of those words (for example, '1w' represents one week).
 
       Specifying 0 will remove all files."
 
@@ -112,16 +137,17 @@ Puppet::Type.newtype(:tidy) do
     }
 
     def convert(unit, multi)
-      if num = AgeConvertors[unit]
+      num = AgeConvertors[unit]
+      if num
         return num * multi
       else
-        self.fail "Invalid age unit '#{unit}'"
+        self.fail _("Invalid age unit '%{unit}'") % { unit: unit }
       end
     end
 
     def tidy?(path, stat)
       # If the file's older than we allow, we should get rid of it.
-      (Time.now.to_i - stat.send(resource[:type]).to_i) > value
+      (Time.now.to_i - stat.send(resource[:type]).to_i) >= value
     end
 
     munge do |age|
@@ -134,7 +160,8 @@ Puppet::Type.newtype(:tidy) do
         multi = Integer($1)
         unit = :d
       else
-        self.fail "Invalid tidy age #{age}"
+        # TRANSLATORS tidy is the name of a program and should not be translated
+        self.fail _("Invalid tidy age %{age}") % { age: age }
       end
 
       convert(unit, multi)
@@ -150,12 +177,13 @@ Puppet::Type.newtype(:tidy) do
       be used."
 
     def convert(unit, multi)
-      if num = { :b => 0, :k => 1, :m => 2, :g => 3, :t => 4 }[unit]
+      num = { :b => 0, :k => 1, :m => 2, :g => 3, :t => 4 }[unit]
+      if num
         result = multi
         num.times do result *= 1024 end
         return result
       else
-        self.fail "Invalid size unit '#{unit}'"
+        self.fail _("Invalid size unit '%{unit}'") % { unit: unit }
       end
     end
 
@@ -172,7 +200,8 @@ Puppet::Type.newtype(:tidy) do
         multi = Integer($1)
         unit = :k
       else
-        self.fail "Invalid tidy size #{age}"
+        # TRANSLATORS tidy is the name of a program and should not be translated
+        self.fail _("Invalid tidy size %{age}") % { age: age }
       end
 
       convert(unit, multi)
@@ -180,7 +209,7 @@ Puppet::Type.newtype(:tidy) do
   end
 
   newparam(:type) do
-    desc "Set the mechanism for determining age. Default: atime."
+    desc "Set the mechanism for determining age."
 
     newvalues(:atime, :mtime, :ctime)
 
@@ -216,12 +245,21 @@ Puppet::Type.newtype(:tidy) do
   # Make a file resource to remove a given file.
   def mkfile(path)
     # Force deletion, so directories actually get deleted.
-    Puppet::Type.type(:file).new :path => path, :backup => self[:backup], :ensure => :absent, :force => true
+    parameters = {
+      :path => path, :backup => self[:backup],
+      :ensure => :absent, :force => true
+    }
+
+    new_file = Puppet::Type.type(:file).new(parameters)
+    new_file.copy_metaparams(@parameters)
+
+    new_file
   end
 
   def retrieve
     # Our ensure property knows how to retrieve everything for us.
-    if obj = @parameters[:ensure]
+    obj = @parameters[:ensure]
+    if obj
       return obj.retrieve
     else
       return {}
@@ -237,10 +275,13 @@ Puppet::Type.newtype(:tidy) do
     return [] unless stat(self[:path])
 
     case self[:recurse]
-    when Integer, Fixnum, Bignum, /^\d+$/
-      parameter = { :recurse => true, :recurselimit => self[:recurse] }
+    when Integer, /^\d+$/
+      parameter = { :max_files => self[:max_files],
+                    :recurse => true,
+                    :recurselimit => self[:recurse] }
     when true, :true, :inf
-      parameter = { :recurse => true }
+      parameter = { :max_files => self[:max_files],
+                    :recurse => true }
     end
 
     if parameter
@@ -250,7 +291,12 @@ Puppet::Type.newtype(:tidy) do
     else
       files = [self[:path]]
     end
-    result = files.find_all { |path| tidy?(path) }.collect { |path| mkfile(path) }.each { |file| notice "Tidying #{file.ref}" }.sort { |a,b| b[:path] <=> a[:path] }
+    found_files = files.find_all { |path| tidy?(path) }.collect { |path| mkfile(path) }
+    result = found_files.each { |file| debug "Tidying #{file.ref}" }.sort { |a, b| b[:path] <=> a[:path] }
+    if found_files.size > 0
+      # TRANSLATORS "Tidy" is a program name and should not be translated
+      notice _("Tidying %{count} files") % { count: found_files.size }
+    end
 
     # No need to worry about relationships if we don't have rmdirs; there won't be
     # any directories.
@@ -260,9 +306,11 @@ Puppet::Type.newtype(:tidy) do
     # so that a directory is emptied before we try to remove it.
     files_by_name = result.inject({}) { |hash, file| hash[file[:path]] = file; hash }
 
-    files_by_name.keys.sort { |a,b| b <=> b }.each do |path|
+    files_by_name.keys.sort { |a, b| b <=> a }.each do |path|
       dir = ::File.dirname(path)
-      next unless resource = files_by_name[dir]
+      resource = files_by_name[dir]
+      next unless resource
+
       if resource[:require]
         resource[:require] << Puppet::Resource.new(:file, path)
       else
@@ -280,7 +328,7 @@ Puppet::Type.newtype(:tidy) do
 
     basename = File.basename(path)
     flags = File::FNM_DOTMATCH | File::FNM_PATHNAME
-    if self[:matches].find {|pattern| File.fnmatch(pattern, basename, flags) }
+    if self[:matches].find { |pattern| File.fnmatch(pattern, basename, flags) }
       return true
     else
       debug "No specified patterns match #{path}, not tidying"
@@ -290,34 +338,44 @@ Puppet::Type.newtype(:tidy) do
 
   # Should we remove the specified file?
   def tidy?(path)
-    return false unless stat = self.stat(path)
+    # ignore files that are already managed, since we can't tidy
+    # those files anyway
+    return false if catalog.resource(:file, path)
 
-    return false if stat.ftype == "directory" and ! rmdirs?
+    stat = self.stat(path)
+    return false unless stat
+
+    return false if stat.ftype == "directory" and !rmdirs?
 
     # The 'matches' parameter isn't OR'ed with the other tests --
     # it's just used to reduce the list of files we can match.
-    return false if param = parameter(:matches) and ! param.tidy?(path, stat)
+    param = parameter(:matches)
+    return false if param && !param.tidy?(path, stat)
 
     tested = false
     [:age, :size].each do |name|
-      next unless param = parameter(name)
+      param = parameter(name)
+      next unless param
+
       tested = true
       return true if param.tidy?(path, stat)
     end
 
     # If they don't specify either, then the file should always be removed.
     return true unless tested
+
     false
   end
 
   def stat(path)
     begin
       Puppet::FileSystem.lstat(path)
-    rescue Errno::ENOENT => error
-      info "File does not exist"
+    rescue Errno::ENOENT
+      debug _("File does not exist")
       return nil
-    rescue Errno::EACCES => error
-      warning "Could not stat; permission denied"
+    rescue Errno::EACCES
+      # TRANSLATORS "stat" is a program name and should not be translated
+      warning _("Could not stat; permission denied")
       return nil
     end
   end

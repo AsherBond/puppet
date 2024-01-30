@@ -1,8 +1,6 @@
-#! /usr/bin/env ruby
-
 require 'spec_helper'
 
-describe Puppet::Type.type(:exec).provider(:windows), :as_platform => :windows do
+describe Puppet::Type.type(:exec).provider(:windows), :if => Puppet::Util::Platform.windows? do
   include PuppetSpec::Files
 
   let(:resource) { Puppet::Type.type(:exec).new(:title => 'C:\foo', :provider => :windows) }
@@ -17,40 +15,40 @@ describe Puppet::Type.type(:exec).provider(:windows), :as_platform => :windows d
   describe "#extractexe" do
     describe "when the command has no arguments" do
       it "should return the command if it's quoted" do
-        provider.extractexe('"foo"').should == 'foo'
+        expect(provider.extractexe('"foo"')).to eq('foo')
       end
 
       it "should return the command if it's quoted and contains spaces" do
-        provider.extractexe('"foo bar"').should == 'foo bar'
+        expect(provider.extractexe('"foo bar"')).to eq('foo bar')
       end
 
       it "should return the command if it's not quoted" do
-        provider.extractexe('foo').should == 'foo'
+        expect(provider.extractexe('foo')).to eq('foo')
       end
     end
 
     describe "when the command has arguments" do
       it "should return the command if it's quoted" do
-        provider.extractexe('"foo" bar baz').should == 'foo'
+        expect(provider.extractexe('"foo" bar baz')).to eq('foo')
       end
 
       it "should return the command if it's quoted and contains spaces" do
-        provider.extractexe('"foo bar" baz "quux quiz"').should == 'foo bar'
+        expect(provider.extractexe('"foo bar" baz "quux quiz"')).to eq('foo bar')
       end
 
       it "should return the command if it's not quoted" do
-        provider.extractexe('foo bar baz').should == 'foo'
+        expect(provider.extractexe('foo bar baz')).to eq('foo')
       end
     end
   end
 
   describe "#checkexe" do
-    describe "when the command is absolute", :if => Puppet.features.microsoft_windows? do
+    describe "when the command is absolute", :if => Puppet::Util::Platform.windows? do
       it "should return if the command exists and is a file" do
         command = tmpfile('command')
         FileUtils.touch(command)
 
-        provider.checkexe(command).should == nil
+        expect(provider.checkexe(command)).to eq(nil)
       end
       it "should fail if the command doesn't exist" do
         command = tmpfile('command')
@@ -68,12 +66,12 @@ describe Puppet::Type.type(:exec).provider(:windows), :as_platform => :windows d
     describe "when the command is relative" do
       describe "and a path is specified" do
         before :each do
-          provider.stubs(:which)
+          allow(provider).to receive(:which)
         end
 
         it "should search for executables with no extension" do
           provider.resource[:path] = [File.expand_path('/bogus/bin')]
-          provider.expects(:which).with('foo').returns('foo')
+          expect(provider).to receive(:which).with('foo').and_return('foo')
 
           provider.checkexe('foo')
         end
@@ -95,13 +93,13 @@ describe Puppet::Type.type(:exec).provider(:windows), :as_platform => :windows d
     end
 
     it "should not fail if the command is absolute and there is no path" do
-      provider.validatecmd('C:\foo').should == nil
+      expect(provider.validatecmd('C:\foo')).to eq(nil)
     end
 
     it "should not fail if the command is not absolute and there is a path" do
       resource[:path] = 'C:\path;C:\another_path'
 
-      provider.validatecmd('foo').should == nil
+      expect(provider.validatecmd('foo')).to eq(nil)
     end
   end
 end

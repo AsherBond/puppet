@@ -1,4 +1,4 @@
-require 'puppet/util/methodhelper'
+# frozen_string_literal: true
 
 module Puppet
   class ConstantAlreadyDefined < Error; end
@@ -9,7 +9,6 @@ end
 # @api public
 #
 module Puppet::Util::ClassGen
-  include Puppet::Util::MethodHelper
   include Puppet::Util
 
   # Create a new class.
@@ -66,15 +65,15 @@ module Puppet::Util::ClassGen
   # @return [Boolean] whether the class was removed or not
   #
   def rmclass(name, options)
-    options = symbolize_options(options)
     const = genconst_string(name, options)
     retval = false
-    if is_constant_defined?(const)
+    if const_defined?(const, false)
       remove_const(const)
       retval = true
     end
 
-    if hash = options[:hash] and hash.include? name
+    hash = options[:hash]
+    if hash && hash.include?(name)
       hash.delete(name)
       retval = true
     end
@@ -88,7 +87,8 @@ module Puppet::Util::ClassGen
   # Generates the constant to create or remove.
   # @api private
   def genconst_string(name, options)
-    unless const = options[:constant]
+    const = options[:constant]
+    unless const
       prefix = options[:prefix] || ""
       const = prefix + name2const(name)
     end
@@ -100,12 +100,10 @@ module Puppet::Util::ClassGen
   # slightly abstract version of genclass.
   # @api private
   def genthing(name, type, options, block)
-    options = symbolize_options(options)
-
     name = name.to_s.downcase.intern
 
     if type == Module
-      #evalmethod = :module_eval
+      # evalmethod = :module_eval
       evalmethod = :class_eval
       # Create the class, with the correct name.
       klass = Module.new do
@@ -143,33 +141,19 @@ module Puppet::Util::ClassGen
     klass
   end
 
-  # const_defined? in Ruby 1.9 behaves differently in terms
-  # of which class hierarchy it polls for nested namespaces
-  #
-  # See http://redmine.ruby-lang.org/issues/show/1915
-  # @api private
-  #
-  def is_constant_defined?(const)
-    if ::RUBY_VERSION =~ /^1\.8/
-      const_defined?(const)
-    else
-      const_defined?(const, false)
-    end
-  end
-
   # Handle the setting and/or removing of the associated constant.
   # @api private
   #
   def handleclassconst(klass, name, options)
     const = genconst_string(name, options)
 
-    if is_constant_defined?(const)
+    if const_defined?(const, false)
       if options[:overwrite]
-        Puppet.info "Redefining #{name} in #{self}"
+        Puppet.info _("Redefining %{name} in %{klass}") % { name: name, klass: self }
         remove_const(const)
       else
         raise Puppet::ConstantAlreadyDefined,
-          "Class #{const} is already defined in #{self}"
+              _("Class %{const} is already defined in %{klass}") % { const: const, klass: self }
       end
     end
     const_set(const, klass)
@@ -183,7 +167,8 @@ module Puppet::Util::ClassGen
   def initclass(klass, options)
     klass.initvars if klass.respond_to? :initvars
 
-    if attrs = options[:attributes]
+    attrs = options[:attributes]
+    if attrs
       attrs.each do |param, value|
         method = param.to_s + "="
         klass.send(method, value) if klass.respond_to? method
@@ -191,7 +176,8 @@ module Puppet::Util::ClassGen
     end
 
     [:include, :extend].each do |method|
-      if set = options[method]
+      set = options[method]
+      if set
         set = [set] unless set.is_a?(Array)
         set.each do |mod|
           klass.send(method, mod)
@@ -211,26 +197,27 @@ module Puppet::Util::ClassGen
   # Store the class in the appropriate places.
   # @api private
   def storeclass(klass, klassname, options)
-    if hash = options[:hash]
-      if hash.include? klassname and ! options[:overwrite]
+    hash = options[:hash]
+    if hash
+      if hash.include? klassname and !options[:overwrite]
         raise Puppet::SubclassAlreadyDefined,
-          "Already a generated class named #{klassname}"
+              _("Already a generated class named %{klassname}") % { klassname: klassname }
       end
 
       hash[klassname] = klass
     end
 
     # If we were told to stick it in a hash, then do so
-    if array = options[:array]
+    array = options[:array]
+    if array
       if (klass.respond_to? :name and
               array.find { |c| c.name == klassname } and
-              ! options[:overwrite])
+              !options[:overwrite])
         raise Puppet::SubclassAlreadyDefined,
-          "Already a generated class named #{klassname}"
+              _("Already a generated class named %{klassname}") % { klassname: klassname }
       end
 
       array << klass
     end
   end
 end
-

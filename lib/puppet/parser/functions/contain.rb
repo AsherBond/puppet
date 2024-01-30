@@ -1,7 +1,9 @@
+# frozen_string_literal: true
+
 # Called within a class definition, establishes a containment
 # relationship with another class
 
-Puppet::Parser::Functions::newfunction(
+Puppet::Parser::Functions.newfunction(
   :contain,
   :arity => -2,
   :doc => "Contain one or more classes inside the current class. If any of
@@ -12,25 +14,19 @@ comma-separated list of class names.
 A contained class will not be applied before the containing class is
 begun, and will be finished before the containing class is finished.
 
-When the future parser is used, you must use the class's full name;
-relative names are no longer allowed. In addition to names in string form,
+You must use the class's full name;
+relative names are not allowed. In addition to names in string form,
 you may also directly use Class and Resource Type values that are produced by
-the future parser's resource and relationship expressions.
+evaluating resource and relationship expressions.
+
+The function returns an array of references to the classes that were contained thus
+allowing the function call to `contain` to directly continue.
+
+- Since 4.0.0 support for Class and Resource Type values, absolute names
+- Since 4.7.0 an Array[Type[Class[n]]] is returned with all the contained classes
 "
 ) do |classes|
-  scope = self
-
-  # Make call patterns uniform and protected against nested arrays, also make
-  # names absolute if so desired.
-  classes = transform_and_assert_classnames(classes.is_a?(Array) ? classes.flatten : [classes])
-
-  containing_resource = scope.resource
-
-  # This is the same as calling the include function but faster and does not rely on the include
-  # function (which is a statement) to return something (it should not).
-  (compiler.evaluate_classes(classes, self, false) || []).each do |resource|
-    if ! scope.catalog.edge?(containing_resource, resource)
-      scope.catalog.add_edge(containing_resource, resource)
-    end
-  end
+  # Call the 4.x version of this function in case 3.x ruby code uses this function
+  Puppet.warn_once('deprecations', '3xfunction#contain', _("Calling function_contain via the Scope class is deprecated. Use Scope#call_function instead"))
+  call_function('contain', classes)
 end

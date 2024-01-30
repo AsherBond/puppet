@@ -1,4 +1,6 @@
-require 'puppet/util'
+# frozen_string_literal: true
+
+require_relative '../../puppet/util'
 
 module Puppet
 module Util
@@ -16,32 +18,46 @@ module SymbolicFileMode
     value = normalize_symbolic_mode(value)
     return true if value =~ /^0?[0-7]{1,4}$/
     return true if value =~ /^([ugoa]*[-=+][-=+rstwxXugo]*)(,[ugoa]*[-=+][-=+rstwxXugo]*)*$/
+
     return false
+  end
+
+  def display_mode(value)
+    if value =~ /^0?[0-7]{1,4}$/
+      value.rjust(4, "0")
+    else
+      value
+    end
   end
 
   def normalize_symbolic_mode(value)
     return nil if value.nil?
 
     # We need to treat integers as octal numbers.
-    if value.is_a? Numeric then
-      return value.to_s(8)
-    elsif value =~ /^0?[0-7]{1,4}$/ then
-      return value.to_i(8).to_s(8)
+    #
+    # "A numeric mode is from one to four octal digits (0-7), derived by adding
+    # up the bits with values 4, 2, and 1. Omitted digits are assumed to be
+    # leading zeros."
+    case value
+    when Numeric
+      value.to_s(8)
+    when /^0?[0-7]{1,4}$/
+      value.to_i(8).to_s(8) # strip leading 0's
     else
-      return value
+      value
     end
   end
 
   def symbolic_mode_to_int(modification, to_mode = 0, is_a_directory = false)
-    if modification.nil? or modification == '' then
-      raise Puppet::Error, "An empty mode string is illegal"
-    end
-    if modification =~ /^[0-7]+$/ then return modification.to_i(8) end
-    if modification =~ /^\d+$/ then
-      raise Puppet::Error, "Numeric modes must be in octal, not decimal!"
+    if modification.nil? or modification == ''
+      raise Puppet::Error, _("An empty mode string is illegal")
+    elsif modification =~ /^[0-7]+$/
+      return modification.to_i(8)
+    elsif modification =~ /^\d+$/
+      raise Puppet::Error, _("Numeric modes must be in octal, not decimal!")
     end
 
-    fail "non-numeric current mode (#{to_mode.inspect})" unless to_mode.is_a?(Numeric)
+    fail _("non-numeric current mode (%{mode})") % { mode: to_mode.inspect } unless to_mode.is_a?(Numeric)
 
     original_mode = {
       's' => (to_mode & 07000) >> 9,
@@ -61,7 +77,8 @@ module SymbolicFileMode
     modification.split(/\s*,\s*/).each do |part|
       begin
         _, to, dsl = /^([ugoa]*)([-+=].*)$/.match(part).to_a
-        if dsl.nil? then raise Puppet::Error, 'Missing action' end
+        if dsl.nil? then raise Puppet::Error, _('Missing action') end
+
         to = "a" unless to and to.length > 0
 
         # We want a snapshot of the mode before we start messing with it to
@@ -69,66 +86,65 @@ module SymbolicFileMode
         # the original mode, the final mode, or the current snapshot of the
         # mode, for added fun.
         snapshot_mode = {}
-        final_mode.each {|k,v| snapshot_mode[k] = v }
+        final_mode.each { |k, v| snapshot_mode[k] = v }
 
         to.gsub('a', 'ugo').split('').uniq.each do |who|
           value = snapshot_mode[who]
 
           action = '!'
           actions = {
-            '!' => lambda {|_,_| raise Puppet::Error, 'Missing operation (-, =, or +)' },
-            '=' => lambda {|m,v| m | v },
-            '+' => lambda {|m,v| m | v },
-            '-' => lambda {|m,v| m & ~v },
+            '!' => lambda { |_, _| raise Puppet::Error, _('Missing operation (-, =, or +)') },
+            '=' => lambda { |m, v| m | v },
+            '+' => lambda { |m, v| m | v },
+            '-' => lambda { |m, v| m & ~v },
           }
 
           dsl.split('').each do |op|
             case op
-            when /[-+=]/ then
+            when /[-+=]/
               action = op
               # Clear all bits, if this is assignment
               value  = 0 if op == '='
 
-            when /[ugo]/ then
+            when /[ugo]/
               value = actions[action].call(value, snapshot_mode[op])
 
-            when /[rwx]/ then
+            when /[rwx]/
               value = actions[action].call(value, SymbolicMode[op])
 
-            when 'X' then
+            when 'X'
               # Only meaningful in combination with "set" actions.
-              if action != '+' then
-                raise Puppet::Error, "X only works with the '+' operator"
+              if action != '+'
+                raise Puppet::Error, _("X only works with the '+' operator")
               end
 
               # As per the BSD manual page, set if this is a directory, or if
               # any execute bit is set on the original (unmodified) mode.
               # Ignored otherwise; it is "add if", not "add or clear".
-              if is_a_directory or original_mode['any x?'] then
+              if is_a_directory or original_mode['any x?']
                 value = actions[action].call(value, ExecBit)
               end
 
-            when /[st]/ then
-              bit = SymbolicSpecialToBit[op][who] or fail "internal error"
+            when /[st]/
+              bit = SymbolicSpecialToBit[op][who] or fail _("internal error")
               final_mode['s'] = actions[action].call(final_mode['s'], bit)
 
             else
-              raise Puppet::Error, 'Unknown operation'
+              raise Puppet::Error, _('Unknown operation')
             end
           end
 
           # Now, assign back the value.
           final_mode[who] = value
         end
-
       rescue Puppet::Error => e
-        if part.inspect != modification.inspect then
+        if part.inspect != modification.inspect
           rest = " at #{part.inspect}"
         else
           rest = ''
         end
 
-        raise Puppet::Error, "#{e}#{rest} in symbolic mode #{modification.inspect}", e.backtrace
+        raise Puppet::Error, _("%{error}%{rest} in symbolic mode %{modification}") % { error: e, rest: rest, modification: modification.inspect }, e.backtrace
       end
     end
 

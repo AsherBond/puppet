@@ -1,4 +1,6 @@
-require 'puppet/provider/ldap'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/provider/ldap'
 
 Puppet::Type.type(:user).provide :ldap, :parent => Puppet::Provider::Ldap do
   desc "User management via LDAP.
@@ -17,12 +19,12 @@ Puppet::Type.type(:user).provide :ldap, :parent => Puppet::Provider::Ldap do
   has_feature :manages_passwords, :manages_shell
 
   manages(:posixAccount, :person).at("ou=People").named_by(:uid).and.maps :name => :uid,
-    :password => :userPassword,
-    :comment => :cn,
-    :uid => :uidNumber,
-    :gid => :gidNumber,
-    :home => :homeDirectory,
-    :shell => :loginShell
+                                                                          :password => :userPassword,
+                                                                          :comment => :cn,
+                                                                          :uid => :uidNumber,
+                                                                          :gid => :gidNumber,
+                                                                          :home => :homeDirectory,
+                                                                          :shell => :loginShell
 
   # Use the last field of a space-separated array as
   # the sn.  LDAP requires a surname, for some stupid reason.
@@ -34,9 +36,12 @@ Puppet::Type.type(:user).provide :ldap, :parent => Puppet::Provider::Ldap do
   provider = self
   manager.generates(:uidNumber).with do
     largest = 500
-    if existing = provider.manager.search
+    existing = provider.manager.search
+    if existing
       existing.each do |hash|
-        next unless value = hash[:uid]
+        value = hash[:uid]
+        next unless value
+
         num = value[0].to_i
         largest = num if num > largest
       end
@@ -46,7 +51,7 @@ Puppet::Type.type(:user).provide :ldap, :parent => Puppet::Provider::Ldap do
 
   # Convert our gid to a group name, if necessary.
   def gid=(value)
-    value = group2id(value) unless [Fixnum, Bignum].include?(value.class)
+    value = group2id(value) unless value.is_a?(Integer)
 
     @property_hash[:gid] = value
   end
@@ -56,7 +61,8 @@ Puppet::Type.type(:user).provide :ldap, :parent => Puppet::Provider::Ldap do
     # We want to cache the current result, so we know if we
     # have to remove old values.
     unless @property_hash[:groups]
-      unless result = group_manager.search("memberUid=#{name}")
+      result = group_manager.search("memberUid=#{name}")
+      unless result
         return @property_hash[:groups] = :absent
       end
 
@@ -88,12 +94,13 @@ Puppet::Type.type(:user).provide :ldap, :parent => Puppet::Provider::Ldap do
     end
 
     modes.each do |group, form|
-      self.fail "Could not find ldap group #{group}" unless ldap_group = group_manager.find(group)
+      ldap_group = group_manager.find(group)
+      self.fail "Could not find ldap group #{group}" unless ldap_group
 
       current = ldap_group[:members]
 
       if form == :add
-        if current.is_a?(Array) and ! current.empty?
+        if current.is_a?(Array) and !current.empty?
           new = current + [name]
         else
           new = [name]
@@ -103,7 +110,7 @@ Puppet::Type.type(:user).provide :ldap, :parent => Puppet::Provider::Ldap do
         new = :absent if new.empty?
       end
 
-      group_manager.update(group, {:ensure => :present, :members => current}, {:ensure => :present, :members => new})
+      group_manager.update(group, { :ensure => :present, :members => current }, { :ensure => :present, :members => new })
     end
   end
 
@@ -120,9 +127,9 @@ Puppet::Type.type(:user).provide :ldap, :parent => Puppet::Provider::Ldap do
 
   def group_properties(values)
     if values.empty? or values == :absent
-      {:ensure => :present}
+      { :ensure => :present }
     else
-      {:ensure => :present, :members => values}
+      { :ensure => :present, :members => values }
     end
   end
 end

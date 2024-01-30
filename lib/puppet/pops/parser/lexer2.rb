@@ -1,4 +1,6 @@
-# The Lexer is responsbile for turning source text into tokens.
+# frozen_string_literal: true
+
+# The Lexer is responsible for turning source text into tokens.
 # This version is a performance enhanced lexer (in comparison to the 3.x and earlier "future parser" lexer.
 #
 # Old returns tokens [:KEY, value, { locator = }
@@ -6,18 +8,20 @@
 # or Token.new([token], locator) with the same API x[0] = token_symbol, x[1] = self, x[:key] = (:value, :file, :line, :pos) etc
 
 require 'strscan'
-require 'puppet/pops/parser/lexer_support'
-require 'puppet/pops/parser/heredoc_support'
-require 'puppet/pops/parser/interpolation_support'
-require 'puppet/pops/parser/epp_support'
-require 'puppet/pops/parser/slurp_support'
+require_relative '../../../puppet/pops/parser/lexer_support'
+require_relative '../../../puppet/pops/parser/heredoc_support'
+require_relative '../../../puppet/pops/parser/interpolation_support'
+require_relative '../../../puppet/pops/parser/epp_support'
+require_relative '../../../puppet/pops/parser/slurp_support'
 
-class Puppet::Pops::Parser::Lexer2
-  include Puppet::Pops::Parser::LexerSupport
-  include Puppet::Pops::Parser::HeredocSupport
-  include Puppet::Pops::Parser::InterpolationSupport
-  include Puppet::Pops::Parser::SlurpSupport
-  include Puppet::Pops::Parser::EppSupport
+module Puppet::Pops
+module Parser
+class Lexer2
+  include LexerSupport
+  include HeredocSupport
+  include InterpolationSupport
+  include SlurpSupport
+  include EppSupport
 
   # ALl tokens have three slots, the token name (a Symbol), the token text (String), and a token text length.
   # All operator and punctuation tokens reuse singleton arrays Tokens that require unique values create
@@ -28,125 +32,132 @@ class Puppet::Pops::Parser::Lexer2
   # The length is pre-calculated for all singleton tokens. The length is used both to signal the length of
   # the token, and to advance the scanner position (without having to advance it with a scan(regexp)).
   #
-  TOKEN_LBRACK       = [:LBRACK,       '['.freeze,   1].freeze
-  TOKEN_LISTSTART    = [:LISTSTART,    '['.freeze,   1].freeze
-  TOKEN_RBRACK       = [:RBRACK,       ']'.freeze,   1].freeze
-  TOKEN_LBRACE       = [:LBRACE,       '{'.freeze,   1].freeze
-  TOKEN_RBRACE       = [:RBRACE,       '}'.freeze,   1].freeze
-  TOKEN_SELBRACE     = [:SELBRACE,     '{'.freeze,   1].freeze
-  TOKEN_LPAREN       = [:LPAREN,       '('.freeze,   1].freeze
-  TOKEN_RPAREN       = [:RPAREN,       ')'.freeze,   1].freeze
+  TOKEN_LBRACK       = [:LBRACK,       '[',   1].freeze
+  TOKEN_LISTSTART    = [:LISTSTART,    '[',   1].freeze
+  TOKEN_RBRACK       = [:RBRACK,       ']',   1].freeze
+  TOKEN_LBRACE       = [:LBRACE,       '{',   1].freeze
+  TOKEN_RBRACE       = [:RBRACE,       '}',   1].freeze
+  TOKEN_SELBRACE     = [:SELBRACE,     '{',   1].freeze
+  TOKEN_LPAREN       = [:LPAREN,       '(',   1].freeze
+  TOKEN_WSLPAREN     = [:WSLPAREN,     '(',   1].freeze
+  TOKEN_RPAREN       = [:RPAREN,       ')',   1].freeze
 
-  TOKEN_EQUALS       = [:EQUALS,       '='.freeze,   1].freeze
-  TOKEN_APPENDS      = [:APPENDS,      '+='.freeze,  2].freeze
-  TOKEN_DELETES      = [:DELETES,      '-='.freeze,  2].freeze
+  TOKEN_EQUALS       = [:EQUALS,       '=',   1].freeze
+  TOKEN_APPENDS      = [:APPENDS,      '+=',  2].freeze
+  TOKEN_DELETES      = [:DELETES,      '-=',  2].freeze
 
-  TOKEN_ISEQUAL      = [:ISEQUAL,      '=='.freeze,  2].freeze
-  TOKEN_NOTEQUAL     = [:NOTEQUAL,     '!='.freeze,  2].freeze
-  TOKEN_MATCH        = [:MATCH,        '=~'.freeze,  2].freeze
-  TOKEN_NOMATCH      = [:NOMATCH,      '!~'.freeze,  2].freeze
-  TOKEN_GREATEREQUAL = [:GREATEREQUAL, '>='.freeze,  2].freeze
-  TOKEN_GREATERTHAN  = [:GREATERTHAN,  '>'.freeze,   1].freeze
-  TOKEN_LESSEQUAL    = [:LESSEQUAL,    '<='.freeze,  2].freeze
-  TOKEN_LESSTHAN     = [:LESSTHAN,     '<'.freeze,   1].freeze
+  TOKEN_ISEQUAL      = [:ISEQUAL,      '==',  2].freeze
+  TOKEN_NOTEQUAL     = [:NOTEQUAL,     '!=',  2].freeze
+  TOKEN_MATCH        = [:MATCH,        '=~',  2].freeze
+  TOKEN_NOMATCH      = [:NOMATCH,      '!~',  2].freeze
+  TOKEN_GREATEREQUAL = [:GREATEREQUAL, '>=',  2].freeze
+  TOKEN_GREATERTHAN  = [:GREATERTHAN,  '>',   1].freeze
+  TOKEN_LESSEQUAL    = [:LESSEQUAL,    '<=',  2].freeze
+  TOKEN_LESSTHAN     = [:LESSTHAN,     '<',   1].freeze
 
-  TOKEN_FARROW       = [:FARROW,       '=>'.freeze,  2].freeze
-  TOKEN_PARROW       = [:PARROW,       '+>'.freeze,  2].freeze
+  TOKEN_FARROW       = [:FARROW,       '=>',  2].freeze
+  TOKEN_PARROW       = [:PARROW,       '+>',  2].freeze
 
-  TOKEN_LSHIFT       = [:LSHIFT,       '<<'.freeze,  2].freeze
-  TOKEN_LLCOLLECT    = [:LLCOLLECT,    '<<|'.freeze, 3].freeze
-  TOKEN_LCOLLECT     = [:LCOLLECT,     '<|'.freeze,  2].freeze
+  TOKEN_LSHIFT       = [:LSHIFT,       '<<',  2].freeze
+  TOKEN_LLCOLLECT    = [:LLCOLLECT,    '<<|', 3].freeze
+  TOKEN_LCOLLECT     = [:LCOLLECT,     '<|',  2].freeze
 
-  TOKEN_RSHIFT       = [:RSHIFT,       '>>'.freeze,  2].freeze
-  TOKEN_RRCOLLECT    = [:RRCOLLECT,    '|>>'.freeze, 3].freeze
-  TOKEN_RCOLLECT     = [:RCOLLECT,     '|>'.freeze,  2].freeze
+  TOKEN_RSHIFT       = [:RSHIFT,       '>>',  2].freeze
+  TOKEN_RRCOLLECT    = [:RRCOLLECT,    '|>>', 3].freeze
+  TOKEN_RCOLLECT     = [:RCOLLECT,     '|>',  2].freeze
 
-  TOKEN_PLUS         = [:PLUS,         '+'.freeze,   1].freeze
-  TOKEN_MINUS        = [:MINUS,        '-'.freeze,   1].freeze
-  TOKEN_DIV          = [:DIV,          '/'.freeze,   1].freeze
-  TOKEN_TIMES        = [:TIMES,        '*'.freeze,   1].freeze
-  TOKEN_MODULO       = [:MODULO,       '%'.freeze,   1].freeze
+  TOKEN_PLUS         = [:PLUS,         '+',   1].freeze
+  TOKEN_MINUS        = [:MINUS,        '-',   1].freeze
+  TOKEN_DIV          = [:DIV,          '/',   1].freeze
+  TOKEN_TIMES        = [:TIMES,        '*',   1].freeze
+  TOKEN_MODULO       = [:MODULO,       '%',   1].freeze
 
-  TOKEN_NOT          = [:NOT,          '!'.freeze,   1].freeze
-  TOKEN_DOT          = [:DOT,          '.'.freeze,   1].freeze
-  TOKEN_PIPE         = [:PIPE,         '|'.freeze,   1].freeze
-  TOKEN_AT           = [:AT ,          '@'.freeze,   1].freeze
-  TOKEN_ATAT         = [:ATAT ,        '@@'.freeze,  2].freeze
-  TOKEN_COLON        = [:COLON,        ':'.freeze,   1].freeze
-  TOKEN_COMMA        = [:COMMA,        ','.freeze,   1].freeze
-  TOKEN_SEMIC        = [:SEMIC,        ';'.freeze,   1].freeze
-  TOKEN_QMARK        = [:QMARK,        '?'.freeze,   1].freeze
-  TOKEN_TILDE        = [:TILDE,        '~'.freeze,   1].freeze # lexed but not an operator in Puppet
+  # rubocop:disable Layout/SpaceBeforeComma
+  TOKEN_NOT          = [:NOT,          '!',   1].freeze
+  TOKEN_DOT          = [:DOT,          '.',   1].freeze
+  TOKEN_PIPE         = [:PIPE,         '|',   1].freeze
+  TOKEN_AT           = [:AT ,          '@',   1].freeze
+  TOKEN_ATAT         = [:ATAT ,        '@@',  2].freeze
+  TOKEN_COLON        = [:COLON,        ':',   1].freeze
+  TOKEN_COMMA        = [:COMMA,        ',',   1].freeze
+  TOKEN_SEMIC        = [:SEMIC,        ';',   1].freeze
+  TOKEN_QMARK        = [:QMARK,        '?',   1].freeze
+  TOKEN_TILDE        = [:TILDE,        '~',   1].freeze # lexed but not an operator in Puppet
+  # rubocop:enable Layout/SpaceBeforeComma
 
   TOKEN_REGEXP       = [:REGEXP,       nil,   0].freeze
 
-  TOKEN_IN_EDGE      = [:IN_EDGE,      '->'.freeze,  2].freeze
-  TOKEN_IN_EDGE_SUB  = [:IN_EDGE_SUB,  '~>'.freeze,  2].freeze
-  TOKEN_OUT_EDGE     = [:OUT_EDGE,     '<-'.freeze,  2].freeze
-  TOKEN_OUT_EDGE_SUB = [:OUT_EDGE_SUB, '<~'.freeze,  2].freeze
+  TOKEN_IN_EDGE      = [:IN_EDGE,      '->',  2].freeze
+  TOKEN_IN_EDGE_SUB  = [:IN_EDGE_SUB,  '~>',  2].freeze
+  TOKEN_OUT_EDGE     = [:OUT_EDGE,     '<-',  2].freeze
+  TOKEN_OUT_EDGE_SUB = [:OUT_EDGE_SUB, '<~',  2].freeze
 
   # Tokens that are always unique to what has been lexed
-  TOKEN_STRING         =  [:STRING, nil,          0].freeze
-  TOKEN_WORD           =  [:WORD, nil,            0].freeze
-  TOKEN_DQPRE          =  [:DQPRE,  nil,          0].freeze
-  TOKEN_DQMID          =  [:DQPRE,  nil,          0].freeze
-  TOKEN_DQPOS          =  [:DQPRE,  nil,          0].freeze
-  TOKEN_NUMBER         =  [:NUMBER, nil,          0].freeze
-  TOKEN_VARIABLE       =  [:VARIABLE, nil,        1].freeze
-  TOKEN_VARIABLE_EMPTY =  [:VARIABLE, ''.freeze,  1].freeze
+  TOKEN_STRING         = [:STRING,      nil,  0].freeze
+  TOKEN_WORD           = [:WORD,        nil,  0].freeze
+  TOKEN_DQPRE          = [:DQPRE,       nil,  0].freeze
+  TOKEN_DQMID          = [:DQPRE,       nil,  0].freeze
+  TOKEN_DQPOS          = [:DQPRE,       nil,  0].freeze
+  TOKEN_NUMBER         = [:NUMBER,      nil,  0].freeze
+  TOKEN_VARIABLE       = [:VARIABLE,    nil,  1].freeze
+  TOKEN_VARIABLE_EMPTY = [:VARIABLE,    '',   1].freeze
 
   # HEREDOC has syntax as an argument.
-  TOKEN_HEREDOC        =  [:HEREDOC, nil, 0].freeze
+  TOKEN_HEREDOC        = [:HEREDOC,     nil,  0].freeze
 
   # EPP_START is currently a marker token, may later get syntax
-  TOKEN_EPPSTART       =  [:EPP_START, nil, 0].freeze
-  TOKEN_EPPEND         =  [:EPP_END, '%>', 2].freeze
-  TOKEN_EPPEND_TRIM    =  [:EPP_END_TRIM, '-%>', 3].freeze
+  # rubocop:disable Layout/ExtraSpacing
+  TOKEN_EPPSTART    = [:EPP_START,      nil,  0].freeze
+  TOKEN_EPPEND      = [:EPP_END,       '%>',  2].freeze
+  TOKEN_EPPEND_TRIM = [:EPP_END_TRIM, '-%>',  3].freeze
+  # rubocop:enable Layout/ExtraSpacing
 
   # This is used for unrecognized tokens, will always be a single character. This particular instance
   # is not used, but is kept here for documentation purposes.
-  TOKEN_OTHER        = [:OTHER,  nil,  0]
+  TOKEN_OTHER = [:OTHER, nil, 0]
 
   # Keywords are all singleton tokens with pre calculated lengths.
   # Booleans are pre-calculated (rather than evaluating the strings "false" "true" repeatedly.
   #
   KEYWORDS = {
-    "case"     => [:CASE,     'case',     4],
-    "class"    => [:CLASS,    'class',    5],
-    "default"  => [:DEFAULT,  'default',  7],
-    "define"   => [:DEFINE,   'define',   6],
-    "if"       => [:IF,       'if',       2],
-    "elsif"    => [:ELSIF,    'elsif',    5],
-    "else"     => [:ELSE,     'else',     4],
-    "inherits" => [:INHERITS, 'inherits', 8],
-    "node"     => [:NODE,     'node',     4],
-    "and"      => [:AND,      'and',      3],
-    "or"       => [:OR,       'or',       2],
-    "undef"    => [:UNDEF,    'undef',    5],
-    "false"    => [:BOOLEAN,  false,      5],
-    "true"     => [:BOOLEAN,  true,       4],
-    "in"       => [:IN,       'in',       2],
-    "unless"   => [:UNLESS,   'unless',   6],
-    "function" => [:FUNCTION, 'function', 8],
-    "type"     => [:TYPE,     'type',     4],
-    "attr"     => [:ATTR,     'attr',     4],
-    "private"  => [:PRIVATE,  'private',  7],
+    'case' => [:CASE, 'case', 4],
+    'class' => [:CLASS, 'class', 5],
+    'default' => [:DEFAULT, 'default', 7],
+    'define' => [:DEFINE, 'define', 6],
+    'if' => [:IF, 'if', 2],
+    'elsif' => [:ELSIF, 'elsif', 5],
+    'else' => [:ELSE, 'else', 4],
+    'inherits' => [:INHERITS, 'inherits', 8],
+    'node' => [:NODE, 'node', 4],
+    'and' => [:AND, 'and', 3],
+    'or' => [:OR, 'or', 2],
+    'undef' => [:UNDEF,    'undef',    5],
+    'false' => [:BOOLEAN,  false,      5],
+    'true' => [:BOOLEAN, true, 4],
+    'in' => [:IN, 'in', 2],
+    'unless' => [:UNLESS, 'unless', 6],
+    'function' => [:FUNCTION, 'function', 8],
+    'type' => [:TYPE,     'type',     4],
+    'attr' => [:ATTR,     'attr',     4],
+    'private' => [:PRIVATE, 'private', 7],
   }
-  KEYWORDS.each {|k,v| v[1].freeze; v.freeze }
+
+  KEYWORDS.each { |_k, v| v[1].freeze; v.freeze }
   KEYWORDS.freeze
 
   # Reverse lookup of keyword name to string
   KEYWORD_NAMES = {}
-  KEYWORDS.each {|k, v| KEYWORD_NAMES[v[0]] = k }
+  KEYWORDS.each { |k, v| KEYWORD_NAMES[v[0]] = k }
   KEYWORD_NAMES.freeze
 
   PATTERN_WS        = %r{[[:blank:]\r]+}
+  PATTERN_NON_WS    = %r{\w+\b?}
 
   # The single line comment includes the line ending.
   PATTERN_COMMENT   = %r{#.*\r?}
   PATTERN_MLCOMMENT = %r{/\*(.*?)\*/}m
 
-  PATTERN_REGEX     = %r{/[^/\n]*/}
+  PATTERN_REGEX     = %r{/[^/]*/}
   PATTERN_REGEX_END = %r{/}
   PATTERN_REGEX_A   = %r{\A/} # for replacement to ""
   PATTERN_REGEX_Z   = %r{/\Z} # for replacement to ""
@@ -160,9 +171,9 @@ class Puppet::Pops::Parser::Lexer2
   # a letter a-z and may not contain dashes (\w includes letters, digits and _).
   #
   PATTERN_CLASSREF       = %r{((::){0,1}[A-Z][\w]*)+}
-  PATTERN_NAME           = %r{((::)?[a-z][\w]*)(::[a-z][\w]*)*}
+  PATTERN_NAME           = %r{^((::)?[a-z][\w]*)(::[a-z][\w]*)*$}
 
-  PATTERN_BARE_WORD      = %r{[a-z_](?:[\w-]*[\w])?}
+  PATTERN_BARE_WORD      = %r{((?:::){0,1}(?:[a-z_](?:[\w-]*[\w])?))+}
 
   PATTERN_DOLLAR_VAR     = %r{\$(::)?(\w+::)*\w+}
   PATTERN_NUMBER         = %r{\b(?:0[xX][0-9A-Fa-f]+|0?\d+(?:\.\d+)?(?:[eE]-?\d+)?)\b}
@@ -170,17 +181,426 @@ class Puppet::Pops::Parser::Lexer2
   # PERFORMANCE NOTE:
   # Comparison against a frozen string is faster (than unfrozen).
   #
-  STRING_BSLASH_BSLASH = '\\'.freeze
+  STRING_BSLASH_SLASH = '\/'
 
   attr_reader :locator
 
-  def initialize()
+  def initialize
+    @selector = {
+      '.' => lambda { emit(TOKEN_DOT, @scanner.pos) },
+      ',' => lambda { emit(TOKEN_COMMA, @scanner.pos) },
+      '[' => lambda do
+        before = @scanner.pos
+        # Must check the preceding character to see if it is whitespace.
+        # The fastest thing to do is to simply byteslice to get the string ending at the offset before
+        # and then check what the last character is. (This is the same as  what an locator.char_offset needs
+        # to compute, but with less overhead of trying to find out the global offset from a local offset in the
+        # case when this is sublocated in a heredoc).
+        if before == 0 || @scanner.string.byteslice(0, before)[-1] =~ /[[:blank:]\r\n]+/
+          emit(TOKEN_LISTSTART, before)
+        else
+          emit(TOKEN_LBRACK, before)
+        end
+      end,
+      ']' => lambda { emit(TOKEN_RBRACK, @scanner.pos) },
+      '(' => lambda do
+        before = @scanner.pos
+        # If first on a line, or only whitespace between start of line and '('
+        # then the token is special to avoid being taken as start of a call.
+        line_start = @lexing_context[:line_lexical_start]
+        if before == line_start || @scanner.string.byteslice(line_start, before - line_start) =~ /\A[[:blank:]\r]+\Z/
+          emit(TOKEN_WSLPAREN, before)
+        else
+          emit(TOKEN_LPAREN, before)
+        end
+      end,
+      ')' => lambda { emit(TOKEN_RPAREN, @scanner.pos) },
+      ';' => lambda { emit(TOKEN_SEMIC, @scanner.pos) },
+      '?' => lambda { emit(TOKEN_QMARK, @scanner.pos) },
+      '*' => lambda { emit(TOKEN_TIMES, @scanner.pos) },
+      '%' => lambda do
+        scn = @scanner
+        before = scn.pos
+        la = scn.peek(2)
+        if la[1] == '>' && @lexing_context[:epp_mode]
+          scn.pos += 2
+          if @lexing_context[:epp_mode] == :expr
+            enqueue_completed(TOKEN_EPPEND, before)
+          end
+          @lexing_context[:epp_mode] = :text
+          interpolate_epp
+        else
+          emit(TOKEN_MODULO, before)
+        end
+      end,
+      '{' => lambda do
+        # The lexer needs to help the parser since the technology used cannot deal with
+        # lookahead of same token with different precedence. This is solved by making left brace
+        # after ? into a separate token.
+        #
+        @lexing_context[:brace_count] += 1
+        emit(if @lexing_context[:after] == :QMARK
+               TOKEN_SELBRACE
+             else
+               TOKEN_LBRACE
+             end, @scanner.pos)
+      end,
+      '}' => lambda do
+        @lexing_context[:brace_count] -= 1
+        emit(TOKEN_RBRACE, @scanner.pos)
+      end,
+
+      # TOKENS @, @@, @(
+      '@' => lambda do
+        scn = @scanner
+        la = scn.peek(2)
+        case la[1]
+        when '@'
+          emit(TOKEN_ATAT, scn.pos) # TODO; Check if this is good for the grammar
+        when '('
+          heredoc
+        else
+          emit(TOKEN_AT, scn.pos)
+        end
+      end,
+
+      # TOKENS |, |>, |>>
+      '|' => lambda do
+        scn = @scanner
+        la = scn.peek(3)
+        emit(la[1] == '>' ? (la[2] == '>' ? TOKEN_RRCOLLECT : TOKEN_RCOLLECT) : TOKEN_PIPE, scn.pos)
+      end,
+
+      # TOKENS =, =>, ==, =~
+      '=' => lambda do
+        scn = @scanner
+        la = scn.peek(2)
+        emit(case la[1]
+             when '='
+               TOKEN_ISEQUAL
+             when '>'
+               TOKEN_FARROW
+             when '~'
+               TOKEN_MATCH
+             else
+               TOKEN_EQUALS
+             end, scn.pos)
+      end,
+
+      # TOKENS '+', '+=', and '+>'
+      '+' => lambda do
+        scn = @scanner
+        la = scn.peek(2)
+        emit(case la[1]
+             when '='
+               TOKEN_APPENDS
+             when '>'
+               TOKEN_PARROW
+             else
+               TOKEN_PLUS
+             end, scn.pos)
+      end,
+
+      # TOKENS '-', '->', and epp '-%>' (end of interpolation with trim)
+      '-' => lambda do
+        scn = @scanner
+        la = scn.peek(3)
+        before = scn.pos
+        if @lexing_context[:epp_mode] && la[1] == '%' && la[2] == '>'
+          scn.pos += 3
+          if @lexing_context[:epp_mode] == :expr
+            enqueue_completed(TOKEN_EPPEND_TRIM, before)
+          end
+          interpolate_epp(:with_trim)
+        else
+          emit(case la[1]
+               when '>'
+                 TOKEN_IN_EDGE
+               when '='
+                 TOKEN_DELETES
+               else
+                 TOKEN_MINUS
+               end, before)
+        end
+      end,
+
+      # TOKENS !, !=, !~
+      '!' => lambda do
+        scn = @scanner
+        la = scn.peek(2)
+        emit(case la[1]
+             when '='
+               TOKEN_NOTEQUAL
+             when '~'
+               TOKEN_NOMATCH
+             else
+               TOKEN_NOT
+             end, scn.pos)
+      end,
+
+      # TOKENS ~>, ~
+      '~' => lambda do
+        scn = @scanner
+        la = scn.peek(2)
+        emit(la[1] == '>' ? TOKEN_IN_EDGE_SUB : TOKEN_TILDE, scn.pos)
+      end,
+
+      '#' => lambda { @scanner.skip(PATTERN_COMMENT); nil },
+
+      # TOKENS '/', '/*' and '/ regexp /'
+      '/' => lambda do
+        scn = @scanner
+        la = scn.peek(2)
+        if la[1] == '*'
+          lex_error(Issues::UNCLOSED_MLCOMMENT) if scn.skip(PATTERN_MLCOMMENT).nil?
+          nil
+        else
+          before = scn.pos
+          # regexp position is a regexp, else a div
+          value = scn.scan(PATTERN_REGEX) if regexp_acceptable?
+          if value
+            # Ensure an escaped / was not matched
+            while escaped_end(value)
+              more = scn.scan_until(PATTERN_REGEX_END)
+              return emit(TOKEN_DIV, before) unless more
+
+              value << more
+            end
+            regex = value.sub(PATTERN_REGEX_A, '').sub(PATTERN_REGEX_Z, '').gsub(PATTERN_REGEX_ESC, '/')
+            emit_completed([:REGEX, Regexp.new(regex), scn.pos - before], before)
+          else
+            emit(TOKEN_DIV, before)
+          end
+        end
+      end,
+
+      # TOKENS <, <=, <|, <<|, <<, <-, <~
+      '<' => lambda do
+        scn = @scanner
+        la = scn.peek(3)
+        emit(case la[1]
+             when '<'
+               if la[2] == '|'
+                 TOKEN_LLCOLLECT
+               else
+                 TOKEN_LSHIFT
+               end
+             when '='
+               TOKEN_LESSEQUAL
+             when '|'
+               TOKEN_LCOLLECT
+             when '-'
+               TOKEN_OUT_EDGE
+             when '~'
+               TOKEN_OUT_EDGE_SUB
+             else
+               TOKEN_LESSTHAN
+             end, scn.pos)
+      end,
+
+      # TOKENS >, >=, >>
+      '>' => lambda do
+        scn = @scanner
+        la = scn.peek(2)
+        emit(case la[1]
+             when '>'
+               TOKEN_RSHIFT
+             when '='
+               TOKEN_GREATEREQUAL
+             else
+               TOKEN_GREATERTHAN
+             end, scn.pos)
+      end,
+
+      # TOKENS :, ::CLASSREF, ::NAME
+      ':' => lambda do
+        scn = @scanner
+        la = scn.peek(3)
+        before = scn.pos
+        if la[1] == ':'
+          # PERFORMANCE NOTE: This could potentially be speeded up by using a case/when listing all
+          # upper case letters. Alternatively, the 'A', and 'Z' comparisons may be faster if they are
+          # frozen.
+          #
+          la2 = la[2]
+          if la2 >= 'A' && la2 <= 'Z'
+            # CLASSREF or error
+            value = scn.scan(PATTERN_CLASSREF)
+            if value && scn.peek(2) != '::'
+              after = scn.pos
+              emit_completed([:CLASSREF, value.freeze, after - before], before)
+            else
+              # move to faulty position ('::<uc-letter>' was ok)
+              scn.pos = scn.pos + 3
+              lex_error(Issues::ILLEGAL_FULLY_QUALIFIED_CLASS_REFERENCE)
+            end
+          else
+            value = scn.scan(PATTERN_BARE_WORD)
+            if value
+              if value =~ PATTERN_NAME
+                emit_completed([:NAME, value.freeze, scn.pos - before], before)
+              else
+                emit_completed([:WORD, value.freeze, scn.pos - before], before)
+              end
+            else
+              # move to faulty position ('::' was ok)
+              scn.pos = scn.pos + 2
+              lex_error(Issues::ILLEGAL_FULLY_QUALIFIED_NAME)
+            end
+          end
+        else
+          emit(TOKEN_COLON, before)
+        end
+      end,
+
+      '$' => lambda do
+        scn = @scanner
+        before = scn.pos
+        value = scn.scan(PATTERN_DOLLAR_VAR)
+        if value
+          emit_completed([:VARIABLE, value[1..-1].freeze, scn.pos - before], before)
+        else
+          # consume the $ and let higher layer complain about the error instead of getting a syntax error
+          emit(TOKEN_VARIABLE_EMPTY, before)
+        end
+      end,
+
+      '"' => lambda do
+        # Recursive string interpolation, 'interpolate' either returns a STRING token, or
+        # a DQPRE with the rest of the string's tokens placed in the @token_queue
+        interpolate_dq
+      end,
+
+      "'" => lambda do
+        scn = @scanner
+        before = scn.pos
+        emit_completed([:STRING, slurp_sqstring.freeze, scn.pos - before], before)
+      end,
+
+      "\n" => lambda do
+        # If heredoc_cont is in effect there are heredoc text lines to skip over
+        # otherwise just skip the newline.
+        #
+        ctx = @lexing_context
+        if ctx[:newline_jump]
+          @scanner.pos = ctx[:newline_jump]
+          ctx[:newline_jump] = nil
+        else
+          @scanner.pos += 1
+        end
+        ctx[:line_lexical_start] = @scanner.pos
+        nil
+      end,
+      '' => lambda { nil } # when the peek(1) returns empty
+    }
+
+    [' ', "\t", "\r"].each { |c| @selector[c] = lambda { @scanner.skip(PATTERN_WS); nil } }
+
+    ('0'..'9').each do |c|
+      @selector[c] = lambda do
+        scn = @scanner
+        before = scn.pos
+        value = scn.scan(PATTERN_NUMBER)
+        if value
+          length = scn.pos - before
+          assert_numeric(value, before)
+          emit_completed([:NUMBER, value.freeze, length], before)
+        else
+          invalid_number = scn.scan_until(PATTERN_NON_WS)
+          if before > 1
+            after = scn.pos
+            scn.pos = before - 1
+            if scn.peek(1) == '.'
+              # preceded by a dot. Is this a bad decimal number then?
+              scn.pos = before - 2
+              while scn.peek(1) =~ /^\d$/
+                invalid_number = nil
+                before = scn.pos
+                break if before == 0
+
+                scn.pos = scn.pos - 1
+              end
+            end
+            scn.pos = before
+            invalid_number = scn.peek(after - before) unless invalid_number
+          end
+          assert_numeric(invalid_number, before)
+          scn.pos = before + 1
+          lex_error(Issues::ILLEGAL_NUMBER, { :value => invalid_number })
+        end
+      end
+    end
+    ('a'..'z').to_a.push('_').each do |c|
+      @selector[c] = lambda do
+        scn = @scanner
+        before = scn.pos
+        value = scn.scan(PATTERN_BARE_WORD)
+        if value && value =~ PATTERN_NAME
+          emit_completed(KEYWORDS[value] || @taskm_keywords[value] || [:NAME, value.freeze, scn.pos - before], before)
+        elsif value
+          emit_completed([:WORD, value.freeze, scn.pos - before], before)
+        else
+          # move to faulty position ([a-z_] was ok)
+          scn.pos = scn.pos + 1
+          fully_qualified = scn.match?(/::/)
+          if fully_qualified
+            lex_error(Issues::ILLEGAL_FULLY_QUALIFIED_NAME)
+          else
+            lex_error(Issues::ILLEGAL_NAME_OR_BARE_WORD)
+          end
+        end
+      end
+    end
+
+    ('A'..'Z').each do |c|
+      @selector[c] = lambda do
+        scn = @scanner
+        before = scn.pos
+        value = @scanner.scan(PATTERN_CLASSREF)
+        if value && @scanner.peek(2) != '::'
+          emit_completed([:CLASSREF, value.freeze, scn.pos - before], before)
+        else
+          # move to faulty position ([A-Z] was ok)
+          scn.pos = scn.pos + 1
+          lex_error(Issues::ILLEGAL_CLASS_REFERENCE)
+        end
+      end
+    end
+
+    @selector.default = lambda do
+      # In case of unicode spaces of various kinds that are captured by a regexp, but not by the
+      # simpler case expression above (not worth handling those special cases with better performance).
+      scn = @scanner
+      if scn.skip(PATTERN_WS)
+        nil
+      else
+        # "unrecognized char"
+        emit([:OTHER, scn.peek(0), 1], scn.pos)
+      end
+    end
+    @selector.each { |k, _v| k.freeze }
+    @selector.freeze
+  end
+
+  # Determine if last char of value is escaped by a backslash
+  def escaped_end(value)
+    escaped = false
+    if value.end_with?(STRING_BSLASH_SLASH)
+      value[1...-1].each_codepoint do |cp|
+        if cp == 0x5c # backslash
+          escaped = !escaped
+        else
+          escaped = false
+        end
+      end
+    end
+    escaped
   end
 
   # Clears the lexer state (it is not required to call this as it will be garbage collected
   # and the next lex call (lex_string, lex_file) will reset the internal state.
   #
-  def clear()
+  def clear
     # not really needed, but if someone wants to ensure garbage is collected as early as possible
     @scanner = nil
     @locator = nil
@@ -193,27 +613,29 @@ class Puppet::Pops::Parser::Lexer2
   # overloading of = does not allow passing more than one argument).
   #
   def string=(string)
-    lex_string(string, '')
+    lex_string(string, nil)
   end
 
-  def lex_string(string, path='')
+  def lex_string(string, path = nil)
     initvars
+    assert_not_bom(string)
     @scanner = StringScanner.new(string)
-    @locator = Puppet::Pops::Parser::Locator.locator(string, path)
+    @locator = Locator.locator(string, path)
   end
 
   # Lexes an unquoted string.
   # @param string [String] the string to lex
-  # @param locator [Puppet::Pops::Parser::Locator] the locator to use (a default is used if nil is given)
+  # @param locator [Locator] the locator to use (a default is used if nil is given)
   # @param escapes [Array<String>] array of character strings representing the escape sequences to transform
   # @param interpolate [Boolean] whether interpolation of expressions should be made or not.
   #
   def lex_unquoted_string(string, locator, escapes, interpolate)
     initvars
+    assert_not_bom(string)
     @scanner = StringScanner.new(string)
-    @locator = locator || Puppet::Pops::Parser::Locator.locator(string, '')
+    @locator = locator || Locator.locator(string, '')
     @lexing_context[:escapes] = escapes || UQ_ESCAPES
-    @lexing_context[:uq_slurp_pattern] = (interpolate || !escapes.empty?) ? SLURP_UQ_PATTERN : SLURP_ALL_PATTERN
+    @lexing_context[:uq_slurp_pattern] = interpolate ? (escapes.include?('$') ? SLURP_UQ_PATTERN : SLURP_UQNE_PATTERN) : SLURP_ALL_PATTERN
   end
 
   # Convenience method, and for compatibility with older lexer. Use the lex_file instead.
@@ -234,9 +656,10 @@ class Puppet::Pops::Parser::Lexer2
   #
   def lex_file(file)
     initvars
-    contents = Puppet::FileSystem.exist?(file) ? Puppet::FileSystem.read(file) : ""
+    contents = Puppet::FileSystem.exist?(file) ? Puppet::FileSystem.read(file, :mode => 'rb', :encoding => 'utf-8') : ''
+    assert_not_bom(contents)
     @scanner = StringScanner.new(contents.freeze)
-    @locator = Puppet::Pops::Parser::Locator.locator(contents, file)
+    @locator = Locator.locator(contents, file)
   end
 
   def initvars
@@ -245,7 +668,10 @@ class Puppet::Pops::Parser::Lexer2
     @lexing_context = {
       :brace_count => 0,
       :after => nil,
+      :line_lexical_start => 0
     }
+    # Use of --tasks introduces the new keyword 'plan'
+    @taskm_keywords = Puppet[:tasks] ? { 'plan' => [:PLAN, 'plan', 4], 'apply' => [:APPLY, 'apply', 5] }.freeze : EMPTY_HASH
   end
 
   # Scans all of the content and returns it in an array
@@ -253,7 +679,7 @@ class Puppet::Pops::Parser::Lexer2
   #
   def fullscan
     result = []
-    scan {|token, value| result.push([token, value]) }
+    scan { |token| result.push(token) }
     result
   end
 
@@ -270,17 +696,19 @@ class Puppet::Pops::Parser::Lexer2
     # This makes a small but notable difference since instance member access is avoided for
     # every token in the lexed content.
     #
-    scn   = @scanner
+    scn = @scanner
+    lex_error_without_pos(Issues::NO_INPUT_TO_LEXER) unless scn
+
     ctx   = @lexing_context
     queue = @token_queue
-
-    lex_error_without_pos("Internal Error: No string or file given to lexer to process.") unless scn
+    selector = @selector
 
     scn.skip(PATTERN_WS)
 
     # This is the lexer's main loop
     until queue.empty? && scn.eos? do
-      if token = queue.shift || lex_token
+      token = queue.shift || selector[scn.peek(1)].call
+      if token
         ctx[:after] = token[0]
         yield token
       end
@@ -294,351 +722,7 @@ class Puppet::Pops::Parser::Lexer2
   # PERFORMANCE NOTE: Any change to this logic should be performance measured.
   #
   def lex_token
-    # Using three char look ahead (may be faster to do 2 char look ahead since only 2 tokens require a third
-    scn = @scanner
-    ctx = @lexing_context
-    before = @scanner.pos
-
-    # A look ahead of 3 characters is used since the longest operator ambiguity is resolved at that point.
-    # PERFORMANCE NOTE: It is faster to peek once and use three separate variables for lookahead 0, 1 and 2.
-    #
-    la = scn.peek(3)
-    return nil if la.empty?
-
-    # Ruby 1.8.7 requires using offset and length (or integers are returned.
-    # PERFORMANCE NOTE.
-    # It is slightly faster to use these local variables than accessing la[0], la[1] etc. in ruby 1.9.3
-    # But not big enough to warrant two completely different implementations.
-    #
-    la0 = la[0,1]
-    la1 = la[1,1]
-    la2 = la[2,1]
-
-    # PERFORMANCE NOTE:
-    # A case when, where all the cases are literal values is the fastest way to map from data to code.
-    # It is much faster than using a hash with lambdas, hash with symbol used to then invoke send etc.
-    # This case statement is evaluated for most character positions in puppet source, and great care must
-    # be taken to not introduce performance regressions.
-    #
-    case la0
-
-    when '.'
-      emit(TOKEN_DOT, before)
-
-    when ','
-      emit(TOKEN_COMMA, before)
-
-    when '['
-      if (before == 0 || scn.string[before-1,1] =~ /[[:blank:]\r\n]+/)
-        emit(TOKEN_LISTSTART, before)
-      else
-        emit(TOKEN_LBRACK, before)
-      end
-
-    when ']'
-      emit(TOKEN_RBRACK, before)
-
-    when '('
-      emit(TOKEN_LPAREN, before)
-
-    when ')'
-      emit(TOKEN_RPAREN, before)
-
-    when ';'
-      emit(TOKEN_SEMIC, before)
-
-    when '?'
-      emit(TOKEN_QMARK, before)
-
-    when '*'
-      emit(TOKEN_TIMES, before)
-
-    when '%'
-      if la1 == '>' && ctx[:epp_mode]
-        scn.pos += 2
-        if ctx[:epp_mode] == :expr
-          enqueue_completed(TOKEN_EPPEND, before)
-        end
-        ctx[:epp_mode] = :text
-        interpolate_epp
-      else
-        emit(TOKEN_MODULO, before)
-      end
-
-    when '{'
-      # The lexer needs to help the parser since the technology used cannot deal with
-      # lookahead of same token with different precedence. This is solved by making left brace
-      # after ? into a separate token.
-      #
-      ctx[:brace_count] += 1
-      emit(if ctx[:after] == :QMARK
-        TOKEN_SELBRACE
-      else
-        TOKEN_LBRACE
-      end, before)
-
-    when '}'
-      ctx[:brace_count] -= 1
-      emit(TOKEN_RBRACE, before)
-
-      # TOKENS @, @@, @(
-    when '@'
-      case la1
-      when '@'
-        emit(TOKEN_ATAT, before) # TODO; Check if this is good for the grammar
-      when '('
-        heredoc
-      else
-        emit(TOKEN_AT, before)
-      end
-
-      # TOKENS |, |>, |>>
-    when '|'
-      emit(case la1
-      when '>'
-        la2 == '>' ? TOKEN_RRCOLLECT : TOKEN_RCOLLECT
-      else
-        TOKEN_PIPE
-      end, before)
-
-      # TOKENS =, =>, ==, =~
-    when '='
-      emit(case la1
-      when '='
-        TOKEN_ISEQUAL
-      when '>'
-        TOKEN_FARROW
-      when '~'
-        TOKEN_MATCH
-      else
-        TOKEN_EQUALS
-      end, before)
-
-      # TOKENS '+', '+=', and '+>'
-    when '+'
-      emit(case la1
-      when '='
-        TOKEN_APPENDS
-      when '>'
-        TOKEN_PARROW
-      else
-        TOKEN_PLUS
-      end, before)
-
-      # TOKENS '-', '->', and epp '-%>' (end of interpolation with trim)
-    when '-'
-      if ctx[:epp_mode] && la1 == '%' && la2 == '>'
-        scn.pos += 3
-        if ctx[:epp_mode] == :expr
-          enqueue_completed(TOKEN_EPPEND_TRIM, before)
-        end
-        interpolate_epp(:with_trim)
-      else
-        emit(case la1
-        when '>'
-          TOKEN_IN_EDGE
-        when '='
-          TOKEN_DELETES
-        else
-          TOKEN_MINUS
-        end, before)
-      end
-
-      # TOKENS !, !=, !~
-    when '!'
-      emit(case la1
-      when '='
-        TOKEN_NOTEQUAL
-      when '~'
-        TOKEN_NOMATCH
-      else
-        TOKEN_NOT
-      end, before)
-
-      # TOKENS ~>, ~
-    when '~'
-      emit(la1 == '>' ? TOKEN_IN_EDGE_SUB : TOKEN_TILDE, before)
-
-    when '#'
-      scn.skip(PATTERN_COMMENT)
-      nil
-
-      # TOKENS '/', '/*' and '/ regexp /'
-    when '/'
-      case la1
-      when '*'
-        scn.skip(PATTERN_MLCOMMENT)
-        nil
-
-      else
-        # regexp position is a regexp, else a div
-        if regexp_acceptable? && value = scn.scan(PATTERN_REGEX)
-          # Ensure an escaped / was not matched
-          while value[-2..-2] == STRING_BSLASH_BSLASH # i.e. \\
-            value += scn.scan_until(PATTERN_REGEX_END)
-          end
-          regex = value.sub(PATTERN_REGEX_A, '').sub(PATTERN_REGEX_Z, '').gsub(PATTERN_REGEX_ESC, '/')
-          emit_completed([:REGEX, Regexp.new(regex), scn.pos-before], before)
-        else
-          emit(TOKEN_DIV, before)
-        end
-      end
-
-      # TOKENS <, <=, <|, <<|, <<, <-, <~
-    when '<'
-      emit(case la1
-      when '<'
-        if la2 == '|'
-          TOKEN_LLCOLLECT
-        else
-          TOKEN_LSHIFT
-        end
-      when '='
-        TOKEN_LESSEQUAL
-      when '|'
-        TOKEN_LCOLLECT
-      when '-'
-        TOKEN_OUT_EDGE
-      when '~'
-        TOKEN_OUT_EDGE_SUB
-      else
-        TOKEN_LESSTHAN
-      end, before)
-
-      # TOKENS >, >=, >>
-    when '>'
-      emit(case la1
-      when '>'
-        TOKEN_RSHIFT
-      when '='
-        TOKEN_GREATEREQUAL
-      else
-        TOKEN_GREATERTHAN
-      end, before)
-
-      # TOKENS :, ::CLASSREF, ::NAME
-    when ':'
-      if la1 == ':'
-        before = scn.pos
-        # PERFORMANCE NOTE: This could potentially be speeded up by using a case/when listing all
-        # upper case letters. Alternatively, the 'A', and 'Z' comparisons may be faster if they are
-        # frozen.
-        #
-        if la2 >= 'A' && la2 <= 'Z'
-          # CLASSREF or error
-          value = scn.scan(PATTERN_CLASSREF)
-          if value
-            after = scn.pos
-            emit_completed([:CLASSREF, value.freeze, after-before], before)
-          else
-            # move to faulty position ('::<uc-letter>' was ok)
-            scn.pos = scn.pos + 3
-            lex_error("Illegal fully qualified class reference")
-          end
-        else
-          # NAME or error
-          value = scn.scan(PATTERN_NAME)
-          if value
-            emit_completed([:NAME, value.freeze, scn.pos-before], before)
-          else
-            # move to faulty position ('::' was ok)
-            scn.pos = scn.pos + 2
-            lex_error("Illegal fully qualified name")
-          end
-        end
-      else
-        emit(TOKEN_COLON, before)
-      end
-
-    when '$'
-      if value = scn.scan(PATTERN_DOLLAR_VAR)
-        emit_completed([:VARIABLE, value[1..-1].freeze, scn.pos - before], before)
-      else
-        # consume the $ and let higher layer complain about the error instead of getting a syntax error
-        emit(TOKEN_VARIABLE_EMPTY, before)
-      end
-
-    when '"'
-      # Recursive string interpolation, 'interpolate' either returns a STRING token, or
-      # a DQPRE with the rest of the string's tokens placed in the @token_queue
-      interpolate_dq
-
-    when "'"
-      emit_completed([:STRING, slurp_sqstring.freeze, scn.pos - before], before)
-
-    when '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'
-      value = scn.scan(PATTERN_NUMBER)
-      if value
-        length = scn.pos - before
-        assert_numeric(value, length)
-        emit_completed([:NUMBER, value.freeze, length], before)
-      else
-        # move to faulty position ([0-9] was ok)
-        scn.pos = scn.pos + 1
-        lex_error("Illegal number")
-      end
-
-    when 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '_'
-      value = scn.scan(PATTERN_NAME)
-      # NAME or false start because followed by hyphen(s), underscore or word
-      if value && !scn.match?(/^-+\w/)
-        emit_completed(KEYWORDS[value] || [:NAME, value.freeze, scn.pos - before], before)
-      else
-        # Restart and check entire pattern (for ease of detecting non allowed trailing hyphen)
-        scn.pos = before
-        value = scn.scan(PATTERN_BARE_WORD)
-        # If the WORD continues with :: it must be a correct fully qualified name
-        if value && !(fully_qualified = scn.match?(/::/))
-          emit_completed([:WORD, value.freeze, scn.pos - before], before)
-        else
-          # move to faulty position ([a-z_] was ok)
-          scn.pos = scn.pos + 1
-          if fully_qualified
-            lex_error("Illegal fully qualified name")
-          else
-            lex_error("Illegal name or bare word")
-          end
-        end
-      end
-
-    when 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'
-      value = scn.scan(PATTERN_CLASSREF)
-      if value
-        emit_completed([:CLASSREF, value.freeze, scn.pos - before], before)
-      else
-        # move to faulty position ([A-Z] was ok)
-        scn.pos = scn.pos + 1
-        lex_error("Illegal class reference")
-      end
-
-    when "\n"
-      # If heredoc_cont is in effect there are heredoc text lines to skip over
-      # otherwise just skip the newline.
-      #
-      if ctx[:newline_jump]
-        scn.pos = ctx[:newline_jump]
-        ctx[:newline_jump] = nil
-      else
-        scn.pos += 1
-      end
-      return nil
-
-    when ' ', "\t", "\r"
-      scn.skip(PATTERN_WS)
-      return nil
-
-    else
-      # In case of unicode spaces of various kinds that are captured by a regexp, but not by the
-      # simpler case expression above (not worth handling those special cases with better performance).
-      if scn.skip(PATTERN_WS)
-        nil
-      else
-        # "unrecognized char"
-        emit([:OTHER, la0, 1], before)
-      end
-    end
+    @selector[@scanner.peek(1)].call
   end
 
   # Emits (produces) a token [:tokensymbol, TokenValue] and moves the scanner's position past the token
@@ -685,12 +769,13 @@ class Puppet::Pops::Parser::Lexer2
       true
 
     # Operands (that can be followed by DIV (even if illegal in grammar)
-    when :NAME, :CLASSREF, :NUMBER, :STRING, :BOOLEAN, :DQPRE, :DQMID, :DQPOST, :HEREDOC, :REGEX
+    when :NAME, :CLASSREF, :NUMBER, :STRING, :BOOLEAN, :DQPRE, :DQMID, :DQPOST, :HEREDOC, :REGEX, :VARIABLE, :WORD
       false
 
     else
       true
     end
   end
-
+end
+end
 end

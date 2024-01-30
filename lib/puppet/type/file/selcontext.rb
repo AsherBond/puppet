@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Manage SELinux context of files.
 #
 # This code actually manages three pieces of data in the context.
@@ -6,7 +8,7 @@
 # drwxr-xr-x  root root system_u:object_r:root_t         /
 #
 # The context of '/' here is 'system_u:object_r:root_t'.  This is
-# three seperate fields:
+# three separate fields:
 #
 # system_u is the user context
 # object_r is the role context
@@ -17,19 +19,24 @@
 # command.  This allows the user to specify a subset of the three
 # values while leaving the others alone.
 #
-# See http://www.nsa.gov/selinux/ for complete docs on SELinux.
-
+# See https://www.nsa.gov/selinux/ for complete docs on SELinux.
 
 module Puppet
-  require 'puppet/util/selinux'
+  require_relative '../../../puppet/util/selinux'
 
   class SELFileContext < Puppet::Property
     include Puppet::Util::SELinux
 
     def retrieve
       return :absent unless @resource.stat
+
       context = self.get_selinux_current_context(@resource[:path])
-      parse_selinux_context(name, context)
+      is = parse_selinux_context(name, context)
+      if name == :selrange and selinux_support?
+        self.selinux_category_to_label(is)
+      else
+        is
+      end
     end
 
     def retrieve_default_context(property)
@@ -37,7 +44,8 @@ module Puppet
         return nil
       end
 
-      unless context = self.get_selinux_default_context(@resource[:path])
+      context = self.get_selinux_default_context(@resource[:path], @resource[:ensure])
+      unless context
         return nil
       end
 
@@ -55,6 +63,18 @@ module Puppet
         true
       else
         super
+      end
+    end
+
+    def unsafe_munge(should)
+      if not selinux_support?
+        return should
+      end
+
+      if name == :selrange
+        self.selinux_category_to_label(should)
+      else
+        should
       end
     end
 
@@ -119,6 +139,4 @@ module Puppet
     @event = :file_changed
     defaultto { self.retrieve_default_context(:selrange) }
   end
-
 end
-

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 Puppet::Util::Log.newdesttype :syslog do
   def self.suitable?(obj)
     Puppet.features.syslog?
@@ -18,7 +20,7 @@ Puppet::Util::Log.newdesttype :syslog do
     begin
       facility = Syslog.const_get("LOG_#{str.upcase}")
     rescue NameError
-      raise Puppet::Error, "Invalid syslog facility #{str}", $!.backtrace
+      raise Puppet::Error, _("Invalid syslog facility %{str}") % { str: str }, $!.backtrace
     end
 
     @syslog = Syslog.open(name, options, facility)
@@ -34,10 +36,8 @@ Puppet::Util::Log.newdesttype :syslog do
       end
     else
       msg.to_s.split("\n").each do |line|
-        @syslog.send(msg.level, "(%s) %s" % [msg.source.to_s.gsub("%", ""),
-            line.gsub("%", '%%')
-          ]
-        )
+        @syslog.send(msg.level, "(%s) %s" % [msg.source.to_s.delete("%"),
+                                             line.gsub("%", '%%')])
       end
     end
   end
@@ -47,7 +47,7 @@ Puppet::Util::Log.newdesttype :file do
   require 'fileutils'
 
   def self.match?(obj)
-    Puppet::Util.absolute_path?(obj)
+    obj.is_a?(String) && Puppet::Util.absolute_path?(obj)
   end
 
   def close
@@ -65,23 +65,34 @@ Puppet::Util::Log.newdesttype :file do
 
   def initialize(path)
     @name = path
+    @json = path.end_with?('.json') ? 1 : 0
+    @jsonl = path.end_with?('.jsonl')
+
     # first make sure the directory exists
     # We can't just use 'Config.use' here, because they've
     # specified a "special" destination.
     unless Puppet::FileSystem.exist?(Puppet::FileSystem.dir(path))
       FileUtils.mkdir_p(File.dirname(path), :mode => 0755)
-      Puppet.info "Creating log directory #{File.dirname(path)}"
+      Puppet.info _("Creating log directory %{dir}") % { dir: File.dirname(path) }
     end
 
     # create the log file, if it doesn't already exist
-    file = File.open(path, File::WRONLY|File::CREAT|File::APPEND)
+    need_array_start = false
+    file_exists = Puppet::FileSystem.exist?(path)
+    if @json == 1
+      need_array_start = true
+      if file_exists
+        sz = File.size(path)
+        need_array_start = sz == 0
 
-    # Give ownership to the user and group puppet will run as
-    begin
-      FileUtils.chown(Puppet[:user], Puppet[:group], path) unless Puppet::Util::Platform.windows?
-    rescue ArgumentError, Errno::EPERM
-      Puppet.err "Unable to set ownership of log file"
+        # Assume that entries have been written and that a comma
+        # is needed before next entry
+        @json = 2 if sz > 2
+      end
     end
+
+    file = File.new(path, File::WRONLY | File::CREAT | File::APPEND)
+    file.puts('[') if need_array_start
 
     @file = file
 
@@ -89,7 +100,14 @@ Puppet::Util::Log.newdesttype :file do
   end
 
   def handle(msg)
-    @file.puts("#{msg.time} #{msg.source} (#{msg.level}): #{msg}")
+    if @json > 0
+      @json > 1 ? @file.puts(',') : @json = 2
+      @file.puts(Puppet::Util::Json.dump(msg.to_structured_hash))
+    elsif @jsonl
+      @file.puts(Puppet::Util::Json.dump(msg.to_structured_hash))
+    else
+      @file.puts("#{msg.time} #{msg.source} (#{msg.level}): #{msg}")
+    end
 
     @file.flush if @autoflush
   end
@@ -102,7 +120,6 @@ Puppet::Util::Log.newdesttype :logstash_event do
     # logstash_event format is documented at
     # https://logstash.jira.com/browse/LOGSTASH-675
 
-    data = {}
     data = msg.to_hash
     data['version'] = 1
     data['@timestamp'] = data['time']
@@ -113,12 +130,12 @@ Puppet::Util::Log.newdesttype :logstash_event do
 
   def handle(msg)
     message = format(msg)
-    $stdout.puts message.to_pson
+    $stdout.puts Puppet::Util::Json.dump(message)
   end
 end
 
 Puppet::Util::Log.newdesttype :console do
-  require 'puppet/util/colors'
+  require_relative '../../../puppet/util/colors'
   include Puppet::Util::Colors
 
   def initialize
@@ -129,15 +146,15 @@ Puppet::Util::Log.newdesttype :console do
 
   def handle(msg)
     levels = {
-      :emerg   => { :name => 'Emergency', :color => :hred,  :stream => $stderr },
-      :alert   => { :name => 'Alert',     :color => :hred,  :stream => $stderr },
-      :crit    => { :name => 'Critical',  :color => :hred,  :stream => $stderr },
-      :err     => { :name => 'Error',     :color => :hred,  :stream => $stderr },
-      :warning => { :name => 'Warning',   :color => :hred,  :stream => $stderr },
+      :emerg => { :name => 'Emergency', :color => :hred,     :stream => $stderr },
+      :alert => { :name => 'Alert',     :color => :hred,     :stream => $stderr },
+      :crit => { :name => 'Critical', :color => :hred, :stream => $stderr },
+      :err => { :name => 'Error', :color => :hred, :stream => $stderr },
+      :warning => { :name => 'Warning', :color => :hyellow, :stream => $stderr },
 
-      :notice  => { :name => 'Notice',    :color => :reset, :stream => $stdout },
-      :info    => { :name => 'Info',      :color => :green, :stream => $stdout },
-      :debug   => { :name => 'Debug',     :color => :cyan,  :stream => $stdout },
+      :notice => { :name => 'Notice', :color => :reset, :stream => $stdout },
+      :info => { :name => 'Info', :color => :green, :stream => $stdout },
+      :debug => { :name => 'Debug', :color => :cyan, :stream => $stdout },
     }
 
     str = msg.respond_to?(:multiline) ? msg.multiline : msg.to_s
@@ -189,37 +206,41 @@ Puppet::Util::Log.newdesttype :array do
 end
 
 Puppet::Util::Log.newdesttype :eventlog do
+  # Leaving these in for backwards compatibility - duplicates the same in
+  # Puppet::Util::Windows::EventLog
   Puppet::Util::Log::DestEventlog::EVENTLOG_ERROR_TYPE       = 0x0001
   Puppet::Util::Log::DestEventlog::EVENTLOG_WARNING_TYPE     = 0x0002
   Puppet::Util::Log::DestEventlog::EVENTLOG_INFORMATION_TYPE = 0x0004
+  Puppet::Util::Log::DestEventlog::EVENTLOG_CHARACTER_LIMIT  = 31838
 
   def self.suitable?(obj)
-    Puppet.features.eventlog?
+    Puppet::Util::Platform.windows?
   end
 
   def initialize
-    @eventlog = Win32::EventLog.open("Application")
+    @eventlog = Puppet::Util::Windows::EventLog.open("Puppet")
   end
 
   def to_native(level)
-    case level
-    when :debug,:info,:notice
-      [self.class::EVENTLOG_INFORMATION_TYPE, 0x01]
-    when :warning
-      [self.class::EVENTLOG_WARNING_TYPE, 0x02]
-    when :err,:alert,:emerg,:crit
-      [self.class::EVENTLOG_ERROR_TYPE, 0x03]
-    end
+    Puppet::Util::Windows::EventLog.to_native(level)
   end
 
   def handle(msg)
     native_type, native_id = to_native(msg.level)
 
+    stringified_msg = msg.message.to_s
+    if stringified_msg.length > self.class::EVENTLOG_CHARACTER_LIMIT
+      warning = "...Message exceeds character length limit, truncating."
+      truncated_message_length = self.class::EVENTLOG_CHARACTER_LIMIT - warning.length
+      stringified_truncated_msg = stringified_msg[0..truncated_message_length]
+      stringified_truncated_msg << warning
+      msg.message = stringified_truncated_msg
+    end
+
     @eventlog.report_event(
-      :source      => "Puppet",
-      :event_type  => native_type,
-      :event_id    => native_id,
-      :data        => (msg.source and msg.source != 'Puppet' ? "#{msg.source}: " : '') + msg.to_s
+      :event_type => native_type,
+      :event_id => native_id,
+      :data => (msg.source && msg.source != 'Puppet' ? "#{msg.source}: " : '') + msg.to_s
     )
   end
 

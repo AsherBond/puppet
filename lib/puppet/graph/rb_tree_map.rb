@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Algorithms and Containers project is Copyright (c) 2009 Kanwei Li
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -26,7 +28,7 @@
 # iterated over in order. This is useful for many datasets.
 #
 # The implementation is adapted from Robert Sedgewick's Left Leaning Red-Black Tree implementation,
-# which can be found at http://www.cs.princeton.edu/~rs/talks/LLRB/Java/RedBlackBST.java
+# which can be found at https://www.cs.princeton.edu/~rs/talks/LLRB/Java/RedBlackBST.java
 #
 # Most methods have O(log n) complexity.
 
@@ -122,6 +124,7 @@ class Puppet::Graph::RbTreeMap
     result = nil
     if @root
       return unless has_key? key
+
       @root, result = delete_recursive(@root, key)
       @root.color = :black if @root
       @size -= 1
@@ -181,12 +184,14 @@ class Puppet::Graph::RbTreeMap
 
   def first
     return nil unless @root
+
     node = min_recursive(@root)
     [node.key, node.value]
   end
 
   def last
     return nil unless @root
+
     node = max_recursive(@root)
     [node.key, node.value]
   end
@@ -197,6 +202,7 @@ class Puppet::Graph::RbTreeMap
 
   class Node # :nodoc: all
     attr_accessor :color, :key, :value, :left, :right
+
     def initialize(key, value)
       @key = key
       @value = value
@@ -213,8 +219,8 @@ class Puppet::Graph::RbTreeMap
           :color => @color,
         }
       }
-      h.merge!(:left => left.to_hash) if @left
-      h.merge!(:right => right.to_hash) if @right
+      h[:left] = left.to_hash if @left
+      h[:right] = right.to_hash if @right
       h
     end
 
@@ -286,6 +292,7 @@ class Puppet::Graph::RbTreeMap
 
   def recursive_yield(node, &blk)
     return unless node
+
     recursive_yield(node.left, &blk)
     yield node.key, node.value
     recursive_yield(node.right, &blk)
@@ -293,14 +300,15 @@ class Puppet::Graph::RbTreeMap
 
   def delete_recursive(node, key)
     if (key <=> node.key) == -1
-      node.move_red_left if ( !isred(node.left) && !isred(node.left.left) )
+      node.move_red_left if (!isred(node.left) && !isred(node.left.left))
       node.left, result = delete_recursive(node.left, key)
     else
       node.rotate_right if isred(node.left)
-      if ( ( (key <=> node.key) == 0) && node.right.nil? )
+      if (((key <=> node.key) == 0) && node.right.nil?)
         return nil, node.value
       end
-      if ( !isred(node.right) && !isred(node.right.left) )
+
+      if (!isred(node.right) && !isred(node.right.left))
         node.move_red_right
       end
       if (key <=> node.key) == 0
@@ -320,7 +328,8 @@ class Puppet::Graph::RbTreeMap
     if node.left.nil?
       return nil, node.value
     end
-    if ( !isred(node.left) && !isred(node.left.left) )
+
+    if (!isred(node.left) && !isred(node.left.left))
       node.move_red_left
     end
     node.left, result = delete_min_recursive(node.left)
@@ -333,7 +342,8 @@ class Puppet::Graph::RbTreeMap
       node = node.rotate_right
     end
     return nil, node.value if node.right.nil?
-    if ( !isred(node.right) && !isred(node.right.left) )
+
+    if (!isred(node.right) && !isred(node.right.left))
       node.move_red_right
     end
     node.right, result = delete_max_recursive(node.right)
@@ -343,8 +353,9 @@ class Puppet::Graph::RbTreeMap
 
   def get_recursive(node, key)
     return nil if node.nil?
+
     case key <=> node.key
-    when  0 then return node
+    when 0 then return node
     when -1 then return get_recursive(node.left, key)
     when  1 then return get_recursive(node.right, key)
     end
@@ -369,7 +380,7 @@ class Puppet::Graph::RbTreeMap
     end
 
     case key <=> node.key
-    when  0 then node.value = value
+    when 0 then node.value = value
     when -1 then node.left = insert(node.left, key, value)
     when  1 then node.right = insert(node.right, key, value)
     end

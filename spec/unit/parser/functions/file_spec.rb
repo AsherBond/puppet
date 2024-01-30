@@ -1,13 +1,8 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet_spec/files'
 
 describe "the 'file' function" do
   include PuppetSpec::Files
-
-  before :all do
-    Puppet::Parser::Functions.autoloader.loadall
-  end
 
   let :node     do Puppet::Node.new('localhost') end
   let :compiler do Puppet::Parser::Compiler.new(node) end
@@ -15,7 +10,7 @@ describe "the 'file' function" do
 
   def with_file_content(content)
     path = tmpfile('file-function')
-    file = File.new(path, 'w')
+    file = File.new(path, 'wb')
     file.sync = true
     file.print content
     yield path
@@ -23,24 +18,30 @@ describe "the 'file' function" do
 
   it "should read a file" do
     with_file_content('file content') do |name|
-      scope.function_file([name]).should == "file content"
+      expect(scope.function_file([name])).to eq("file content")
+    end
+  end
+
+  it "should read a file keeping line endings intact" do
+    with_file_content("file content\r\n") do |name|
+      expect(scope.function_file([name])).to eq("file content\r\n")
     end
   end
 
   it "should read a file from a module path" do
     with_file_content('file content') do |name|
-      mod = mock 'module'
-      mod.stubs(:file).with('myfile').returns(name)
-      compiler.environment.stubs(:module).with('mymod').returns(mod)
+      mod = double('module')
+      allow(mod).to receive(:file).with('myfile').and_return(name)
+      allow(compiler.environment).to receive(:module).with('mymod').and_return(mod)
 
-      scope.function_file(['mymod/myfile']).should == 'file content'
+      expect(scope.function_file(['mymod/myfile'])).to eq('file content')
     end
   end
 
   it "should return the first file if given two files with absolute paths" do
     with_file_content('one') do |one|
       with_file_content('two') do |two|
-        scope.function_file([one, two]).should == "one"
+        expect(scope.function_file([one, two])).to eq("one")
       end
     end
   end
@@ -48,12 +49,12 @@ describe "the 'file' function" do
   it "should return the first file if given two files with module paths" do
     with_file_content('one') do |one|
       with_file_content('two') do |two|
-        mod = mock 'module'
-        compiler.environment.expects(:module).with('mymod').returns(mod)
-        mod.expects(:file).with('one').returns(one)
-        mod.stubs(:file).with('two').returns(two)
+        mod = double('module')
+        expect(compiler.environment).to receive(:module).with('mymod').and_return(mod)
+        expect(mod).to receive(:file).with('one').and_return(one)
+        allow(mod).to receive(:file).with('two').and_return(two)
 
-        scope.function_file(['mymod/one','mymod/two']).should == 'one'
+        expect(scope.function_file(['mymod/one','mymod/two'])).to eq('one')
       end
     end
   end
@@ -61,11 +62,11 @@ describe "the 'file' function" do
   it "should return the first file if given two files with mixed paths, absolute first" do
     with_file_content('one') do |one|
       with_file_content('two') do |two|
-        mod = mock 'module'
-        compiler.environment.stubs(:module).with('mymod').returns(mod)
-        mod.stubs(:file).with('two').returns(two)
+        mod = double('module')
+        allow(compiler.environment).to receive(:module).with('mymod').and_return(mod)
+        allow(mod).to receive(:file).with('two').and_return(two)
 
-        scope.function_file([one,'mymod/two']).should == 'one'
+        expect(scope.function_file([one,'mymod/two'])).to eq('one')
       end
     end
   end
@@ -73,11 +74,11 @@ describe "the 'file' function" do
   it "should return the first file if given two files with mixed paths, module first" do
     with_file_content('one') do |one|
       with_file_content('two') do |two|
-        mod = mock 'module'
-        compiler.environment.expects(:module).with('mymod').returns(mod)
-        mod.stubs(:file).with('two').returns(two)
+        mod = double('module')
+        expect(compiler.environment).to receive(:module).with('mymod').and_return(mod)
+        allow(mod).to receive(:file).with('two').and_return(two)
 
-        scope.function_file(['mymod/two',one]).should == 'two'
+        expect(scope.function_file(['mymod/two',one])).to eq('two')
       end
     end
   end
@@ -85,7 +86,7 @@ describe "the 'file' function" do
   it "should not fail when some files are absent" do
     expect {
       with_file_content('one') do |one|
-        scope.function_file([make_absolute("/should-not-exist"), one]).should == 'one'
+        expect(scope.function_file([make_absolute("/should-not-exist"), one])).to eq('one')
       end
     }.to_not raise_error
   end

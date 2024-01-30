@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Packaging using Peter Bonivart's pkgutil program.
 Puppet::Type.type(:package).provide :pkgutil, :parent => :sun, :source => :sun do
   desc "Package management using Peter Bonivart's ``pkgutil`` command on Solaris."
@@ -7,26 +9,26 @@ Puppet::Type.type(:package).provide :pkgutil, :parent => :sun, :source => :sun d
     pkgutil_bin = "/opt/csw/bin/pkgutil"
   end
 
-  confine :osfamily => :solaris
+  confine 'os.family' => :solaris
 
   has_command(:pkguti, pkgutil_bin) do
     environment :HOME => ENV['HOME']
   end
 
-  def self.healthcheck()
+  def self.healthcheck
     unless Puppet::FileSystem.exist?("/var/opt/csw/pkgutil/admin")
-      Puppet.notice "It is highly recommended you create '/var/opt/csw/pkgutil/admin'."
-      Puppet.notice "See /var/opt/csw/pkgutil"
+      Puppet.notice _("It is highly recommended you create '/var/opt/csw/pkgutil/admin'.")
+      Puppet.notice _("See /var/opt/csw/pkgutil")
     end
 
     correct_wgetopts = false
-    [ "/opt/csw/etc/pkgutil.conf", "/etc/opt/csw/pkgutil.conf" ].each do |confpath|
+    ["/opt/csw/etc/pkgutil.conf", "/etc/opt/csw/pkgutil.conf"].each do |confpath|
       File.open(confpath) do |conf|
-        conf.each_line {|line| correct_wgetopts = true if line =~ /^\s*wgetopts\s*=.*(-nv|-q|--no-verbose|--quiet)/ }
+        conf.each_line { |line| correct_wgetopts = true if line =~ /^\s*wgetopts\s*=.*(-nv|-q|--no-verbose|--quiet)/ }
       end
     end
-    if ! correct_wgetopts
-      Puppet.notice "It is highly recommended that you set 'wgetopts=-nv' in your pkgutil.conf."
+    if !correct_wgetopts
+      Puppet.notice _("It is highly recommended that you set 'wgetopts=-nv' in your pkgutil.conf.")
     end
   end
 
@@ -64,21 +66,21 @@ Puppet::Type.type(:package).provide :pkgutil, :parent => :sun, :source => :sun d
     output = pkguti ["-a"]
 
     output.split("\n").collect do |line|
-      next if line =~ /^common\s+package/  # header of package list
+      next if line =~ /^common\s+package/ # header of package list
       next if noise?(line)
 
       if line =~ /\s*(\S+)\s+(\S+)\s+(.*)/
         { :alias => $1, :name => $2, :avail => $3 }
       else
-        Puppet.warning "Cannot match %s" % line
+        Puppet.warning _("Cannot match %{line}") % { line: line }
       end
-    end.reject { |h| h.nil? }
+    end.compact
   end
 
   # Turn our pkgutil -c listing into a hash for a single package.
   def pkgsingle(resource)
     # The --single option speeds up the execution, because it queries
-    # the package managament system for one package only.
+    # the package management system for one package only.
     command = ["-c", "--single", resource[:name]]
     self.class.parse_pkglist(run_pkgutil(resource, command), { :justme => resource[:name] })
   end
@@ -88,16 +90,16 @@ Puppet::Type.type(:package).provide :pkgutil, :parent => :sun, :source => :sun d
     output = output.split("\n")
 
     if output[-1] == "Not in catalog"
-      Puppet.warning "Package not in pkgutil catalog: %s" % hash[:justme]
+      Puppet.warning _("Package not in pkgutil catalog: %{package}") % { package: hash[:justme] }
       return nil
     end
 
     list = output.collect do |line|
-      next if line =~ /installed\s+catalog/  # header of package list
+      next if line =~ /installed\s+catalog/ # header of package list
       next if noise?(line)
 
       pkgsplit(line)
-    end.reject { |h| h.nil? }
+    end.compact
 
     if hash[:justme]
       # Single queries may have been for an alias so return the name requested
@@ -127,10 +129,10 @@ Puppet::Type.type(:package).provide :pkgutil, :parent => :sun, :source => :sun d
       hash = {}
       hash[:name] = $1
       hash[:ensure] = if $2 == "notinst"
-        :absent
-      else
-        $2
-      end
+                        :absent
+                      else
+                        $2
+                      end
       hash[:avail] = $3
 
       if hash[:avail] =~ /^SAME\s*$/
@@ -142,7 +144,7 @@ Puppet::Type.type(:package).provide :pkgutil, :parent => :sun, :source => :sun d
 
       return hash
     else
-      Puppet.warning "Cannot match %s" % line
+      Puppet.warning _("Cannot match %{line}") % { line: line }
       return nil
     end
   end
@@ -152,9 +154,9 @@ Puppet::Type.type(:package).provide :pkgutil, :parent => :sun, :source => :sun d
     # get passed to pkgutil via one or more -t options
     if resource[:source]
       sources = [resource[:source]].flatten
-      pkguti *[sources.map{|src| [ "-t", src ]}, *args].flatten
+      pkguti(*[sources.map { |src| ["-t", src] }, *args].flatten)
     else
-      pkguti *args.flatten
+      pkguti(*args.flatten)
     end
   end
 
@@ -169,10 +171,11 @@ Puppet::Type.type(:package).provide :pkgutil, :parent => :sun, :source => :sun d
   end
 
   def query
-    if hash = pkgsingle(@resource)
+    hash = pkgsingle(@resource)
+    if hash
       hash
     else
-      {:ensure => :absent}
+      { :ensure => :absent }
     end
   end
 

@@ -1,4 +1,3 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/agent'
 require 'puppet/agent/locker'
@@ -20,36 +19,36 @@ describe Puppet::Agent::Disabler do
   ##  the tests. --cprice 2012-04-16
 
   it "should use an JsonLockfile instance as its disable_lockfile" do
-    @disabler.send(:disable_lockfile).should be_instance_of(Puppet::Util::JsonLockfile)
+    expect(@disabler.send(:disable_lockfile)).to be_instance_of(Puppet::Util::JsonLockfile)
   end
 
   it "should use puppet's :agent_disabled_lockfile' setting to determine its lockfile path" do
     lockfile = File.expand_path("/my/lock.disabled")
     Puppet[:agent_disabled_lockfile] = lockfile
     lock = Puppet::Util::JsonLockfile.new(lockfile)
-    Puppet::Util::JsonLockfile.expects(:new).with(lockfile).returns lock
+    expect(Puppet::Util::JsonLockfile).to receive(:new).with(lockfile).and_return(lock)
 
     @disabler.send(:disable_lockfile)
   end
 
   it "should reuse the same lock file each time" do
-    @disabler.send(:disable_lockfile).should equal(@disabler.send(:disable_lockfile))
+    expect(@disabler.send(:disable_lockfile)).to equal(@disabler.send(:disable_lockfile))
   end
 
   it "should lock the file when disabled" do
-    @disabler.send(:disable_lockfile).expects(:lock)
+    expect(@disabler.send(:disable_lockfile)).to receive(:lock)
 
     @disabler.disable
   end
 
   it "should unlock the file when enabled" do
-    @disabler.send(:disable_lockfile).expects(:unlock)
+    expect(@disabler.send(:disable_lockfile)).to receive(:unlock)
 
     @disabler.enable
   end
 
   it "should check the lock if it is disabled" do
-    @disabler.send(:disable_lockfile).expects(:locked?)
+    expect(@disabler.send(:disable_lockfile)).to receive(:locked?)
 
     @disabler.disabled?
   end
@@ -59,6 +58,6 @@ describe Puppet::Agent::Disabler do
 
     msg = "I'm busy, go away"
     @disabler.disable(msg)
-    @disabler.disable_message.should == msg
+    expect(@disabler.disable_message).to eq(msg)
   end
 end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Jeff McCune <mccune.jeff@gmail.com>
 # Changed to app.dmg by: Udo Waechter <root@zoide.net>
 # Mac OS X Package Installer which handles application (.app)
@@ -7,16 +9,18 @@
 # and are easier to manage.
 #
 # Note: the 'apple' Provider checks for the package name
-# in /L/Receipts.  Since we possibly install multiple apps's from
+# in /L/Receipts.  Since we possibly install multiple apps from
 # a single source, we treat the source .app.dmg file as the package name.
 # As a result, we store installed .app.dmg file names
 # in /var/db/.puppet_appdmg_installed_<name>
 
-require 'puppet/provider/package'
+require_relative '../../../puppet/provider/package'
+require_relative '../../../puppet/util/plist' if Puppet.features.cfpropertylist?
 Puppet::Type.type(:package).provide(:appdmg, :parent => Puppet::Provider::Package) do
   desc "Package management which copies application bundles to a target."
 
-  confine :operatingsystem => :darwin
+  confine 'os.name' => :darwin
+  confine :feature => :cfpropertylist
 
   commands :hdiutil => "/usr/bin/hdiutil"
   commands :curl => "/usr/bin/curl"
@@ -42,7 +46,7 @@ Puppet::Type.type(:package).provide(:appdmg, :parent => Puppet::Provider::Packag
   def self.installapp(source, name, orig_source)
     appname = File.basename(source);
     ditto "--rsrc", source, "/Applications/#{appname}"
-    File.open("/var/db/.puppet_appdmg_installed_#{name}", "w") do |t|
+    Puppet::FileSystem.open("/var/db/.puppet_appdmg_installed_#{name}", nil, "w:UTF-8") do |t|
       t.print "name: '#{name}'\n"
       t.print "source: '#{orig_source}'\n"
     end
@@ -50,39 +54,41 @@ Puppet::Type.type(:package).provide(:appdmg, :parent => Puppet::Provider::Packag
 
   def self.installpkgdmg(source, name)
     require 'open-uri'
-    require 'facter/util/plist'
     cached_source = source
     tmpdir = Dir.mktmpdir
     begin
       if %r{\A[A-Za-z][A-Za-z0-9+\-\.]*://} =~ cached_source
         cached_source = File.join(tmpdir, name)
         begin
-          curl "-o", cached_source, "-C", "-", "-k", "-L", "-s", "--url", source
-          Puppet.debug "Success: curl transfered [#{name}]"
+          curl "-o", cached_source, "-C", "-", "-L", "-s", "--url", source
+          Puppet.debug "Success: curl transferred [#{name}]"
         rescue Puppet::ExecutionFailure
           Puppet.debug "curl did not transfer [#{name}].  Falling back to slower open-uri transfer methods."
           cached_source = source
         end
       end
 
-      open(cached_source) do |dmg|
+      File.open(cached_source) do |dmg|
         xml_str = hdiutil "mount", "-plist", "-nobrowse", "-readonly", "-mountrandom", "/tmp", dmg.path
-          ptable = Plist::parse_xml xml_str
-          # JJM Filter out all mount-paths into a single array, discard the rest.
-          mounts = ptable['system-entities'].collect { |entity|
-            entity['mount-point']
-          }.select { |mountloc|; mountloc }
-          begin
-            mounts.each do |fspath|
-              Dir.entries(fspath).select { |f|
-                f =~ /\.app$/i
-              }.each do |pkg|
-                installapp("#{fspath}/#{pkg}", name, source)
-              end
+        ptable = Puppet::Util::Plist.parse_plist(xml_str)
+        # JJM Filter out all mount-paths into a single array, discard the rest.
+        mounts = ptable['system-entities'].collect { |entity|
+          entity['mount-point']
+        }.select { |mountloc|; mountloc }
+        begin
+          found_app = false
+          mounts.each do |fspath|
+            Dir.entries(fspath).select { |f|
+              f =~ /\.app$/i
+            }.each do |pkg|
+              found_app = true
+              installapp("#{fspath}/#{pkg}", name, source)
             end
-          ensure
-            hdiutil "eject", mounts[0]
           end
+          Puppet.debug "Unable to find .app in .appdmg. #{name} will not be installed." if !found_app
+        ensure
+          hdiutil "eject", mounts[0]
+        end
       end
     ensure
       FileUtils.remove_entry_secure(tmpdir, true)
@@ -90,17 +96,18 @@ Puppet::Type.type(:package).provide(:appdmg, :parent => Puppet::Provider::Packag
   end
 
   def query
-    Puppet::FileSystem.exist?("/var/db/.puppet_appdmg_installed_#{@resource[:name]}") ? {:name => @resource[:name], :ensure => :present} : nil
+    Puppet::FileSystem.exist?("/var/db/.puppet_appdmg_installed_#{@resource[:name]}") ? { :name => @resource[:name], :ensure => :present } : nil
   end
 
   def install
-    source = nil
-    unless source = @resource[:source]
-      self.fail "Mac OS X PKG DMG's must specify a package source."
+    source = @resource[:source]
+    unless source
+      self.fail _("Mac OS X PKG DMGs must specify a package source.")
     end
-    unless name = @resource[:name]
-      self.fail "Mac OS X PKG DMG's must specify a package name."
+    name = @resource[:name]
+    unless name
+      self.fail _("Mac OS X PKG DMGs must specify a package name.")
     end
-    self.class.installpkgdmg(source,name)
+    self.class.installpkgdmg(source, name)
   end
 end

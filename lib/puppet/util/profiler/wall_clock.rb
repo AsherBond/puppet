@@ -1,4 +1,6 @@
-require 'puppet/util/profiler/logging'
+# frozen_string_literal: true
+
+require_relative '../../../puppet/util/profiler/logging'
 
 # A profiler implementation that measures the number of seconds a segment of
 # code takes to execute and provides a callback with a string representation of
@@ -11,8 +13,8 @@ class Puppet::Util::Profiler::WallClock < Puppet::Util::Profiler::Logging
   end
 
   def do_finish(context, description, metric_id)
-    {:time => context.stop,
-     :msg => "took #{context} seconds"}
+    { :time => context.stop,
+      :msg => _("took %{context} seconds") % { context: context } }
   end
 
   class Timer
@@ -32,4 +34,3 @@ class Puppet::Util::Profiler::WallClock < Puppet::Util::Profiler::Logging
     end
   end
 end
-

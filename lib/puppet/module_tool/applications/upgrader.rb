@@ -1,15 +1,16 @@
+# frozen_string_literal: true
+
 require 'pathname'
 
-require 'puppet/forge'
-require 'puppet/module_tool'
-require 'puppet/module_tool/shared_behaviors'
-require 'puppet/module_tool/install_directory'
-require 'puppet/module_tool/installed_modules'
+require_relative '../../../puppet/forge'
+require_relative '../../../puppet/module_tool'
+require_relative '../../../puppet/module_tool/shared_behaviors'
+require_relative '../../../puppet/module_tool/install_directory'
+require_relative '../../../puppet/module_tool/installed_modules'
 
 module Puppet::ModuleTool
   module Applications
     class Upgrader < Application
-
       include Puppet::ModuleTool::Errors
 
       def initialize(name, options)
@@ -21,11 +22,14 @@ module Puppet::ModuleTool
         @ignore_changes      = forced? || options[:ignore_changes]
         @ignore_dependencies = forced? || options[:ignore_dependencies]
 
-        Semantic::Dependency.add_source(installed_modules_source)
-        Semantic::Dependency.add_source(module_repository)
+        SemanticPuppet::Dependency.add_source(installed_modules_source)
+        SemanticPuppet::Dependency.add_source(module_repository)
       end
 
       def run
+        # Disallow anything that invokes md5 to avoid un-friendly termination due to FIPS
+        raise _("Module upgrade is prohibited in FIPS mode.") if Puppet.runtime[:facter].value(:fips_enabled)
+
         name = @name.tr('/', '-')
         version = options[:version] || '>= 0.0.0'
 
@@ -48,7 +52,7 @@ module Puppet::ModuleTool
 
           installed_release = installed_modules[name]
 
-          # `priority` is an attribute of a `Semantic::Dependency::Source`,
+          # `priority` is an attribute of a `SemanticPuppet::Dependency::Source`,
           # which is delegated through `ModuleRelease` instances for the sake of
           # comparison (sorting). By default, the `InstalledModules` source has
           # a priority of 10 (making it the most preferable source, so that
@@ -66,19 +70,19 @@ module Puppet::ModuleTool
           end
 
           mod = installed_release.mod
-          results[:installed_version] = Semantic::Version.parse(mod.version)
+          results[:installed_version] = SemanticPuppet::Version.parse(mod.version)
           dir = Pathname.new(mod.modulepath)
 
           vstring = mod.version ? "v#{mod.version}" : '???'
-          Puppet.notice "Found '#{name}' (#{colorize(:cyan, vstring)}) in #{dir} ..."
+          Puppet.notice _("Found '%{name}' (%{version}) in %{dir} ...") % { name: name, version: colorize(:cyan, vstring), dir: dir }
           unless @ignore_changes
             changes = Checksummer.run(mod.path) rescue []
             if mod.has_metadata? && !changes.empty?
               raise LocalChangesError,
-                :action            => :upgrade,
-                :module_name       => name,
-                :requested_version => results[:requested_version],
-                :installed_version => mod.version
+                    :action => :upgrade,
+                    :module_name => name,
+                    :requested_version => results[:requested_version],
+                    :installed_version => mod.version
             end
           end
 
@@ -90,13 +94,13 @@ module Puppet::ModuleTool
           if available_versions.empty?
             raise NoCandidateReleasesError, results.merge(:module_name => name, :source => module_repository.host)
           elsif results[:requested_version] != :latest
-            requested = Semantic::VersionRange.parse(results[:requested_version])
-            unless available_versions.any? {|m| requested.include? m.version}
+            requested = Puppet::Module.parse_range(results[:requested_version])
+            unless available_versions.any? { |m| requested.include? m.version }
               raise NoCandidateReleasesError, results.merge(:module_name => name, :source => module_repository.host)
             end
           end
 
-          Puppet.notice "Downloading from #{module_repository.host} ..."
+          Puppet.notice _("Downloading from %{host} ...") % { host: module_repository.host }
           if @ignore_dependencies
             graph = build_single_module_graph(name, version)
           else
@@ -107,9 +111,9 @@ module Puppet::ModuleTool
             add_module_name_constraints_to_graph(graph)
           end
 
-          installed_modules.each do |mod, release|
-            mod = mod.tr('/', '-')
-            next if mod == name
+          installed_modules.each do |installed_module, release|
+            installed_module = installed_module.tr('/', '-')
+            next if installed_module == name
 
             version = release.version
 
@@ -117,33 +121,32 @@ module Puppet::ModuleTool
               # Since upgrading already installed modules can be troublesome,
               # we'll place constraints on the graph for each installed
               # module, locking it to upgrades within the same major version.
-              ">=#{version} #{version.major}.x".tap do |range|
-                graph.add_constraint('installed', mod, range) do |node|
-                  Semantic::VersionRange.parse(range).include? node.version
-                end
+              installed_range = ">=#{version} #{version.major}.x"
+              graph.add_constraint('installed', installed_module, installed_range) do |node|
+                Puppet::Module.parse_range(installed_range).include? node.version
               end
 
               release.mod.dependencies.each do |dep|
                 dep_name = dep['name'].tr('/', '-')
 
-                dep['version_requirement'].tap do |range|
-                  graph.add_constraint("#{mod} constraint", dep_name, range) do |node|
-                    Semantic::VersionRange.parse(range).include? node.version
-                  end
+                range = dep['version_requirement']
+                graph.add_constraint("#{installed_module} constraint", dep_name, range) do |node|
+                  Puppet::Module.parse_range(range).include? node.version
                 end
               end
             end
           end
 
           begin
-            Puppet.info "Resolving dependencies ..."
-            releases = Semantic::Dependency.resolve(graph)
-          rescue Semantic::Dependency::UnsatisfiableGraph
+            Puppet.info _("Resolving dependencies ...")
+            releases = SemanticPuppet::Dependency.resolve(graph)
+          rescue SemanticPuppet::Dependency::UnsatisfiableGraph
             raise NoVersionsSatisfyError, results.merge(:requested_name => name)
           end
 
           releases.each do |rel|
-            if mod = installed_modules_source.by_name[rel.name.split('-').last]
+            mod = installed_modules_source.by_name[rel.name.split('-').last]
+            if mod
               next if mod.has_metadata? && mod.forge_name.tr('/', '-') == rel.name
 
               if rel.name != name
@@ -154,11 +157,11 @@ module Puppet::ModuleTool
               end
 
               raise InstallConflictError,
-                :requested_module  => name,
-                :requested_version => options[:version] || 'latest',
-                :dependency        => dependency,
-                :directory         => mod.path,
-                :metadata          => mod.metadata
+                    :requested_module => name,
+                    :requested_version => options[:version] || 'latest',
+                    :dependency => dependency,
+                    :directory => mod.path,
+                    :metadata => mod.metadata
             end
           end
 
@@ -170,25 +173,26 @@ module Puppet::ModuleTool
               newer_versions = versions.select { |v| v > results[:installed_version] }
 
               raise VersionAlreadyInstalledError,
-                :module_name       => name,
-                :requested_version => results[:requested_version],
-                :installed_version => results[:installed_version],
-                :newer_versions    => newer_versions,
-                :possible_culprits => installed_modules_source.fetched.reject { |x| x == name }
+                    :module_name => name,
+                    :requested_version => results[:requested_version],
+                    :installed_version => results[:installed_version],
+                    :newer_versions => newer_versions,
+                    :possible_culprits => installed_modules_source.fetched.reject { |x| x == name }
             elsif child.version < results[:installed_version]
               raise DowngradingUnsupportedError,
-                :module_name       => name,
-                :requested_version => results[:requested_version],
-                :installed_version => results[:installed_version]
+                    :module_name => name,
+                    :requested_version => results[:requested_version],
+                    :installed_version => results[:installed_version]
             end
           end
 
-          Puppet.info "Preparing to upgrade ..."
+          Puppet.info _("Preparing to upgrade ...")
           releases.each { |release| release.prepare }
 
-          Puppet.notice 'Upgrading -- do not interrupt ...'
+          Puppet.notice _('Upgrading -- do not interrupt ...')
           releases.each do |release|
-            if installed = installed_modules[release.name]
+            installed = installed_modules[release.name]
+            if installed
               release.install(Pathname.new(installed.mod.modulepath))
             else
               release.install(dir)
@@ -198,14 +202,13 @@ module Puppet::ModuleTool
           results[:result] = :success
           results[:base_dir] = releases.first.install_dir
           results[:affected_modules] = releases
-          results[:graph] = [ build_install_graph(releases.first, releases) ]
-
+          results[:graph] = [build_install_graph(releases.first, releases)]
         rescue VersionAlreadyInstalledError => e
           results[:result] = (e.newer_versions.empty? ? :noop : :failure)
           results[:error] = { :oneline => e.message, :multiline => e.multiline }
         rescue => e
           results[:error] = {
-            :oneline   => e.message,
+            :oneline => e.message,
             :multiline => e.respond_to?(:multiline) ? e.multiline : [e.to_s, e.backtrace].join("\n")
           }
         ensure
@@ -216,28 +219,31 @@ module Puppet::ModuleTool
       end
 
       private
+
+      # rubocop:disable Naming/MemoizedInstanceVariableName
       def module_repository
-        @repo ||= Puppet::Forge.new
+        @repo ||= Puppet::Forge.new(Puppet[:module_repository])
       end
 
       def installed_modules_source
         @installed ||= Puppet::ModuleTool::InstalledModules.new(@environment)
       end
+      # rubocop:enable Naming/MemoizedInstanceVariableName
 
       def installed_modules
         installed_modules_source.modules
       end
 
       def build_single_module_graph(name, version)
-        range = Semantic::VersionRange.parse(version)
-        graph = Semantic::Dependency::Graph.new(name => range)
-        releases = Semantic::Dependency.fetch_releases(name)
+        range = Puppet::Module.parse_range(version)
+        graph = SemanticPuppet::Dependency::Graph.new(name => range)
+        releases = SemanticPuppet::Dependency.fetch_releases(name)
         releases.each { |release| release.dependencies.clear }
         graph << releases
       end
 
       def build_dependency_graph(name, version)
-        Semantic::Dependency.query(name => version)
+        SemanticPuppet::Dependency.query(name => version)
       end
 
       def build_install_graph(release, installed, graphed = [])
@@ -251,7 +257,7 @@ module Puppet::ModuleTool
 
         graphed << release
 
-        dependencies = release.dependencies.values.map do |deps|
+        dependencies = release.dependencies.values.filter_map do |deps|
           dep = (deps & installed).first
           if dep == installed_modules[dep.name]
             next
@@ -260,16 +266,16 @@ module Puppet::ModuleTool
           if dep && !graphed.include?(dep)
             build_install_graph(dep, installed, graphed)
           end
-        end.compact
+        end
 
         return {
-          :release          => release,
-          :name             => release.name,
-          :path             => release.install_dir,
-          :dependencies     => dependencies.compact,
-          :version          => release.version,
+          :release => release,
+          :name => release.name,
+          :path => release.install_dir,
+          :dependencies => dependencies.compact,
+          :version => release.version,
           :previous_version => previous,
-          :action           => action,
+          :action => action,
         }
       end
 

@@ -9,10 +9,6 @@ describe 'the filter method' do
   include PuppetSpec::Compiler
   include Matchers::Resource
 
-  before :each do
-    Puppet[:parser] = 'future'
-  end
-
   it 'should filter on an array (all berries)' do
     catalog = compile_to_catalog(<<-MANIFEST)
       $a = ['strawberry','blueberry','orange']
@@ -124,6 +120,24 @@ describe 'the filter method' do
 
     expect(catalog).to have_resource("File[/file_strawb]").with_parameter(:ensure, 'present')
     expect(catalog).to have_resource("File[/file_blueb]").with_parameter(:ensure, 'present')
+  end
+
+  it 'filters on an array will include elements for which the block returns truthy' do
+    catalog = compile_to_catalog(<<-MANIFEST)
+      $r = [1, 2, false, undef].filter |$v| { $v } == [1, 2]
+      notify { "eval_${$r}": }
+    MANIFEST
+
+    expect(catalog).to have_resource('Notify[eval_true]')
+  end
+
+  it 'filters on a hash will not include elements for which the block returns truthy' do
+    catalog = compile_to_catalog(<<-MANIFEST)
+      $r = {a => 1, b => 2, c => false, d=> undef}.filter |$k, $v| { $v } == {a => 1, b => 2}
+      notify { "eval_${$r}": }
+    MANIFEST
+
+    expect(catalog).to have_resource('Notify[eval_true]')
   end
 
   it_should_behave_like 'all iterative functions argument checks', 'filter'

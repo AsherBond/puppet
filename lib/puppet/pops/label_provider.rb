@@ -1,7 +1,9 @@
+# frozen_string_literal: true
+
 # Provides a label for an object.
 # This simple implementation calls #to_s on the given object, and handles articles 'a/an/the'.
 #
-class Puppet::Pops::LabelProvider
+module Puppet::Pops::LabelProvider
   VOWELS = %w{a e i o u y}
   SKIPPED_CHARACTERS = %w{" '}
   A = "a"
@@ -25,12 +27,12 @@ class Puppet::Pops::LabelProvider
     "#{article(text).capitalize} #{text}"
   end
 
-  # Produces a label for the given text with *definitie article* (the).
+  # Produces a label for the given text with *definite article* (the).
   def the o
     "the #{label(o)}"
   end
 
-  # Produces a label for the given text with *definitie article* (The).
+  # Produces a label for the given text with *definite article* (The).
   def the_uc o
     "The #{label(o)}"
   end
@@ -40,7 +42,19 @@ class Puppet::Pops::LabelProvider
     count == 1 ? text : "#{text}s"
   end
 
-  private
+  # Combines several strings using commas and a final conjunction
+  def combine_strings(strings, conjunction = 'or')
+    case strings.size
+    when 0
+      ''
+    when 1
+      strings[0]
+    when 2
+      "#{strings[0]} #{conjunction} #{strings[1]}"
+    else
+      "#{strings[0...-1].join(', ')}, #{conjunction} #{strings.last}"
+    end
+  end
 
   # Produces an *indefinite article* (a/an) for the given text ('a' if
   # it starts with a vowel) This is obviously flawed in the general
@@ -52,14 +66,16 @@ class Puppet::Pops::LabelProvider
     article_for_letter(first_letter_of(s))
   end
 
+  private
+
   def first_letter_of(string)
-    char = string[0,1]
+    char = string[0, 1]
     if SKIPPED_CHARACTERS.include? char
-      char = string[1,1]
+      char = string[1, 1]
     end
 
     if char == ""
-      raise Puppet::DevError, "<#{string}> does not appear to contain a word"
+      raise Puppet::DevError, _("<%{string}> does not appear to contain a word") % { string: string }
     end
 
     char

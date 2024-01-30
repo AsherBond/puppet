@@ -5,16 +5,16 @@ module JSONMatchers
     end
 
     def format
-      @format ||= Puppet::Network::FormatHandler.format('pson')
+      @format ||= Puppet::Network::FormatHandler.format('json')
     end
 
     def json(instance)
-      PSON.parse(instance.to_pson)
+      Puppet::Util::Json.load(instance.to_json)
     end
 
     def attr_value(attrs, instance)
       attrs = attrs.dup
-      hash = json(instance)['data']
+      hash = json(instance)
       while attrs.length > 0
         name = attrs.shift
         hash = hash[name]
@@ -28,6 +28,7 @@ module JSONMatchers
     end
 
     def matches?(instance)
+      @instance = instance
       result = attr_value(@attributes, instance)
       if @value
         result == @value
@@ -36,46 +37,20 @@ module JSONMatchers
       end
     end
 
-    def failure_message_for_should(instance)
+    def failure_message
       if @value
-        "expected #{instance.inspect} to set #{@attributes.inspect} to #{@value.inspect}; got #{attr_value(@attributes, instance).inspect}"
+        "expected #{@instance.inspect} to set #{@attributes.inspect} to #{@value.inspect}; got #{attr_value(@attributes, @instance).inspect}"
       else
-        "expected #{instance.inspect} to set #{@attributes.inspect} but was nil"
+        "expected #{@instance.inspect} to set #{@attributes.inspect} but was nil"
       end
     end
 
-    def failure_message_for_should_not(instance)
+    def failure_message_when_negated
       if @value
-        "expected #{instance.inspect} not to set #{@attributes.inspect} to #{@value.inspect}"
+        "expected #{@instance.inspect} not to set #{@attributes.inspect} to #{@value.inspect}"
       else
-        "expected #{instance.inspect} not to set #{@attributes.inspect} to nil"
+        "expected #{@instance.inspect} not to set #{@attributes.inspect} to nil"
       end
-    end
-  end
-
-  class SetJsonDocumentTypeTo
-    def initialize(type)
-      @type = type
-    end
-
-    def format
-      @format ||= Puppet::Network::FormatHandler.format('pson')
-    end
-
-    def matches?(instance)
-      json(instance)['document_type'] == @type
-    end
-
-    def json(instance)
-      PSON.parse(instance.to_pson)
-    end
-
-    def failure_message_for_should(instance)
-      "expected #{instance.inspect} to set document_type to #{@type.inspect}; got #{json(instance)['document_type'].inspect}"
-    end
-
-    def failure_message_for_should_not(instance)
-      "expected #{instance.inspect} not to set document_type to #{@type.inspect}"
     end
   end
 
@@ -85,7 +60,7 @@ module JSONMatchers
     end
 
     def format
-      @format ||= Puppet::Network::FormatHandler.format('pson')
+      @format ||= Puppet::Network::FormatHandler.format('json')
     end
 
     def from(value)
@@ -100,7 +75,7 @@ module JSONMatchers
 
     def matches?(klass)
       raise "Must specify json with 'from'" unless @json
-
+      @klass = klass
       @instance = format.intern(klass, @json)
       if @value
         @instance.send(@attribute) == @value
@@ -109,56 +84,46 @@ module JSONMatchers
       end
     end
 
-    def failure_message_for_should(klass)
+    def failure_message
       if @value
-        "expected #{klass} to read #{@attribute} from #{@json} as #{@value.inspect}; got #{@instance.send(@attribute).inspect}"
+        "expected #{@klass} to read #{@attribute} from #{@json} as #{@value.inspect}; got #{@instance.send(@attribute).inspect}"
       else
-        "expected #{klass} to read #{@attribute} from #{@json} but was nil"
+        "expected #{@klass} to read #{@attribute} from #{@json} but was nil"
       end
     end
 
-    def failure_message_for_should_not(klass)
+    def failure_message_when_negated
       if @value
-        "expected #{klass} not to set #{@attribute} to #{@value}"
+        "expected #{@klass} not to set #{@attribute} to #{@value}"
       else
-        "expected #{klass} not to set #{@attribute} to nil"
+        "expected #{@klass} not to set #{@attribute} to nil"
       end
     end
   end
 
-  if !Puppet.features.microsoft_windows?
-    require 'json'
-    require 'json-schema'
+  require 'puppet/util/json'
+  require 'json-schema'
 
-    class SchemaMatcher
-      JSON_META_SCHEMA = JSON.parse(File.read('api/schemas/json-meta-schema.json'))
+  class SchemaMatcher
+    JSON_META_SCHEMA = Puppet::Util::Json.load(File.read('api/schemas/json-meta-schema.json'))
 
-      def initialize(schema)
-        @schema = schema
-      end
+    def initialize(schema)
+      @schema = schema
+    end
 
-      def matches?(json)
-        JSON::Validator.validate!(JSON_META_SCHEMA, @schema)
-        JSON::Validator.validate!(@schema, json)
-      end
+    def matches?(json)
+      JSON::Validator.validate!(JSON_META_SCHEMA, @schema)
+      JSON::Validator.validate!(@schema, json)
     end
   end
 
   def validate_against(schema_file)
-    if Puppet.features.microsoft_windows?
-      pending("Schema checks cannot be done on windows because of json-schema problems")
-    else
-      schema = JSON.parse(File.read(schema_file))
-      SchemaMatcher.new(schema)
-    end
+    schema = Puppet::Util::Json.load(File.read(schema_file))
+    SchemaMatcher.new(schema)
   end
 
   def set_json_attribute(*attributes)
     SetJsonAttribute.new(attributes)
-  end
-
-  def set_json_document_type_to(type)
-    SetJsonDocumentTypeTo.new(type)
   end
 
   def read_json_attribute(attribute)

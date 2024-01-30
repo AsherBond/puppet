@@ -1,4 +1,6 @@
-require 'puppet/util/lockfile'
+# frozen_string_literal: true
+
+require_relative '../../puppet/util/lockfile'
 
 # This class provides a simple API for managing a lock file
 # whose contents are a serialized JSON object.  In addition
@@ -23,7 +25,7 @@ class Puppet::Util::JsonLockfile < Puppet::Util::Lockfile
   def lock(lock_data = nil)
     return false if locked?
 
-    super(lock_data.to_pson)
+    super(Puppet::Util::Json.dump(lock_data))
   end
 
   # Retrieve the (optional) lock data that was specified at the time the file
@@ -33,12 +35,13 @@ class Puppet::Util::JsonLockfile < Puppet::Util::Lockfile
   #  they will be converted to Strings.
   def lock_data
     return nil unless file_locked?
+
     file_contents = super
     return nil if file_contents.nil? or file_contents.empty?
-    PSON.parse(file_contents)
-  rescue PSON::ParserError => e
-    Puppet.warning "Unable to read lockfile data from #{@file_path}: not in PSON"
+
+    Puppet::Util::Json.load(file_contents)
+  rescue Puppet::Util::Json::ParseError
+    Puppet.warning _("Unable to read lockfile data from %{path}: not in JSON") % { path: @file_path }
     nil
   end
-
 end

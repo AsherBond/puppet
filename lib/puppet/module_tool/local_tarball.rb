@@ -1,11 +1,13 @@
+# frozen_string_literal: true
+
 require 'pathname'
 require 'tmpdir'
 
-require 'puppet/forge'
-require 'puppet/module_tool'
+require_relative '../../puppet/forge'
+require_relative '../../puppet/module_tool'
 
 module Puppet::ModuleTool
-  class LocalTarball < Semantic::Dependency::Source
+  class LocalTarball < SemanticPuppet::Dependency::Source
     attr_accessor :release
 
     def initialize(filename)
@@ -18,9 +20,9 @@ module Puppet::ModuleTool
 
     def fetch(name)
       if @release.name == name
-        [ @release ]
+        [@release]
       else
-        [ ]
+        []
       end
     end
 
@@ -40,14 +42,14 @@ module Puppet::ModuleTool
       FileUtils.mv(staging_dir, module_dir)
     end
 
-    class ModuleRelease < Semantic::Dependency::ModuleRelease
+    class ModuleRelease < SemanticPuppet::Dependency::ModuleRelease
       attr_reader :mod, :install_dir, :metadata
 
       def initialize(source, mod)
         @mod = mod
         @metadata = mod.metadata
         name = mod.forge_name.tr('/', '-')
-        version = Semantic::Version.parse(mod.version)
+        version = SemanticPuppet::Version.parse(mod.version)
         release = "#{name}@#{version}"
 
         if mod.dependencies
@@ -75,15 +77,17 @@ module Puppet::ModuleTool
     # Obtain a suitable temporary path for unpacking tarballs
     #
     # @return [String] path to temporary unpacking location
+    # rubocop:disable Naming/MemoizedInstanceVariableName
     def tmpdir
       @dir ||= Dir.mktmpdir('local-tarball', Puppet::Forge::Cache.base_path)
     end
+    # rubocop:enable Naming/MemoizedInstanceVariableName
 
     def unpack(file, destination)
       begin
         Puppet::ModuleTool::Applications::Unpacker.unpack(file, destination)
       rescue Puppet::ExecutionFailure => e
-        raise RuntimeError, "Could not extract contents of module archive: #{e.message}"
+        raise RuntimeError, _("Could not extract contents of module archive: %{message}") % { message: e.message }
       end
     end
   end

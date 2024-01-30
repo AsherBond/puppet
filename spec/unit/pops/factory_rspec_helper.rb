@@ -21,10 +21,6 @@ module FactoryRspecHelper
     Puppet::Pops::Model::Factory.string(*args)
   end
 
-  def text(x)
-    Puppet::Pops::Model::Factory.text(x)
-  end
-
   def minus(x)
     Puppet::Pops::Model::Factory.minus(x)
   end
@@ -45,14 +41,6 @@ module FactoryRspecHelper
     Puppet::Pops::Model::Factory.WHEN(values, block)
   end
 
-  def respond_to? method
-    if Puppet::Pops::Model::Factory.respond_to? method
-      true
-    else
-      super
-    end
-  end
-
   def method_missing(method, *args, &block)
     if Puppet::Pops::Model::Factory.respond_to? method
       Puppet::Pops::Model::Factory.send(method, *args, &block)
@@ -71,7 +59,7 @@ module FactoryRspecHelper
   end
 
   def unindent x
-    (x.gsub /^#{x[/\A\s*/]}/, '').chomp
+    x.gsub(/^#{x[/\A\s*/]}/, '').chomp
   end
   factory ||= Puppet::Pops::Model::Factory
 end

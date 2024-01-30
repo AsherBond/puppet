@@ -1,147 +1,89 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
+require 'puppet/indirector/resource/ral'
 
-describe "Puppet::Resource::Ral" do
+describe Puppet::Resource::Ral do
+  let(:my_instance) { Puppet::Type.type(:user).new(:name => "root") }
+  let(:wrong_instance) { Puppet::Type.type(:user).new(:name => "bob")}
 
-  it "is deprecated on the network, but still allows requests" do
-    Puppet.expects(:deprecation_warning)
+  def stub_retrieve(*instances)
+    instances.each do |i|
+      allow(i).to receive(:retrieve).and_return(Puppet::Resource.new(i, nil))
+    end
+  end
 
-    expect(Puppet::Resource::Ral.new.allow_remote_requests?).to eq(true)
+  before do
+    described_class.indirection.terminus_class = :ral
+
+    # make sure we don't try to retrieve current state
+    allow_any_instance_of(Puppet::Type.type(:user)).to receive(:retrieve).never
+    stub_retrieve(my_instance, wrong_instance)
+  end
+
+  it "disallows remote requests" do
+    expect(Puppet::Resource::Ral.new.allow_remote_requests?).to eq(false)
   end
 
   describe "find" do
-    before do
-      @request = stub 'request', :key => "user/root"
-    end
-
     it "should find an existing instance" do
-      my_resource    = stub "my user resource"
+      allow(Puppet::Type.type(:user)).to receive(:instances).and_return([ wrong_instance, my_instance, wrong_instance ])
 
-      wrong_instance = stub "wrong user", :name => "bob"
-      my_instance    = stub "my user",    :name => "root", :to_resource => my_resource
-
-      require 'puppet/type/user'
-      Puppet::Type::User.expects(:instances).returns([ wrong_instance, my_instance, wrong_instance ])
-      Puppet::Resource::Ral.new.find(@request).should == my_resource
+      actual_resource = described_class.indirection.find('user/root')
+      expect(actual_resource.name).to eq('User/root')
     end
 
     it "should produce Puppet::Error instead of ArgumentError" do
-      @bad_request = stub 'thiswillcauseanerror', :key => "thiswill/causeanerror"
-      expect{Puppet::Resource::Ral.new.find(@bad_request)}.to raise_error(Puppet::Error)
+      expect{described_class.indirection.find('thiswill/causeanerror')}.to raise_error(Puppet::Error)
     end
 
     it "if there is no instance, it should create one" do
-      wrong_instance = stub "wrong user", :name => "bob"
-      root = mock "Root User"
-      root_resource = mock "Root Resource"
+      allow(Puppet::Type.type(:user)).to receive(:instances).and_return([wrong_instance])
 
-      require 'puppet/type/user'
-      Puppet::Type::User.expects(:instances).returns([ wrong_instance, wrong_instance ])
-      Puppet::Type::User.expects(:new).with(has_entry(:name => "root")).returns(root)
-      root.expects(:to_resource).returns(root_resource)
-
-      result = Puppet::Resource::Ral.new.find(@request)
-
-      result.should == root_resource
+      expect(Puppet::Type.type(:user)).to receive(:new).with(hash_including(name: "root")).and_return(my_instance)
+      expect(described_class.indirection.find('user/root')).to be
     end
   end
 
   describe "search" do
-    before do
-      @request = stub 'request', :key => "user/", :options => {}
-    end
-
     it "should convert ral resources into regular resources" do
-      my_resource = stub "my user resource"
-      my_instance = stub "my user", :name => "root", :to_resource => my_resource
+      allow(Puppet::Type.type(:user)).to receive(:instances).and_return([ my_instance ])
 
-      require 'puppet/type/user'
-      Puppet::Type::User.expects(:instances).returns([ my_instance ])
-      Puppet::Resource::Ral.new.search(@request).should == [my_resource]
+      actual = described_class.indirection.search('user')
+      expect(actual).to contain_exactly(an_instance_of(Puppet::Resource))
     end
 
     it "should filter results by name if there's a name in the key" do
-      my_resource    = stub "my user resource"
-      my_resource.stubs(:to_resource).returns(my_resource)
-      my_resource.stubs(:[]).with(:name).returns("root")
+      allow(Puppet::Type.type(:user)).to receive(:instances).and_return([ my_instance, wrong_instance ])
 
-      wrong_resource = stub "wrong resource"
-      wrong_resource.stubs(:to_resource).returns(wrong_resource)
-      wrong_resource.stubs(:[]).with(:name).returns("bad")
-
-      my_instance    = stub "my user",    :to_resource => my_resource
-      wrong_instance = stub "wrong user", :to_resource => wrong_resource
-
-      @request = stub 'request', :key => "user/root", :options => {}
-
-      require 'puppet/type/user'
-      Puppet::Type::User.expects(:instances).returns([ my_instance, wrong_instance ])
-      Puppet::Resource::Ral.new.search(@request).should == [my_resource]
+      actual = described_class.indirection.search('user/root')
+      expect(actual).to contain_exactly(an_object_having_attributes(name: 'User/root'))
     end
 
     it "should filter results by query parameters" do
-      wrong_resource = stub "my user resource"
-      wrong_resource.stubs(:to_resource).returns(wrong_resource)
-      wrong_resource.stubs(:[]).with(:name).returns("root")
+      allow(Puppet::Type.type(:user)).to receive(:instances).and_return([ my_instance, wrong_instance ])
 
-      my_resource = stub "wrong resource"
-      my_resource.stubs(:to_resource).returns(my_resource)
-      my_resource.stubs(:[]).with(:name).returns("bob")
-
-      my_instance    = stub "my user",    :to_resource => my_resource
-      wrong_instance = stub "wrong user", :to_resource => wrong_resource
-
-      @request = stub 'request', :key => "user/", :options => {:name => "bob"}
-
-      require 'puppet/type/user'
-      Puppet::Type::User.expects(:instances).returns([ my_instance, wrong_instance ])
-      Puppet::Resource::Ral.new.search(@request).should == [my_resource]
+      actual = described_class.indirection.search('user', name: 'bob')
+      expect(actual).to contain_exactly(an_object_having_attributes(name: 'User/bob'))
     end
 
     it "should return sorted results" do
-      a_resource = stub "alice resource"
-      a_resource.stubs(:to_resource).returns(a_resource)
-      a_resource.stubs(:title).returns("alice")
+      a_instance = Puppet::Type.type(:user).new(:name => "alice")
+      b_instance = Puppet::Type.type(:user).new(:name => "bob")
+      stub_retrieve(a_instance, b_instance)
+      allow(Puppet::Type.type(:user)).to receive(:instances).and_return([ b_instance, a_instance ])
 
-      b_resource = stub "bob resource"
-      b_resource.stubs(:to_resource).returns(b_resource)
-      b_resource.stubs(:title).returns("bob")
-
-      a_instance = stub "alice user", :to_resource => a_resource
-      b_instance = stub "bob user",   :to_resource => b_resource
-
-      @request = stub 'request', :key => "user/", :options => {}
-
-      require 'puppet/type/user'
-      Puppet::Type::User.expects(:instances).returns([ b_instance, a_instance ])
-      Puppet::Resource::Ral.new.search(@request).should == [a_resource, b_resource]
+      expect(described_class.indirection.search('user').map(&:title)).to eq(['alice', 'bob'])
     end
   end
 
   describe "save" do
-    before do
-      @rebuilt_res = stub 'rebuilt instance'
-      @ral_res     = stub 'ral resource', :to_resource => @rebuilt_res
-      @instance    = stub 'instance', :to_ral => @ral_res
-      @request     = stub 'request',  :key => "user/", :instance => @instance
-      @catalog     = stub 'catalog'
-      @report      = stub 'report'
-      @transaction = stub 'transaction', :report => @report
+    it "returns a report covering the application of the given resource to the system" do
+      resource = Puppet::Resource.new(:notify, "the title")
 
-      Puppet::Resource::Catalog.stubs(:new).returns(@catalog)
-      @catalog.stubs(:apply).returns(@transaction)
-      @catalog.stubs(:add_resource)
-    end
+      applied_resource, report = described_class.indirection.save(resource, nil, environment: Puppet::Node::Environment.remote(:testing))
 
-    it "should apply a new catalog with a ral object in it" do
-      Puppet::Resource::Catalog.expects(:new).returns(@catalog)
-      @catalog.expects(:add_resource).with(@ral_res)
-      @catalog.expects(:apply).returns(@transaction)
-      Puppet::Resource::Ral.new.save(@request).should
-    end
-
-    it "should return a regular resource that used to be the ral resource" do
-      Puppet::Resource::Ral.new.save(@request).should == [@rebuilt_res, @report]
+      expect(applied_resource.title).to eq("the title")
+      expect(report.environment).to eq("testing")
+      expect(report.resource_statuses["Notify[the title]"].changed).to eq(true)
     end
   end
 end

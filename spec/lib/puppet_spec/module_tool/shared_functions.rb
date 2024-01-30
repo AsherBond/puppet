@@ -1,4 +1,4 @@
-require 'json'
+require 'puppet/util/json'
 
 module PuppetSpec
   module ModuleTool
@@ -15,13 +15,13 @@ module PuppetSpec
         moddir = File.join(options[:into], name)
         FileUtils.mkdir_p(moddir)
         File.open(File.join(moddir, 'metadata.json'), 'w') do |file|
-          file.puts(JSON.generate(release.metadata))
+          file.puts(Puppet::Util::Json.dump(release.metadata))
         end
       end
 
       def mark_changed(path)
         app = Puppet::ModuleTool::Applications::Checksummer
-        app.stubs(:run).with(path).returns(['README'])
+        allow(app).to receive(:run).with(path).and_return(['README'])
       end
 
       def graph_should_include(name, options)
@@ -29,9 +29,9 @@ module PuppetSpec
         release = releases.find { |x| x[:name] == name }
 
         if options.nil?
-          release.should be_nil
+          expect(release).to be_nil
         else
-          from = options.keys.find { |k| k.nil? || k.is_a?(Semantic::Version) }
+          from = options.keys.find { |k| k.nil? || k.is_a?(SemanticPuppet::Version) }
           to   = options.delete(from)
 
           if to or from
@@ -39,8 +39,8 @@ module PuppetSpec
             options[:version] ||= to
           end
 
-          release.should_not be_nil
-          release.should include options
+          expect(release).not_to be_nil
+          expect(release).to include options
         end
       end
 
@@ -49,7 +49,7 @@ module PuppetSpec
       end
 
       def v(str)
-        Semantic::Version.parse(str)
+        SemanticPuppet::Version.parse(str)
       end
     end
   end

@@ -1,4 +1,6 @@
-require 'puppet/confine'
+# frozen_string_literal: true
+
+require_relative '../../puppet/confine'
 
 class Puppet::Confine::Exists < Puppet::Confine
   def self.summarize(confines)

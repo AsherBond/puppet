@@ -1,21 +1,24 @@
+# frozen_string_literal: true
+
 require 'open-uri'
 require 'pathname'
 require 'fileutils'
 require 'tmpdir'
 
-require 'puppet/forge'
-require 'puppet/module_tool'
-require 'puppet/module_tool/shared_behaviors'
-require 'puppet/module_tool/install_directory'
-require 'puppet/module_tool/local_tarball'
-require 'puppet/module_tool/installed_modules'
+require_relative '../../../puppet/forge'
+require_relative '../../../puppet/module_tool'
+require_relative '../../../puppet/module_tool/shared_behaviors'
+require_relative '../../../puppet/module_tool/install_directory'
+require_relative '../../../puppet/module_tool/local_tarball'
+require_relative '../../../puppet/module_tool/installed_modules'
+require_relative '../../../puppet/network/uri'
 
 module Puppet::ModuleTool
   module Applications
     class Installer < Application
-
       include Puppet::ModuleTool::Errors
       include Puppet::Forge::Errors
+      include Puppet::Network::Uri
 
       def initialize(name, install_dir, options = {})
         super(options)
@@ -34,19 +37,19 @@ module Puppet::ModuleTool
           release = local_tarball_source.release
           @name = release.name
           options[:version] = release.version.to_s
-          Semantic::Dependency.add_source(local_tarball_source)
+          SemanticPuppet::Dependency.add_source(local_tarball_source)
 
           # If we're operating on a local tarball and ignoring dependencies, we
           # don't need to search any additional sources.  This will cut down on
           # unnecessary network traffic.
           unless @ignore_dependencies
-            Semantic::Dependency.add_source(installed_modules_source)
-            Semantic::Dependency.add_source(module_repository)
+            SemanticPuppet::Dependency.add_source(installed_modules_source)
+            SemanticPuppet::Dependency.add_source(module_repository)
           end
 
         else
-          Semantic::Dependency.add_source(installed_modules_source) unless forced?
-          Semantic::Dependency.add_source(module_repository)
+          SemanticPuppet::Dependency.add_source(installed_modules_source) unless forced?
+          SemanticPuppet::Dependency.add_source(module_repository)
         end
       end
 
@@ -57,19 +60,24 @@ module Puppet::ModuleTool
         results = { :action => :install, :module_name => name, :module_version => version }
 
         begin
-          if mod = installed_modules[name]
+          if !@local_tarball && name !~ /-/
+            raise InvalidModuleNameError.new(module_name: @name, suggestion: "puppetlabs-#{@name}", action: :install)
+          end
+
+          installed_module = installed_modules[name]
+          if installed_module
             unless forced?
-              if Semantic::VersionRange.parse(version).include? mod.version
+              if Puppet::Module.parse_range(version).include? installed_module.version
                 results[:result] = :noop
-                results[:version] = mod.version
+                results[:version] = installed_module.version
                 return results
               else
                 changes = Checksummer.run(installed_modules[name].mod.path) rescue []
                 raise AlreadyInstalledError,
-                  :module_name       => name,
-                  :installed_version => installed_modules[name].version,
-                  :requested_version => options[:version] || :latest,
-                  :local_changes     => changes
+                      :module_name => name,
+                      :installed_version => installed_modules[name].version,
+                      :requested_version => options[:version] || :latest,
+                      :local_changes => changes
               end
             end
           end
@@ -78,7 +86,9 @@ module Puppet::ModuleTool
           results[:install_dir] = @install_dir.target
 
           unless @local_tarball && @ignore_dependencies
-            Puppet.notice "Downloading from #{module_repository.host} ..."
+            Puppet.notice _("Downloading from %{host} ...") % {
+              host: mask_credentials(module_repository.host)
+            }
           end
 
           if @ignore_dependencies
@@ -101,19 +111,17 @@ module Puppet::ModuleTool
               # Since upgrading already installed modules can be troublesome,
               # we'll place constraints on the graph for each installed module,
               # locking it to upgrades within the same major version.
-              ">=#{version} #{version.major}.x".tap do |range|
-                graph.add_constraint('installed', mod, range) do |node|
-                  Semantic::VersionRange.parse(range).include? node.version
-                end
+              installed_range = ">=#{version} #{version.major}.x"
+              graph.add_constraint('installed', mod, installed_range) do |node|
+                Puppet::Module.parse_range(installed_range).include? node.version
               end
 
               release.mod.dependencies.each do |dep|
                 dep_name = dep['name'].tr('/', '-')
 
-                dep['version_requirement'].tap do |range|
-                  graph.add_constraint("#{mod} constraint", dep_name, range) do |node|
-                    Semantic::VersionRange.parse(range).include? node.version
-                  end
+                range = dep['version_requirement']
+                graph.add_constraint("#{mod} constraint", dep_name, range) do |node|
+                  Puppet::Module.parse_range(range).include? node.version
                 end
               end
             end
@@ -126,17 +134,68 @@ module Puppet::ModuleTool
           end
 
           begin
-            Puppet.info "Resolving dependencies ..."
-            releases = Semantic::Dependency.resolve(graph)
-          rescue Semantic::Dependency::UnsatisfiableGraph
-            raise NoVersionsSatisfyError, results.merge(:requested_name => name)
+            Puppet.info _("Resolving dependencies ...")
+            releases = SemanticPuppet::Dependency.resolve(graph)
+          rescue SemanticPuppet::Dependency::UnsatisfiableGraph => e
+            unsatisfied = nil
+
+            if e.respond_to?(:unsatisfied) && e.unsatisfied
+              constraints = {}
+              # If the module we're installing satisfies all its
+              # dependencies, but would break an already installed
+              # module that depends on it, show what would break.
+              if name == e.unsatisfied
+                graph.constraints[name].each do |mod, range, _|
+                  next unless mod.split.include?('constraint')
+
+                  # If the user requested a specific version or range,
+                  # only show the modules with non-intersecting ranges
+                  if options[:version]
+                    requested_range = SemanticPuppet::VersionRange.parse(options[:version])
+                    constraint_range = SemanticPuppet::VersionRange.parse(range)
+
+                    if requested_range.intersection(constraint_range) == SemanticPuppet::VersionRange::EMPTY_RANGE
+                      constraints[mod.split.first] = range
+                    end
+                  else
+                    constraints[mod.split.first] = range
+                  end
+                end
+
+              # If the module fails to satisfy one of its
+              # dependencies, show the unsatisfiable module
+              else
+                dep_constraints = graph.dependencies[name].max.constraints
+
+                if dep_constraints.key?(e.unsatisfied)
+                  unsatisfied_range = dep_constraints[e.unsatisfied].first[1]
+                  constraints[e.unsatisfied] = unsatisfied_range
+                end
+              end
+
+              installed_module = @environment.module_by_forge_name(e.unsatisfied.tr('-', '/'))
+              current_version = installed_module.version if installed_module
+
+              unsatisfied = {
+                :name => e.unsatisfied,
+                :constraints => constraints,
+                :current_version => current_version
+              } if constraints.any?
+            end
+
+            raise NoVersionsSatisfyError, results.merge(
+              :requested_name => name,
+              :requested_version => options[:version] || graph.dependencies[name].max.version.to_s,
+              :unsatisfied => unsatisfied
+            )
           end
 
           unless forced?
             # Check for module name conflicts.
             releases.each do |rel|
-              if mod = installed_modules_source.by_name[rel.name.split('-').last]
-                next if mod.has_metadata? && mod.forge_name.tr('/', '-') == rel.name
+              installed_module = installed_modules_source.by_name[rel.name.split('-').last]
+              if installed_module
+                next if installed_module.has_metadata? && installed_module.forge_name.tr('/', '-') == rel.name
 
                 if rel.name != name
                   dependency = {
@@ -146,19 +205,19 @@ module Puppet::ModuleTool
                 end
 
                 raise InstallConflictError,
-                  :requested_module  => name,
-                  :requested_version => options[:version] || 'latest',
-                  :dependency        => dependency,
-                  :directory         => mod.path,
-                  :metadata          => mod.metadata
+                      :requested_module => name,
+                      :requested_version => options[:version] || 'latest',
+                      :dependency => dependency,
+                      :directory => installed_module.path,
+                      :metadata => installed_module.metadata
               end
             end
           end
 
-          Puppet.info "Preparing to install ..."
+          Puppet.info _("Preparing to install ...")
           releases.each { |release| release.prepare }
 
-          Puppet.notice 'Installing -- do not interrupt ...'
+          Puppet.notice _('Installing -- do not interrupt ...')
           releases.each do |release|
             installed = installed_modules[release.name]
             if forced? || installed.nil?
@@ -170,11 +229,10 @@ module Puppet::ModuleTool
 
           results[:result] = :success
           results[:installed_modules] = releases
-          results[:graph] = [ build_install_graph(releases.first, releases) ]
-
+          results[:graph] = [build_install_graph(releases.first, releases)]
         rescue ModuleToolError, ForgeError => err
           results[:error] = {
-            :oneline   => err.message,
+            :oneline => err.message,
             :multiline => err.multiline,
           }
         ensure
@@ -187,14 +245,14 @@ module Puppet::ModuleTool
       private
 
       def module_repository
-        @repo ||= Puppet::Forge.new
+        @repo ||= Puppet::Forge.new(Puppet[:module_repository])
       end
 
       def local_tarball_source
         @tarball_source ||= begin
           Puppet::ModuleTool::LocalTarball.new(@name)
         rescue Puppet::Module::Error => e
-          raise InvalidModuleError.new(@name, :action => @action, :error  => e)
+          raise InvalidModuleError.new(@name, :action => @action, :error => e)
         end
       end
 
@@ -207,15 +265,15 @@ module Puppet::ModuleTool
       end
 
       def build_single_module_graph(name, version)
-        range = Semantic::VersionRange.parse(version)
-        graph = Semantic::Dependency::Graph.new(name => range)
-        releases = Semantic::Dependency.fetch_releases(name)
+        range = Puppet::Module.parse_range(version)
+        graph = SemanticPuppet::Dependency::Graph.new(name => range)
+        releases = SemanticPuppet::Dependency.fetch_releases(name)
         releases.each { |release| release.dependencies.clear }
         graph << releases
       end
 
       def build_dependency_graph(name, version)
-        Semantic::Dependency.query(name => version)
+        SemanticPuppet::Dependency.query(name => version)
       end
 
       def build_install_graph(release, installed, graphed = [])
@@ -230,13 +288,13 @@ module Puppet::ModuleTool
         previous = installed_modules[release.name]
         previous = previous.version if previous
         return {
-          :release          => release,
-          :name             => release.name,
-          :path             => release.install_dir.to_s,
-          :dependencies     => dependencies.compact,
-          :version          => release.version,
+          :release => release,
+          :name => release.name,
+          :path => release.install_dir.to_s,
+          :dependencies => dependencies.compact,
+          :version => release.version,
           :previous_version => previous,
-          :action           => (previous.nil? || previous == release.version || forced? ? :install : :upgrade),
+          :action => (previous.nil? || previous == release.version || forced? ? :install : :upgrade),
         }
       end
 
@@ -249,18 +307,18 @@ module Puppet::ModuleTool
 
         if !forced? && @installed.include?(@module_name)
           raise AlreadyInstalledError,
-            :module_name       => @module_name,
-            :installed_version => @installed[@module_name].first.version,
-            :requested_version => @version || (@conditions[@module_name].empty? ? :latest : :best),
-            :local_changes     => Puppet::ModuleTool::Applications::Checksummer.run(@installed[@module_name].first.path)
+                :module_name => @module_name,
+                :installed_version => @installed[@module_name].first.version,
+                :requested_version => @version || (@conditions[@module_name].empty? ? :latest : :best),
+                :local_changes => Puppet::ModuleTool::Applications::Checksummer.run(@installed[@module_name].first.path)
         end
 
         if @ignore_dependencies && @source == :filesystem
           @urls   = {}
-          @remote = { "#{@module_name}@#{@version}" => { } }
+          @remote = { "#{@module_name}@#{@version}" => {} }
           @versions = {
             @module_name => [
-              { :vstring => @version, :semver => SemVer.new(@version) }
+              { :vstring => @version, :semver => SemanticPuppet::Version.parse(@version) }
             ]
           }
         else
@@ -296,13 +354,13 @@ module Puppet::ModuleTool
       # install into the same directory 'foo'.
       #
       def resolve_install_conflicts(graph, is_dependency = false)
-        Puppet.debug("Resolving conflicts for #{graph.map {|n| n[:module]}.join(',')}")
+        Puppet.debug("Resolving conflicts for #{graph.map { |n| n[:module] }.join(',')}")
 
         graph.each do |release|
           @environment.modules_by_path[options[:target_dir]].each do |mod|
             if mod.has_metadata?
               metadata = {
-                :name    => mod.forge_name.gsub('/', '-'),
+                :name => mod.forge_name.tr('/', '-'),
                 :version => mod.version
               }
               next if release[:module] == metadata[:name]
@@ -312,7 +370,7 @@ module Puppet::ModuleTool
 
             if release[:module] =~ /-#{mod.name}$/
               dependency_info = {
-                :name    => release[:module],
+                :name => release[:module],
                 :version => release[:version][:vstring]
               }
               dependency = is_dependency ? dependency_info : nil
@@ -322,11 +380,11 @@ module Puppet::ModuleTool
               latest_version = versions.last[:vstring]
 
               raise InstallConflictError,
-                :requested_module  => @module_name,
-                :requested_version => @version || "latest: v#{latest_version}",
-                :dependency        => dependency,
-                :directory         => mod.path,
-                :metadata          => metadata
+                    :requested_module => @module_name,
+                    :requested_version => @version || "latest: v#{latest_version}",
+                    :dependency => dependency,
+                    :directory => mod.path,
+                    :metadata => metadata
             end
           end
 
@@ -335,18 +393,6 @@ module Puppet::ModuleTool
             resolve_install_conflicts(deps, true)
           end
         end
-      end
-
-      #
-      # Check if a file is a vaild module package.
-      # ---
-      # FIXME: Checking for a valid module package should be more robust and
-      # use the actual metadata contained in the package. 03132012 - Hightower
-      # +++
-      #
-      def is_module_package?(name)
-        filename = File.expand_path(name)
-        filename =~ /.tar.gz$/
       end
     end
   end
