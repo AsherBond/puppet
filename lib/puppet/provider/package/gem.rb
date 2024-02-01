@@ -77,7 +77,7 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package::
     validate_command(command)
     cmd = [command] << command_options
 
-    custom_environment = { 'HOME' => ENV['HOME'] }.merge(custom_environment)
+    custom_environment = { 'HOME' => ENV.fetch('HOME', nil) }.merge(custom_environment)
 
     if Puppet::Util::Platform.windows?
       custom_environment[:PATH] = windows_path_without_puppet_bin
@@ -120,8 +120,7 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package::
 
     begin
       list = execute_gem_command(options[:command], command_options).lines
-                                                                    .map { |set| gemsplit(set) }
-                                                                    .compact
+                                                                    .filter_map { |set| gemsplit(set) }
     rescue Puppet::ExecutionFailure => detail
       raise Puppet::Error, _("Could not list gems: %{detail}") % { detail: detail }, detail.backtrace
     end

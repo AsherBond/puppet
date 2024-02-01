@@ -9,7 +9,7 @@ module Puppet
         @name = name.to_sym
       end
 
-      attr :name
+      attr_reader :name
 
       def self.[](name)
         @run_modes ||= {}
@@ -117,7 +117,7 @@ module Puppet
       private
 
       def windows_common_base(*extra)
-        [ENV['ALLUSERSPROFILE'], "PuppetLabs"] + extra
+        [ENV.fetch('ALLUSERSPROFILE', nil), "PuppetLabs"] + extra
       end
     end
   end
