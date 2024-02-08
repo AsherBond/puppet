@@ -7,7 +7,9 @@ test_name "test the yum package provider" do
   end
 
   # Upgrade the AlmaLinux release package for newer keys until our image is updated (RE-16096)
-  on(agent, 'dnf -y upgrade almalinux-release') if on(agent, facter('os.name')).stdout.strip == 'AlmaLinux'
+  agents.each do |agent|
+    on(agent, 'dnf -y upgrade almalinux-release') if fact_on(agent, 'os.name') == 'AlmaLinux'
+  end
 
   tag 'audit:high',
       'audit:acceptance' # Could be done at the integration (or unit) layer though
@@ -32,8 +34,8 @@ test_name "test the yum package provider" do
     hosts.each do |agent|
       cmd = rpm_provider(agent)
       # Note yum and dnf list packages as <name>.<arch>
-      on agent, "#{cmd} list installed" do
-        method(match).call(/^#{pkg}\./, stdout)
+      on(agent, "#{cmd} list installed") do |result|
+        method(match).call(/^#{pkg}\./, result.stdout)
       end
     end
   end
@@ -43,7 +45,7 @@ test_name "test the yum package provider" do
   end
 
   def verify_absent(hosts, pkg)
-    verify_state(hosts, pkg, '(?:purged|absent)', :assert_no_match)
+    verify_state(hosts, pkg, '(?:purged|absent)', :refute_match)
   end
 
   step "Managing a package which does not include an epoch in its version" do
@@ -147,7 +149,7 @@ test_name "test the yum package provider" do
         end
 
         apply_manifest_on(agent, "package {'epoch': ensure => '1:1.1-1.noarch'}") do |result|
-          assert_no_match(/epoch/, result.stdout)
+          refute_match(/epoch/, result.stdout)
         end
       end
 
@@ -165,11 +167,11 @@ test_name "test the yum package provider" do
           end
 
           apply_manifest_on(agent, 'package {"epoch": ensure => "1:1.1-1"}') do |result|
-            assert_no_match(/epoch/, result.stdout)
+            refute_match(/epoch/, result.stdout)
           end
 
           apply_manifest_on(agent, "package {'epoch': ensure => '1:1.1-1.noarch'}") do |result|
-            assert_no_match(/epoch/, result.stdout)
+            refute_match(/epoch/, result.stdout)
           end
         end
       end
@@ -188,11 +190,11 @@ test_name "test the yum package provider" do
           end
 
           apply_manifest_on(agent, 'package {"epoch": ensure => "1.1-1"}') do |result|
-            assert_no_match(/epoch/, result.stdout)
+            refute_match(/epoch/, result.stdout)
           end
 
           apply_manifest_on(agent, "package {'epoch': ensure => '1:1.1-1.noarch'}") do |result|
-            assert_no_match(/epoch/, result.stdout)
+            refute_match(/epoch/, result.stdout)
           end
         end
       end
