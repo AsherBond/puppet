@@ -85,7 +85,7 @@ Puppet::Type.type(:package).provide :pkgdmg, :parent => Puppet::Provider::Packag
     tmpdir = Dir.mktmpdir
     ext = /(\.dmg|\.pkg)$/i.match(source)[0]
     begin
-      if %r{\A[A-Za-z][A-Za-z0-9+\-\.]*://} =~ cached_source
+      if %r{\A[A-Za-z][A-Za-z0-9+\-.]*://} =~ cached_source
         cached_source = File.join(tmpdir, "#{name}#{ext}")
         args = ["-o", cached_source, "-C", "-", "-L", "-s", "--fail", "--url", source]
         if http_proxy_host and http_proxy_port
@@ -137,9 +137,9 @@ Puppet::Type.type(:package).provide :pkgdmg, :parent => Puppet::Provider::Packag
   def query
     if Puppet::FileSystem.exist?("/var/db/.puppet_pkgdmg_installed_#{@resource[:name]}")
       Puppet.debug "/var/db/.puppet_pkgdmg_installed_#{@resource[:name]} found"
-      return { :name => @resource[:name], :ensure => :present }
+      { :name => @resource[:name], :ensure => :present }
     else
-      return nil
+      nil
     end
   end
 

@@ -29,7 +29,7 @@ class Puppet::FileServing::Fileset
   def initialize(path, options = {})
     if Puppet::Util::Platform.windows?
       # REMIND: UNC path
-      path = path.chomp(File::SEPARATOR) unless path =~ /^[A-Za-z]:\/$/
+      path = path.chomp(File::SEPARATOR) unless path =~ %r{^[A-Za-z]:/$}
     else
       path = path.chomp(File::SEPARATOR) unless path == File::SEPARATOR
     end
@@ -185,6 +185,6 @@ class Puppet::FileServing::Fileset
 
   def continue_recursion_at?(depth)
     # recurse if told to, and infinite recursion or current depth not at the limit
-    self.recurse && (self.recurselimit == :infinite || depth <= self.recurselimit)
+    recurse && (recurselimit == :infinite || depth <= recurselimit)
   end
 end

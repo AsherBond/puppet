@@ -17,7 +17,7 @@ class Puppet::Util::Reference
   end
 
   def self.newreference(name, options = {}, &block)
-    ref = self.new(name, **options, &block)
+    ref = new(name, **options, &block)
     instance_hash(:reference)[name.intern] = ref
 
     ref
@@ -42,7 +42,11 @@ class Puppet::Util::Reference
     # There used to be an attempt to use secure_open / replace_file to secure
     # the target, too, but that did nothing: the race was still here.  We can
     # get exactly the same benefit from running this effort:
-    Puppet::FileSystem.unlink('/tmp/puppetdoc.tex') rescue nil
+    begin
+      Puppet::FileSystem.unlink('/tmp/puppetdoc.tex')
+    rescue
+      nil
+    end
     output = %x(#{cmd})
     unless $CHILD_STATUS == 0
       $stderr.puts _("rst2latex failed")
@@ -67,14 +71,14 @@ class Puppet::Util::Reference
 
   def doc
     if defined?(@doc)
-      return "#{@name} - #{@doc}"
+      "#{@name} - #{@doc}"
     else
-      return @title
+      @title
     end
   end
 
   def dynamic?
-    self.dynamic
+    dynamic
   end
 
   def initialize(name, title: nil, depth: nil, dynamic: nil, doc: nil, &block)

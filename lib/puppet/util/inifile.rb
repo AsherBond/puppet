@@ -73,7 +73,7 @@ module Puppet::Util::IniConfig
     # exists, return nil
     def [](key)
       entry = find_entry(key)
-      return(entry.nil? ? nil : entry[1])
+      (entry.nil? ? nil : entry[1])
     end
 
     # Format the section as text in the way it should be
@@ -150,7 +150,7 @@ module Puppet::Util::IniConfig
     )
     INI_CONTINUATION = /^[ \t\r\n\f]/
     INI_SECTION_NAME = /^\[([^\]]+)\]/
-    INI_PROPERTY     = /^\s*([^\s=]+)\s*\=\s*(.*)$/
+    INI_PROPERTY     = /^\s*([^\s=]+)\s*=\s*(.*)$/
 
     # @api private
     def parse(text)
@@ -251,7 +251,7 @@ module Puppet::Util::IniConfig
     private
 
     def section_exists?(name)
-      if self.get_section(name)
+      if get_section(name)
         true
       elsif @file_collection and @file_collection.get_section(name)
         true

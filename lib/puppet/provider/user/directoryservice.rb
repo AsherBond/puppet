@@ -87,7 +87,7 @@ Puppet::Type.type(:user).provide :directoryservice do
   # display its output.
   def self.instances
     get_all_users.collect do |user|
-      self.new(generate_attribute_hash(user))
+      new(generate_attribute_hash(user))
     end
   end
 
@@ -547,7 +547,7 @@ Puppet::Type.type(:user).provide :directoryservice do
       # variable IS a Hash and contains the 'SALTED-SHA512' key (indicating an
       # older 10.7-style password hash), it will be deleted and a newer
       # 10.8-style (PBKDF2) password hash will be generated.
-      if (shadow_hash_data.instance_of?(Hash)) && (shadow_hash_data.has_key?('SALTED-SHA512'))
+      if shadow_hash_data.instance_of?(Hash) && shadow_hash_data.has_key?('SALTED-SHA512')
         shadow_hash_data.delete('SALTED-SHA512')
       end
 

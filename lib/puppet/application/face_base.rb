@@ -164,7 +164,7 @@ class Puppet::Application::FaceBase < Puppet::Application
         pattern.match item and return object
       end
     end
-    return nil                  # nothing found.
+    nil                  # nothing found.
   end
 
   def find_application_argument(item)
@@ -181,7 +181,7 @@ class Puppet::Application::FaceBase < Puppet::Application
         }
       end
     end
-    return nil                  # not found
+    nil                  # not found
   end
 
   def setup
@@ -205,7 +205,7 @@ class Puppet::Application::FaceBase < Puppet::Application
     @arguments << options
 
     # If we don't have a rendering format, set one early.
-    self.render_as ||= (@action.render_as || :console)
+    self.render_as ||= @action.render_as || :console
   end
 
   def main

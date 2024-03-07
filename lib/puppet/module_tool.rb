@@ -13,7 +13,7 @@ module Puppet
 
     # Directory and names that should not be checksummed.
     ARTIFACTS = ['pkg', /^\./, /^~/, /^#/, 'coverage', 'checksums.json', 'REVISION']
-    FULL_MODULE_NAME_PATTERN = /\A([^-\/|.]+)[-|\/](.+)\z/
+    FULL_MODULE_NAME_PATTERN = %r{\A([^-/|.]+)[-|/](.+)\z}
     REPOSITORY_URL = Puppet.settings[:module_repository]
 
     # Is this a directory that shouldn't be checksummed?
@@ -35,7 +35,7 @@ module Puppet
     def self.username_and_modname_from(full_module_name)
       matcher = full_module_name.match(FULL_MODULE_NAME_PATTERN)
       if matcher
-        return matcher.captures
+        matcher.captures
       else
         raise ArgumentError, _("Not a valid full name: %{full_module_name}") % { full_module_name: full_module_name }
       end
@@ -87,7 +87,7 @@ module Puppet
         str << branch
       end
 
-      return str
+      str
     end
 
     def self.build_tree(mods, dir)
@@ -102,7 +102,7 @@ module Puppet
         mod[:text] = "#{mod[:name]} (#{colorize(:cyan, version_string)})"
         mod[:text] += " [#{mod[:path]}]" unless mod[:path].to_s == dir.to_s
 
-        deps = (mod[:dependencies] || [])
+        deps = mod[:dependencies] || []
         deps.sort_by! { |a| a[:name] }
         build_tree(deps, dir)
       end

@@ -11,7 +11,7 @@ class Formatter
     return "" unless txt && !txt.empty?
 
     work = (opts[:scrub] ? scrub(txt) : txt)
-    indent = (opts[:indent] || 0)
+    indent = opts[:indent] || 0
     textLen = @width - indent
     patt = Regexp.new("\\A(.{0,#{textLen}})[ \n]")
     prefix = " " * indent
@@ -44,9 +44,9 @@ class Formatter
     # indent from every line.
     if text =~ /^(\s+)/
       indent = ::Regexp.last_match(1)
-      return text.gsub(/^#{indent}/, '')
+      text.gsub(/^#{indent}/, '')
     else
-      return text
+      text
     end
   end
 end

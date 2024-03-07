@@ -131,7 +131,7 @@ module Types
 
       chopped_path = @path.clone
       chopped_path.delete_at(element_index)
-      copy = self.clone
+      copy = clone
       copy.instance_variable_set(:@path, chopped_path)
       copy
     end
@@ -894,7 +894,7 @@ module Types
     end
 
     def describe_tuple(expected, original, actual, path, size_mismatch_class)
-      return EMPTY_ARRAY if expected == actual || expected.types.empty? && (actual.is_a?(PArrayType))
+      return EMPTY_ARRAY if expected == actual || expected.types.empty? && actual.is_a?(PArrayType)
 
       expected_size = expected.size_type || TypeFactory.range(*expected.size_range)
 

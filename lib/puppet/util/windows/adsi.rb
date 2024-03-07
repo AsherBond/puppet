@@ -157,7 +157,7 @@ module Puppet::Util::Windows::ADSI
       end
 
       def parse_name(name)
-        if name =~ /\//
+        if name =~ %r{/}
           raise Puppet::Error, _("Value must be in DOMAIN\\%{object_class} style syntax") % { object_class: @object_class }
         end
 
@@ -165,7 +165,7 @@ module Puppet::Util::Windows::ADSI
         domain = matches[0][1] || '.'
         account = matches[0][2]
 
-        return account, domain
+        [account, domain]
       end
 
       # returns Puppet::Util::Windows::SID::Principal[]
@@ -328,7 +328,11 @@ module Puppet::Util::Windows::ADSI
     end
 
     def add_flag(flag_name, value)
-      flag = native_object.Get(flag_name) rescue 0
+      flag = begin
+        native_object.Get(flag_name)
+      rescue
+        0
+      end
 
       native_object.Put(flag_name, flag | value)
 
@@ -350,7 +354,11 @@ module Puppet::Util::Windows::ADSI
       # WIN32OLE objects aren't enumerable, so no map
       groups = []
       # Setting WIN32OLE.codepage ensures values are returned as UTF-8
-      native_object.Groups.each { |g| groups << g.Name } rescue nil
+      begin
+        native_object.Groups.each { |g| groups << g.Name }
+      rescue
+        nil
+      end
       groups
     end
 
@@ -391,7 +399,7 @@ module Puppet::Util::Windows::ADSI
 
       desired_groups = desired_groups.split(',').map(&:strip)
 
-      current_hash = self.group_sids.to_h { |sid| [sid.sid, sid] }
+      current_hash = group_sids.to_h { |sid| [sid.sid, sid] }
       desired_hash = self.class.name_sid_hash(desired_groups)
 
       # First we add the user to all the groups it should be in but isn't
@@ -630,7 +638,7 @@ module Puppet::Util::Windows::ADSI
     def set_members(desired_members, inclusive = true)
       return if desired_members.nil?
 
-      current_hash = self.member_sids.to_h { |sid| [sid.sid, sid] }
+      current_hash = member_sids.to_h { |sid| [sid.sid, sid] }
       desired_hash = self.class.name_sid_hash(desired_members)
 
       # First we add all missing members

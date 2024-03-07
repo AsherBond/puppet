@@ -40,7 +40,7 @@ module Puppet::Interface::FaceCollection
       end
     end
 
-    return action
+    action
   end
 
   # get face from memory, without loading.
@@ -51,11 +51,11 @@ module Puppet::Interface::FaceCollection
     versions = @faces[name].keys - [:current]
     range = pattern.is_a?(SemanticPuppet::Version) ? SemanticPuppet::VersionRange.new(pattern, pattern) : SemanticPuppet::VersionRange.parse(pattern)
     found = find_matching(range, versions)
-    return @faces[name][found]
+    @faces[name][found]
   end
 
   def self.find_matching(range, versions)
-    versions.select { |v| range === v }.sort.last
+    versions.select { |v| range === v }.max
   end
 
   # try to load the face, and return it.
@@ -95,7 +95,7 @@ module Puppet::Interface::FaceCollection
         # versions here and return the last item in that set.
         #
         # --daniel 2011-04-06
-        latest_ver = @faces[name].keys.sort.last
+        latest_ver = @faces[name].keys.max
         @faces[name][:current] = @faces[name][latest_ver]
       end
     end
@@ -105,7 +105,7 @@ module Puppet::Interface::FaceCollection
       safely_require name, version
     end
 
-    return get_face(name, version)
+    get_face(name, version)
   end
 
   def self.safely_require(name, version = nil)
@@ -113,12 +113,12 @@ module Puppet::Interface::FaceCollection
     require path
     true
   rescue LoadError => e
-    raise unless e.message =~ %r{-- #{path}$}
+    raise unless e.message =~ /-- #{path}$/
 
     # ...guess we didn't find the file; return a much better problem.
     nil
   rescue SyntaxError => e
-    raise unless e.message =~ %r{#{path}\.rb:\d+: }
+    raise unless e.message =~ /#{path}\.rb:\d+: /
 
     Puppet.err _("Failed to load face %{name}:\n%{detail}") % { name: name, detail: e }
     # ...but we just carry on after complaining.

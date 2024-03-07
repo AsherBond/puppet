@@ -51,12 +51,12 @@ module Puppet::Util::Plist
           Puppet.warning(message)
         end
       end
-      return nil
+      nil
     end
 
     # Read plist text using the CFPropertyList gem.
     def parse_plist(plist_data, file_path = '')
-      bad_xml_doctype = /^.*<!DOCTYPE plist PUBLIC -\/\/Apple Computer.*$/
+      bad_xml_doctype = %r{^.*<!DOCTYPE plist PUBLIC -//Apple Computer.*$}
       # Depending on where parse_plist is called from, plist_data can be either XML or binary.
       # If we get XML, make sure ruby knows it's UTF-8 so we avoid invalid byte sequence errors.
       if plist_data.include?('encoding="UTF-8"') && plist_data.encoding != Encoding::UTF_8

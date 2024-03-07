@@ -9,7 +9,7 @@ module Puppet::ModuleTool
   module Applications
     class Unpacker < Application
       def self.unpack(filename, target)
-        app = self.new(filename, :target_dir => target)
+        app = new(filename, :target_dir => target)
         app.unpack
         app.sanity_check
         app.move_into(target)
@@ -38,7 +38,7 @@ module Puppet::ModuleTool
 
         # Return the Pathname object representing the directory where the
         # module release archive was unpacked the to.
-        return module_dir
+        module_dir
       end
 
       # @api private
@@ -64,7 +64,7 @@ module Puppet::ModuleTool
         return @root_dir if @root_dir
 
         # Grab the first directory containing a metadata.json file
-        metadata_file = Dir["#{tmpdir}/**/metadata.json"].sort_by(&:length)[0]
+        metadata_file = Dir["#{tmpdir}/**/metadata.json"].min_by(&:length)
 
         if metadata_file
           @root_dir = Pathname.new(metadata_file).dirname

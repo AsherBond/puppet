@@ -72,7 +72,11 @@ module Puppet::ModuleTool
                 results[:version] = installed_module.version
                 return results
               else
-                changes = Checksummer.run(installed_modules[name].mod.path) rescue []
+                changes = begin
+                  Checksummer.run(installed_modules[name].mod.path)
+                rescue
+                  []
+                end
                 raise AlreadyInstalledError,
                       :module_name => name,
                       :installed_version => installed_modules[name].version,
@@ -286,7 +290,7 @@ module Puppet::ModuleTool
 
         previous = installed_modules[release.name]
         previous = previous.version if previous
-        return {
+        {
           :release => release,
           :name => release.name,
           :path => release.install_dir.to_s,
@@ -374,7 +378,7 @@ module Puppet::ModuleTool
               :version => release[:version][:vstring]
             }
             dependency = is_dependency ? dependency_info : nil
-            all_versions = @versions["#{@module_name}"].sort_by { |h| h[:semver] }
+            all_versions = @versions[@module_name.to_s].sort_by { |h| h[:semver] }
             versions = all_versions.select { |x| x[:semver].special == '' }
             versions = all_versions if versions.empty?
             latest_version = versions.last[:vstring]

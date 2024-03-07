@@ -64,7 +64,7 @@ Puppet::Type.type(:package).provide :pkgng, :parent => Puppet::Provider::Package
   def self.instances
     packages = []
     begin
-      info = self.get_query
+      info = get_query
       get_version_list
 
       unless info
@@ -76,9 +76,9 @@ Puppet::Type.type(:package).provide :pkgng, :parent => Puppet::Provider::Package
         packages << new(hash)
       end
 
-      return packages
+      packages
     rescue Puppet::ExecutionFailure
-      return []
+      []
     end
   end
 
@@ -113,7 +113,7 @@ Puppet::Type.type(:package).provide :pkgng, :parent => Puppet::Provider::Package
       # just 'curl'), drop the category prefix. pkgng doesn't support version
       # pinning with the origin syntax (pkg install curl-1.2.3 is valid, but
       # pkg install www/curl-1.2.3 is not).
-      if resource[:name] =~ /\//
+      if resource[:name] =~ %r{/}
         installname = resource[:name].split('/')[1] + '-' + resource[:ensure]
       else
         installname = resource[:name] + '-' + resource[:ensure]
