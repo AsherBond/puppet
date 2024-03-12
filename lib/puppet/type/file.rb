@@ -432,7 +432,7 @@ Puppet::Type.newtype(:file) do
     end
     creator_count += 1 if @parameters.include?(:source)
 
-    self.fail _("You cannot specify more than one of %{creators}") % { creators: CREATORS.collect { |p| p.to_s }.join(", ") } if creator_count > 1
+    self.fail _("You cannot specify more than one of %{creators}") % { creators: CREATORS.collect(&:to_s).join(", ") } if creator_count > 1
 
     self.fail _("You cannot specify a remote recursion without a source") if !self[:source] && self[:recurse] == :remote
 
@@ -972,7 +972,7 @@ Puppet::Type.newtype(:file) do
 
   private
 
-  # Carry the context of sensitive parameters to the the properties that will actually handle that
+  # Carry the context of sensitive parameters to the properties that will actually handle that
   # sensitive data.
   #
   # The file type can accept file content from a number of origins and depending on the current
