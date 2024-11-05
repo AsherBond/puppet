@@ -1,13 +1,13 @@
 ---
 layout: default
-built_from_commit: 812d7420ea5d7e19e8003b26486a7c8847afdb25
+built_from_commit: a0909f4eae7490d52cb1e7dc81010592ba607679
 title: 'Man Page: puppet apply'
 canonical: "/puppet/latest/man/apply.html"
 ---
 
 # Man Page: puppet apply
 
-> **NOTE:** This page was generated from the Puppet source code on 2024-10-18 17:22:50 +0000
+> **NOTE:** This page was generated from the Puppet source code on 2024-11-04 23:37:39 +0000
 
 ## NAME
 **puppet-apply** - Apply Puppet manifests locally

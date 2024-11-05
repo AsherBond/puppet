@@ -1,13 +1,13 @@
 ---
 layout: default
-built_from_commit: 812d7420ea5d7e19e8003b26486a7c8847afdb25
+built_from_commit: a0909f4eae7490d52cb1e7dc81010592ba607679
 title: 'Resource Type: user'
 canonical: "/puppet/latest/types/user.html"
 ---
 
 # Resource Type: user
 
-> **NOTE:** This page was generated from the Puppet source code on 2024-10-18 17:23:49 +0000
+> **NOTE:** This page was generated from the Puppet source code on 2024-11-04 23:38:25 +0000
 
 
 
